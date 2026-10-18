@@ -178,6 +178,9 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Ctrl+N", New),
     ("Ctrl+O", Open),
     ("Ctrl+Shift+O", OpenOther),
+    ("Ctrl+W", CloseDocument),
+    ("Ctrl+Tab", NextDocument),
+    ("Ctrl+Shift+Tab", PreviousDocument),
     ("Ctrl+S", Save),
     ("Ctrl+Shift+S", SaveAs),
     // Adobe Animate's Import to Stage
@@ -258,6 +261,9 @@ const MOHO: &[(&str, Action)] = &[
     ("Ctrl+N", New),
     ("Ctrl+O", Open),
     ("Ctrl+Shift+O", OpenOther),
+    ("Ctrl+W", CloseDocument),
+    ("Ctrl+Tab", NextDocument),
+    ("Ctrl+Shift+Tab", PreviousDocument),
     ("Ctrl+S", Save),
     ("Ctrl+Shift+S", SaveAs),
     // Moho's Export Animation

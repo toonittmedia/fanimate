@@ -20,6 +20,9 @@
     <name>The Fanimate Contributors</name>
   </developer>
   <content_rating type="oars-1.1"/>
+  <provides>
+    <mediatype>application/x-fanimate-project</mediatype>
+  </provides>
   <categories>
     <category>Graphics</category>
   </categories>

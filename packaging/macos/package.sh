@@ -25,6 +25,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp -r "$src"/. "$app/Contents/MacOS/"
 sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
 cp "$root/brand/app-icon/fanimate.icns" "$app/Contents/Resources/fanimate.icns"
+cp "$root/brand/file-icon/fnm-file.icns" "$app/Contents/Resources/fnm-file.icns"
 
 tar -czf "$out/Fanimate-$version-macos-$arch.app.tar.gz" -C "$work" Fanimate.app
 

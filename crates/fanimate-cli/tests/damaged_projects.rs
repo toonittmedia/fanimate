@@ -207,9 +207,14 @@ fn open(files: &Files, scratch: &Path, round_trip: bool) {
             .cloned()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
     };
-    let Ok((mut doc, _report)) = fanimate_fnm::load_from("damaged.fnm", &read) else {
+    let Ok((doc, _report)) = fanimate_fnm::load_from("damaged.fnm", &read) else {
         return;
     };
+    exercise(doc, scratch, round_trip);
+}
+
+/// What the app does with a project that opened: draw it, change it, save it.
+fn exercise(mut doc: Document, scratch: &Path, round_trip: bool) {
     let mut tess = Tessellator::new();
     let mut mesh = Mesh::new();
     let (start, end) = (doc.start as f32, doc.end as f32);
@@ -243,7 +248,7 @@ fn damaged_projects_never_crash() {
         ("every-layer", every_layer()),
     ] {
         let dir = scratch.join(format!("{name}.fnm"));
-        fanimate_fnm::save(&doc, &dir).unwrap();
+        fanimate_fnm::save_folder(&doc, &dir).unwrap();
         projects.push((name.into(), read_folder(&dir)));
     }
     for name in ["hello-v0.fnm", "strokes-v1.fnm"] {
@@ -290,6 +295,93 @@ fn damaged_projects_never_crash() {
     assert!(
         failures.is_empty(),
         "{} of {trials} damaged projects crashed:\n{}",
+        failures.len(),
+        failures.iter().take(15).cloned().collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// The same, for the single-file form: a saved project packed into one
+/// archive, then cut short, changed byte by byte, or given a damaged table
+/// of contents. Opening it is an error or a project that draws and saves;
+/// it is never a panic.
+#[test]
+fn damaged_single_files_never_crash() {
+    let scratch = std::env::temp_dir().join(format!("fanimate-damaged-zip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    let mut archives: Vec<(String, Vec<u8>)> = Vec::new();
+    for (name, doc) in [
+        ("hello", samples::hello()),
+        ("benchmark", samples::benchmark(12)),
+        ("every-layer", every_layer()),
+    ] {
+        let path = scratch.join(format!("{name}.fnm"));
+        fanimate_fnm::save(&doc, &path).unwrap();
+        archives.push((name.into(), std::fs::read(&path).unwrap()));
+    }
+
+    static WHERE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|info| {
+        if let (Ok(mut w), Some(l)) = (WHERE.lock(), info.location()) {
+            *w = format!("{}:{}", l.file(), l.line());
+        }
+    }));
+    let mut rng = Rng(0x0a2c_41fe_5eed_0002);
+    let mut failures = Vec::new();
+    let trials = 1500;
+    for trial in 0..trials {
+        let (name, original) = &archives[trial % archives.len()];
+        let mut bytes = original.clone();
+        let what = match rng.below(4) {
+            0 => {
+                let cut = rng.below(bytes.len());
+                bytes.truncate(cut);
+                format!("cut at {cut}")
+            }
+            1 => {
+                let n = 1 + rng.below(8);
+                for _ in 0..n {
+                    let at = rng.below(bytes.len());
+                    bytes[at] ^= 1 + rng.below(255) as u8;
+                }
+                format!("{n} bytes changed")
+            }
+            // the table of contents is at the end: damage there
+            2 => {
+                let tail = bytes.len().saturating_sub(300);
+                let at = tail + rng.below(bytes.len() - tail);
+                bytes[at] = rng.below(256) as u8;
+                format!("byte {at} near the end set")
+            }
+            _ => {
+                let from = rng.below(bytes.len());
+                let len = rng.below(64).min(bytes.len() - from);
+                bytes.drain(from..from + len);
+                format!("{len} bytes removed at {from}")
+            }
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            if let Ok((doc, _report)) = fanimate_fnm::load_archive("damaged.fnm", &bytes) {
+                exercise(doc, &scratch, trial % 50 == 0);
+            }
+        }));
+        if let Err(e) = result {
+            let message = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            let at = WHERE.lock().map(|w| w.clone()).unwrap_or_default();
+            failures.push(format!("trial {trial} ({name}; {what}): {message} at {at}"));
+        }
+    }
+    std::panic::set_hook(hook);
+    std::fs::remove_dir_all(&scratch).unwrap();
+    assert!(
+        failures.is_empty(),
+        "{} of {trials} damaged single files crashed:\n{}",
         failures.len(),
         failures.iter().take(15).cloned().collect::<Vec<_>>().join("\n")
     );

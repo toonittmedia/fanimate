@@ -2,11 +2,13 @@
 
 mod actions;
 pub mod canvas;
+pub mod handles;
 mod history;
 mod layers;
 mod properties;
+mod selbar;
 mod style;
-mod timeline;
+pub mod timeline;
 mod tools;
 mod xsheet;
 
@@ -145,11 +147,14 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
         )
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
+                // the Home tab shows no document, so no document state
+                let home = shell.docs.home_front();
                 let (text, color): (String, egui::Color32) = match &shell.editor.status {
                     Some((StatusKind::Error, m)) => (m.clone(), p.error),
                     Some((StatusKind::Warning, m)) => (m.clone(), p.keyframe),
                     Some((StatusKind::Success, m)) => (m.clone(), p.success),
                     Some((StatusKind::Info, m)) => (m.clone(), p.text),
+                    None if home => (String::new(), p.text_muted),
                     None => (
                         format!("{}: {}", shell.editor.tool.label(), shell.editor.tool.hint()),
                         p.text_muted,
@@ -182,11 +187,13 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                         shell.ui.show_preferences = true;
                     }
                     ui.separator();
-                    ui.label(muted(format!(
-                        "{:.0}%",
-                        shell.view.zoom * ui.ctx().pixels_per_point() * 100.0
-                    )));
-                    ui.separator();
+                    if !home {
+                        ui.label(muted(format!(
+                            "{:.0}%",
+                            shell.view.zoom * ui.ctx().pixels_per_point() * 100.0
+                        )));
+                        ui.separator();
+                    }
                     if let Some((name, fraction)) = shell.renders.active.clone() {
                         let bar = egui::ProgressBar::new(fraction)
                             .desired_width(70.0)
@@ -202,13 +209,15 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                         ui.label(muted(format!("Rendering {:.0}%", fraction * 100.0)));
                         ui.separator();
                     }
-                    let doc = &shell.editor.doc;
-                    ui.label(muted(format!(
-                        "Frame {} of {}",
-                        shell.editor.current_frame(),
-                        doc.end
-                    )));
-                    ui.separator();
+                    if !home {
+                        let doc = &shell.editor.doc;
+                        ui.label(muted(format!(
+                            "Frame {} of {}",
+                            shell.editor.current_frame(),
+                            doc.end
+                        )));
+                        ui.separator();
+                    }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).truncate())
                             .on_hover_text(&hover);

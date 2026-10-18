@@ -1,4 +1,4 @@
-//! Crash recovery in the app: keep the open document's journal up to date,
+//! Crash recovery in the app: keep every open document's journal up to date,
 //! and offer work left behind by a crash when the app starts.
 //!
 //! The journal itself (where and how it is written) is in
@@ -22,14 +22,41 @@ pub fn root() -> Option<PathBuf> {
     eframe::storage_dir("Fanimate").map(|dir| dir.join("recovery"))
 }
 
-/// The journal state the app keeps.
-pub struct Recovery {
-    root: Option<PathBuf>,
+/// One document's journal. The live document's lives in [`Recovery`]; a
+/// document in a background tab carries its own.
+pub struct Session {
     journal: Option<Journal>,
     /// The editor revision last recorded; `None` before the first record.
     recorded: Option<u64>,
     recorded_at: Instant,
     error_shown: bool,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            journal: None,
+            recorded: None,
+            recorded_at: Instant::now(),
+            error_shown: false,
+        }
+    }
+}
+
+impl Session {
+    /// The document was saved or deliberately closed: nothing to recover.
+    pub fn close(self) {
+        if let Some(journal) = self.journal {
+            journal.close();
+        }
+    }
+}
+
+/// The journal state the app keeps.
+pub struct Recovery {
+    root: Option<PathBuf>,
+    /// The live document's journal.
+    pub session: Session,
     /// Work from crashed sessions, offered in a dialog.
     pub offered: Vec<Recoverable>,
 }
@@ -44,28 +71,22 @@ impl Recovery {
             .unwrap_or_default();
         Self {
             root,
-            journal: None,
-            recorded: None,
-            recorded_at: Instant::now(),
-            error_shown: false,
+            session: Session::default(),
             offered,
         }
     }
 }
 
-/// Start a new journal session for the editor's document, ending the
-/// previous one (its document was saved or deliberately closed).
+/// Start a new journal session for the live document. Whatever journal the
+/// live slot held is ended: its document was saved or deliberately closed
+/// (a document that moves to a background tab takes its journal with it).
 pub fn start(shell: &mut Shell) {
-    if let Some(old) = shell.recovery.journal.take() {
-        old.close();
-    }
-    shell.recovery.recorded = None;
-    shell.recovery.error_shown = false;
+    std::mem::take(&mut shell.recovery.session).close();
     let Some(root) = &shell.recovery.root else {
         return;
     };
     match Journal::start(root) {
-        Ok(journal) => shell.recovery.journal = Some(journal),
+        Ok(journal) => shell.recovery.session.journal = Some(journal),
         Err(e) => shell
             .editor
             .set_status(StatusKind::Warning, format!("Crash recovery is off: {e}")),
@@ -75,46 +96,47 @@ pub fn start(shell: &mut Shell) {
 
 /// Record the document as it is now.
 pub fn record(shell: &mut Shell) {
-    if let Some(journal) = &shell.recovery.journal {
+    if let Some(journal) = &shell.recovery.session.journal {
         let history = shell.editor.history_record();
         let ed = &shell.editor;
         journal.record(&ed.doc, ed.path.as_deref(), ed.dirty, Some(history));
     }
     let ed = &shell.editor;
-    shell.recovery.recorded = Some(ed.revision());
-    shell.recovery.recorded_at = Instant::now();
+    shell.recovery.session.recorded = Some(ed.revision());
+    shell.recovery.session.recorded_at = Instant::now();
 }
 
 /// Each frame: record once an action has finished (not in the middle of a
 /// drag or stroke), and every few seconds while there are unsaved changes.
 pub fn tick(ctx: &egui::Context, shell: &mut Shell) {
-    if shell.recovery.journal.is_none() {
+    if shell.recovery.session.journal.is_none() {
         return;
     }
     let busy = ctx.input(|i| i.pointer.any_down()) || shell.editor.is_drawing() || shell.editor.is_erasing();
     if !busy {
-        let changed = shell.recovery.recorded != Some(shell.editor.revision());
-        let due = shell.editor.dirty && shell.recovery.recorded_at.elapsed() >= BACKSTOP;
+        let changed = shell.recovery.session.recorded != Some(shell.editor.revision());
+        let due = shell.editor.dirty && shell.recovery.session.recorded_at.elapsed() >= BACKSTOP;
         if changed || due {
             record(shell);
         }
     }
-    let error = shell.recovery.journal.as_ref().and_then(Journal::error);
+    let error = shell.recovery.session.journal.as_ref().and_then(Journal::error);
     match error {
-        Some(e) if !shell.recovery.error_shown => {
-            shell.recovery.error_shown = true;
+        Some(e) if !shell.recovery.session.error_shown => {
+            shell.recovery.session.error_shown = true;
             let msg = format!("Crash recovery could not save a copy of your work: {e}");
             shell.editor.set_status(StatusKind::Error, msg);
         }
         Some(_) => {}
-        None => shell.recovery.error_shown = false,
+        None => shell.recovery.session.error_shown = false,
     }
 }
 
-/// The app is closing normally: nothing to recover next time.
+/// The app is closing normally: nothing to recover next time, from any tab.
 pub fn end(shell: &mut Shell) {
-    if let Some(journal) = shell.recovery.journal.take() {
-        journal.close();
+    std::mem::take(&mut shell.recovery.session).close();
+    for parked in shell.docs.take_parked() {
+        parked.end();
     }
 }
 
@@ -180,14 +202,23 @@ pub fn dialog(ctx: &egui::Context, shell: &mut Shell) {
     match r.load() {
         Ok((doc, _report)) => {
             let path = r.info.path.clone();
-            shell.replace_editor(Editor::recovered(doc, path, r.load_history()));
+            // the file may be open already (last session reopened): its clean
+            // copy gives way to the recovered work, which is newer
+            let clean_copy = path
+                .as_deref()
+                .and_then(|p| shell.docs.find_path(p))
+                .filter(|tab| shell.docs.info(*tab).is_some_and(|t| !t.dirty));
+            if let Some(tab) = clean_copy {
+                shell.close_tab(tab);
+            }
+            shell.open_document(Editor::recovered(doc, path, r.load_history()));
             // the new session holds the work now; only then drop the old one
-            if let Some(journal) = &shell.recovery.journal {
+            if let Some(journal) = &shell.recovery.session.journal {
                 journal.flush();
             }
             r.discard();
-            // one document at a time: the rest wait for the next start
-            shell.recovery.offered.clear();
+            // each recovered document is a tab of its own; the rest of the
+            // list stays on offer
         }
         Err(e) => {
             let msg = format!("Could not recover \"{}\": {e}", r.info.name);

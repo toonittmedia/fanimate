@@ -22,6 +22,47 @@
     <string>13.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.graphics-design</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Fanimate project</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeIconFile</key>
+            <string>fnm-file</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>app.fanimate.project</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>app.fanimate.project</string>
+            <key>UTTypeDescription</key>
+            <string>Fanimate project</string>
+            <key>UTTypeIconFile</key>
+            <string>fnm-file</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>fnm</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/x-fanimate-project</string>
+            </dict>
+        </dict>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

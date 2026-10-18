@@ -8,6 +8,7 @@ use fanimate_render::View;
 
 use crate::app::Shell;
 use crate::menus;
+use crate::panels::handles::{self, Hit, Screen};
 
 const FIT_MARGIN: f32 = 32.0;
 
@@ -35,18 +36,58 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     };
 
     navigate(&ctx, &response, shell, rect, &to_doc);
-    transform_tool(&ctx, &response, shell, &to_doc);
+
+    // The selection frame and the corner radius handles come first: a handle
+    // takes the pointer before the tool does. They are found where they were
+    // drawn last frame, so what you click is what you see.
+    let screen = Screen {
+        origin: rect.center(),
+        center: shell.view.center,
+        zoom: shell.view.zoom,
+    };
+    let tool = shell.editor.tool;
+    let on_canvas = matches!(tool, Tool::TransformLayer | Tool::SelectPoints);
+    let frame_seen = shell.ui.frame.clone();
+    let radius_seen = if on_canvas {
+        shell.editor.radius_target()
+    } else {
+        None
+    };
+    let handle_busy = on_canvas && handles::interact(&ctx, &response, shell, &screen, frame_seen.as_ref());
+    let on_handle = response.clicked_by(egui::PointerButton::Primary)
+        && response.interact_pointer_pos().is_some_and(|p| {
+            handles::hit_test(&screen, frame_seen.as_ref(), radius_seen.as_ref(), p).is_some()
+        });
+    let tools_free = !handle_busy && !on_handle;
+
+    if tools_free {
+        transform_tool(&ctx, &response, shell, &to_doc);
+    }
     freehand_tool(&ctx, &response, shell, &to_doc);
     eraser_tool(&ctx, &response, shell, &to_doc);
     let shape_preview = shape_tools(&ctx, &response, shell, &to_doc);
     click_tools(&response, shell, &to_doc);
-    point_tools(&ctx, &response, shell, &to_doc);
+    if tools_free {
+        point_tools(&ctx, &response, shell, &to_doc);
+    }
     add_point_tool(&response, shell, &to_doc);
     bone_tools(&ctx, &response, shell, &to_doc);
     pen_tool(&ctx, &response, shell, &to_doc);
-    if response.hovered() || response.dragged() {
+
+    // what is under the pointer decides the cursor: a handle, else the tool
+    let hover_hit = response
+        .hover_pos()
+        .filter(|_| !handle_busy)
+        .and_then(|p| handles::hit_test(&screen, frame_seen.as_ref(), radius_seen.as_ref(), p));
+    if let Some(hit) = hover_hit {
+        ctx.set_cursor_icon(handles::cursor(&screen, frame_seen.as_ref(), hit));
+    } else if response.hovered() || response.dragged() {
         ctx.set_cursor_icon(tool_cursor(&ctx, &response, shell.editor.tool));
     }
+    // the frame as it is now, for drawing and for the next frame's clicks
+    shell.ui.frame = (tool == Tool::TransformLayer)
+        .then(|| shell.editor.selection_frame())
+        .flatten();
 
     // render the document into a texture and show it
     let aids = canvas_overlays(shell);
@@ -94,6 +135,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     }
 
     overlays(ui, shell, rect, &to_screen);
+    selection_overlay(ui, shell, &response, &screen, hover_hit);
+    crate::panels::selbar::show(ui.ctx(), shell, rect, &screen);
     point_overlay(ui, shell, rect, &to_screen);
     pen_overlay(ui, shell, rect, &to_screen);
     weight_overlay(ui, shell, rect, &to_screen);
@@ -502,8 +545,12 @@ fn point_tools(
     {
         match shell.editor.point_at(doc(pos), slop) {
             Some(point) => shell.editor.select_point(point, mode),
-            None if !adding => shell.editor.points.clear(),
-            None => {}
+            // not on a point: on a shape, which is chosen whole
+            None => match shell.editor.shape_to_select_at(doc(pos), HIT_SLOP_PX / zoom) {
+                Some((layer, index)) => shell.editor.select_shape(layer, index, mode),
+                None if !adding => shell.editor.points.clear(),
+                None => {}
+            },
         }
         return;
     }
@@ -519,7 +566,22 @@ fn point_tools(
                 .editor
                 .select_point(point, if adding { mode } else { SelectMode::Replace });
         }
-        let moving = hit.is_some() || tool == Tool::TranslatePoints;
+        // pressing on a shape's body takes the whole shape along (choosing
+        // it first if it is not chosen), so it can be dragged without
+        // choosing every point
+        let body = if hit.is_none() && tool == Tool::SelectPoints {
+            shell.editor.shape_to_select_at(doc(start), HIT_SLOP_PX / zoom)
+        } else {
+            None
+        };
+        if let Some((layer, index)) = body
+            && !shell.editor.shape_selected(layer, index)
+        {
+            shell
+                .editor
+                .select_shape(layer, index, if adding { mode } else { SelectMode::Replace });
+        }
+        let moving = hit.is_some() || body.is_some() || tool == Tool::TranslatePoints;
         if tool == Tool::TranslatePoints && hit.is_none() && shell.editor.points.is_empty() {
             // nothing selected: move the nearest point, if one is close
             if let Some(point) = shell.editor.point_at(doc(start), slop * 4.0) {
@@ -549,7 +611,12 @@ fn point_tools(
             shell.ui.point_gesture = Some(PointGesture::Move(now));
         }
         PointGesture::Box(start) if response.drag_stopped() => {
-            shell.editor.select_points_in(doc(start), doc(pos), adding);
+            // a box picks the shapes it touches; with Alt, only the points inside it
+            if mods.alt {
+                shell.editor.select_points_in(doc(start), doc(pos), adding);
+            } else {
+                shell.editor.select_shapes_touching(doc(start), doc(pos), adding);
+            }
         }
         PointGesture::Box(_) => {}
     }
@@ -769,14 +836,29 @@ fn point_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(V
     }
     let painter = ui.painter_at(rect);
     let (c, z, p) = (shell.view.center, shell.view.zoom, shell.palette);
+    // the points take the colour of their layer's label, like the frame
+    let color = shell
+        .editor
+        .point_layer()
+        .and_then(|id| shell.editor.doc.find(id))
+        .map_or(p.accent, |l| crate::theme::label_color(l.shown_label()));
+    // the shapes chosen, outlined
+    let screen = Screen {
+        origin: rect.center(),
+        center: c,
+        zoom: z,
+    };
+    for outline in shell.editor.selected_shape_outlines() {
+        handles::paint_outline(&painter, &screen, &outline, Stroke::new(1.5, color));
+    }
     for (point, pos) in shell.editor.point_positions() {
         let r = Rect::from_center_size(to_screen(c, z, pos), egui::vec2(7.0, 7.0));
         let selected = shell.editor.points.contains(&point);
-        painter.rect_filled(r, 1.0, if selected { p.accent } else { p.panel });
+        painter.rect_filled(r, 1.0, if selected { color } else { p.panel });
         painter.rect_stroke(
             r,
             1.0,
-            Stroke::new(1.0, if selected { p.text } else { p.accent }),
+            Stroke::new(1.0, if selected { p.text } else { color }),
             egui::StrokeKind::Inside,
         );
     }
@@ -854,6 +936,82 @@ fn bone_overlay(
     }
 }
 
+/// The Transform tool's frame and handles, a rectangle's radius handles,
+/// the label beside a dragged handle, and the outline of the shape the
+/// pointer is over, which says what a click would choose.
+fn selection_overlay(
+    ui: &egui::Ui,
+    shell: &mut Shell,
+    response: &egui::Response,
+    screen: &Screen,
+    hover: Option<Hit>,
+) {
+    let tool = shell.editor.tool;
+    if !matches!(tool, Tool::TransformLayer | Tool::SelectPoints) {
+        shell.ui.hover = None;
+        return;
+    }
+    let painter = ui.painter_at(response.rect);
+    let p = shell.palette;
+
+    // the outline of what a click would choose
+    let busy = shell.ui.handle_gesture.is_some()
+        || shell.ui.point_gesture.is_some()
+        || shell.ui.drag_origin.is_some()
+        || shell.editor.playing;
+    let pointer = response.hover_pos().filter(|_| !busy && hover.is_none());
+    if let Some(outline) = hover_outline(shell, screen, pointer) {
+        handles::paint_outline(&painter, screen, &outline, Stroke::new(1.0, p.text_muted));
+    }
+
+    if let Some(frame) = shell.ui.frame.clone() {
+        handles::paint_frame(&painter, shell, screen, &frame, hover);
+    }
+    if let Some(target) = shell.editor.radius_target() {
+        handles::paint_radius(&painter, shell, screen, &target, hover);
+    }
+    if shell.ui.handle_gesture.is_some()
+        && let Some(pos) = ui.ctx().pointer_latest_pos()
+    {
+        handles::paint_readout(&painter, shell, pos);
+    }
+}
+
+/// The outline of the shape under `pointer`, kept between frames: it is only
+/// worked out again when the pointer, the document, the frame or the view
+/// has changed, so hovering costs nothing while the mouse is still.
+fn hover_outline(
+    shell: &mut Shell,
+    screen: &Screen,
+    pointer: Option<Pos2>,
+) -> Option<Vec<(Vec<Vec2>, bool)>> {
+    let Some(pos) = pointer else {
+        shell.ui.hover = None;
+        return None;
+    };
+    let key = (
+        pos,
+        shell.editor.revision(),
+        shell.editor.current_frame(),
+        screen.zoom.to_bits(),
+        screen.center.x.to_bits() ^ screen.center.y.to_bits().rotate_left(7),
+    );
+    if let Some(cache) = &shell.ui.hover
+        && cache.key == key
+    {
+        return (!cache.outline.is_empty()).then(|| cache.outline.clone());
+    }
+    let hit = shell.editor.shape_at(screen.doc(pos), HIT_SLOP_PX / screen.zoom);
+    let outline = hit.map_or_else(Vec::new, |(layer, index)| {
+        shell.editor.shape_outline(layer, index)
+    });
+    shell.ui.hover = Some(crate::panels::handles::HoverCache {
+        key,
+        outline: outline.clone(),
+    });
+    (!outline.is_empty()).then_some(outline)
+}
+
 fn bounds(points: impl Iterator<Item = Vec2>) -> Option<(Vec2, Vec2)> {
     points.fold(None, |acc, q| match acc {
         None => Some((q, q)),
@@ -861,7 +1019,8 @@ fn bounds(points: impl Iterator<Item = Vec2>) -> Option<(Vec2, Vec2)> {
     })
 }
 
-/// Selection outlines and the bones of selected bone layers.
+/// Outlines of the selected layers (in each one's label colour, as the
+/// Transform tool's frame draws them) and the bones of selected bone layers.
 fn overlays(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(Vec2, f32, Vec2) -> Pos2) {
     let ed = &shell.editor;
     if ed.selection.is_empty() {
@@ -869,9 +1028,14 @@ fn overlays(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(Vec2, 
     }
     let painter = ui.painter_at(rect);
     let (c, z) = (shell.view.center, shell.view.zoom);
-    let p = shell.palette;
 
-    let items = evaluate(&ed.doc, ed.frame);
+    // the Transform tool draws a frame with handles instead of a bare box
+    let outlines = ed.tool != Tool::TransformLayer;
+    let items = if outlines {
+        evaluate(&ed.doc, ed.frame)
+    } else {
+        Vec::new()
+    };
     let mut drawn = Vec::new();
     for sel in &ed.selection {
         let pts = items
@@ -885,7 +1049,10 @@ fn overlays(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(Vec2, 
             });
         if let Some((lo, hi)) = bounds(pts) {
             let r = Rect::from_two_pos(to_screen(c, z, lo), to_screen(c, z, hi)).expand(3.0);
-            painter.rect_stroke(r, 2.0, Stroke::new(1.5, p.accent), egui::StrokeKind::Outside);
+            let color = ed.doc.find(*sel).map_or(shell.palette.accent, |l| {
+                crate::theme::label_color(l.shown_label())
+            });
+            painter.rect_stroke(r, 2.0, Stroke::new(1.5, color), egui::StrokeKind::Outside);
         }
 
         // bones of a selected bone layer, or with a bone tool, of the bone

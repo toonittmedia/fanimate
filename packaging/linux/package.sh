@@ -27,6 +27,9 @@ cp "$here/$id.desktop" "$app/$id.desktop"
 cp "$here/$id.desktop" "$app/usr/share/applications/"
 cp "$root/brand/app-icon/fanimate-256.png" "$app/$id.png"
 cp "$root/brand/app-icon/fanimate-256.png" "$app/usr/share/icons/hicolor/256x256/apps/$id.png"
+mkdir -p "$app/usr/share/mime/packages" "$app/usr/share/icons/hicolor/512x512/mimetypes"
+cp "$here/$id.xml" "$app/usr/share/mime/packages/"
+cp "$root/brand/file-icon/fnm-file-512.png" "$app/usr/share/icons/hicolor/512x512/mimetypes/application-x-fanimate-project.png"
 cat > "$app/AppRun" <<'EOF'
 #!/bin/sh
 here="$(dirname "$(readlink -f "$0")")"
@@ -43,12 +46,16 @@ ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$app" "$out/Fanim
 # --- .deb ---------------------------------------------------------------
 deb="$work/deb"
 mkdir -p "$deb/DEBIAN" "$deb/opt/fanimate" "$deb/usr/bin" "$deb/usr/share/applications" \
-  "$deb/usr/share/icons/hicolor/256x256/apps" "$deb/usr/share/metainfo"
+  "$deb/usr/share/icons/hicolor/256x256/apps" "$deb/usr/share/metainfo" \
+  "$deb/usr/share/mime/packages" "$deb/usr/share/icons/hicolor/512x512/mimetypes"
 cp -r "$src"/. "$deb/opt/fanimate/"
 ln -s /opt/fanimate/fanimate "$deb/usr/bin/fanimate"
 ln -s /opt/fanimate/fanimate-cli "$deb/usr/bin/fanimate-cli"
 cp "$here/$id.desktop" "$deb/usr/share/applications/"
 cp "$here/$id.metainfo.xml" "$deb/usr/share/metainfo/"
+# dpkg's shared-mime-info trigger rebuilds the MIME database for this file
+cp "$here/$id.xml" "$deb/usr/share/mime/packages/"
+cp "$root/brand/file-icon/fnm-file-512.png" "$deb/usr/share/icons/hicolor/512x512/mimetypes/application-x-fanimate-project.png"
 cp "$root/brand/app-icon/fanimate-256.png" "$deb/usr/share/icons/hicolor/256x256/apps/$id.png"
 size=$(du -sk "$deb" | cut -f1)
 cat > "$deb/DEBIAN/control" <<EOF
@@ -75,7 +82,8 @@ flat="$root/flatpak-src"
 rm -rf "$flat"
 mkdir -p "$flat"
 cp -r "$src"/. "$flat/"
-cp "$here/$id.desktop" "$here/$id.metainfo.xml" "$flat/"
+cp "$here/$id.desktop" "$here/$id.metainfo.xml" "$here/$id.xml" "$flat/"
 cp "$root/brand/app-icon/fanimate-256.png" "$flat/icon-256.png"
+cp "$root/brand/file-icon/fnm-file-512.png" "$flat/fnm-file-512.png"
 
 ls -l "$out"

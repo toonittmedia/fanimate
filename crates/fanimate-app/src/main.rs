@@ -1,8 +1,8 @@
 //! The Fanimate desktop app.
 //!
 //! ```text
-//! fanimate                       open the app with the hello sample
-//! fanimate scene.fnm             open a project
+//! fanimate                       open the app (what opens first is a preference)
+//! fanimate scene.fnm other.fnm   open projects, each in a tab
 //! fanimate --bench [--bones N]   play the benchmark rig for 10 s, print fps
 //!   --no-vsync                   present as fast as possible
 //! fanimate --render-queue        the render queue window (the editor opens it)
@@ -22,9 +22,13 @@ mod audio;
 mod canvas_gpu;
 mod crash;
 mod dialogs;
+mod docs;
+mod doctabs;
 mod export;
 mod formats;
+mod home;
 mod icons;
+mod instance;
 mod lipsync;
 mod menus;
 mod panels;
@@ -67,7 +71,7 @@ fn has_stdout() -> bool {
 }
 
 struct Args {
-    file: Option<PathBuf>,
+    files: Vec<PathBuf>,
     bench_bones: Option<usize>,
     vsync: bool,
     render_queue: bool,
@@ -77,7 +81,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let mut out = Args {
-        file: None,
+        files: Vec::new(),
         bench_bones: None,
         vsync: true,
         render_queue: false,
@@ -105,11 +109,11 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                report("usage: fanimate [scene.fnm] [--bench [--bones N]] [--no-vsync]");
+                report("usage: fanimate [scene.fnm ...] [--bench [--bones N]] [--no-vsync]");
                 std::process::exit(0);
             }
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
-            other => out.file = Some(PathBuf::from(other)),
+            other => out.files.push(PathBuf::from(other)),
         }
     }
     if bench {
@@ -143,6 +147,18 @@ fn main() -> eframe::Result {
     if args.render_queue {
         return render_queue::run(args.theme.unwrap_or_default());
     }
+
+    // one Fanimate: a second launch (opening a .fnm from the file manager)
+    // hands its files to the running one, which opens them as tabs
+    let claim = if args.bench_bones.is_some() {
+        None
+    } else {
+        match instance::claim(&args.files) {
+            instance::Role::Primary(claim) => Some(claim),
+            instance::Role::Forwarded => return Ok(()),
+            instance::Role::Alone => None,
+        }
+    };
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Fanimate")
@@ -180,8 +196,9 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let opts = app::Options {
-        file: args.file,
+        files: args.files,
         bench_bones: args.bench_bones,
+        claim,
     };
     eframe::run_native(
         "Fanimate",

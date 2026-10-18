@@ -5,7 +5,7 @@
 use eframe::egui::{self, Id, Key, RichText};
 use fanimate_editor::{Action, KeymapKind};
 
-use crate::app::{Shell, run_unchecked, save};
+use crate::app::{Discard, Shell, run_unchecked, save};
 use crate::theme::Theme;
 
 #[derive(Default)]
@@ -187,6 +187,18 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
     shell.ui.show_update = open && !close;
 }
 
+/// What opens first. Also on the Home tab.
+fn startup_choice(ui: &mut egui::Ui, shell: &mut Shell) {
+    for startup in crate::docs::Startup::ALL {
+        let selected = shell.startup == startup;
+        let r = ui.radio(selected, startup.label());
+        r.clone().on_hover_text(startup.description());
+        if r.clicked() {
+            shell.startup = startup;
+        }
+    }
+}
+
 fn keymap_choice(ui: &mut egui::Ui, shell: &mut Shell) {
     for kind in KeymapKind::ALL {
         let selected = shell.keymap.kind == kind;
@@ -273,28 +285,49 @@ fn welcome(ctx: &egui::Context, shell: &mut Shell) {
     }
 }
 
+/// The documents a "save changes?" question is about: the front one for a
+/// closing tab, every unsaved one for quitting.
+fn unsaved_names(shell: &Shell, pending: Discard) -> Vec<String> {
+    match pending {
+        Discard::CloseTab => vec![crate::docs::tab_info(&shell.editor).title],
+        Discard::Action(_) => shell
+            .docs
+            .infos()
+            .filter(|t| t.dirty)
+            .map(|t| t.title.clone())
+            .collect(),
+    }
+}
+
 fn confirm_discard(ctx: &egui::Context, shell: &mut Shell) {
     let Some(pending) = shell.ui.confirm_discard else {
         return;
     };
+    let names = unsaved_names(shell, pending);
     let mut answer: Option<bool> = None; // Some(save?) ; None = undecided
     let mut cancel = false;
     let modal = egui::Modal::new(Id::new("confirm-discard")).show(ctx, |ui| {
         ui.set_width(380.0);
-        ui.label(
-            RichText::new(format!("Save changes to “{}”?", shell.editor.doc.name))
-                .size(16.0)
-                .strong(),
-        );
+        let title = match names.as_slice() {
+            [one] => format!("Save changes to “{one}”?"),
+            many => format!("Save changes to {} documents?", many.len()),
+        };
+        ui.label(RichText::new(title).size(16.0).strong());
+        if names.len() > 1 {
+            for name in &names {
+                ui.label(RichText::new(format!("•  {name}")).color(shell.palette.text));
+            }
+        }
         ui.label(
             RichText::new("Your changes will be lost if you don't save them.")
                 .color(shell.palette.text_muted),
         );
         ui.add_space(10.0);
         ui.horizontal(|ui| {
+            let save_label = if names.len() > 1 { "Save All" } else { "Save" };
             if ui
                 .add(
-                    egui::Button::new(RichText::new("Save").color(shell.palette.on_button))
+                    egui::Button::new(RichText::new(save_label).color(shell.palette.on_button))
                         .fill(shell.palette.button),
                 )
                 .clicked()
@@ -313,12 +346,31 @@ fn confirm_discard(ctx: &egui::Context, shell: &mut Shell) {
         shell.ui.confirm_discard = None;
         return;
     }
-    if let Some(save_first) = answer {
-        shell.ui.confirm_discard = None;
-        if save_first && !save(shell, false) {
-            return; // save cancelled or failed: keep the work
+    let Some(save_first) = answer else { return };
+    shell.ui.confirm_discard = None;
+    if save_first {
+        // each unsaved document comes to the front to be saved, so a
+        // Save As dialog is about the right one; any failure keeps all work
+        let dirty: Vec<usize> = match pending {
+            Discard::CloseTab => shell.docs.active().into_iter().collect(),
+            Discard::Action(_) => (0..shell.docs.len())
+                .filter(|i| shell.docs.info(*i).is_some_and(|t| t.dirty))
+                .collect(),
+        };
+        for tab in dirty {
+            shell.switch_tab(tab);
+            if !save(shell, false) {
+                return; // save cancelled or failed: keep the work
+            }
         }
-        run_unchecked(ctx, shell, pending);
+    }
+    match pending {
+        Discard::CloseTab => {
+            if let Some(tab) = shell.docs.active() {
+                shell.close_tab(tab);
+            }
+        }
+        Discard::Action(action) => run_unchecked(ctx, shell, action),
     }
 }
 
@@ -420,6 +472,9 @@ fn preferences(ctx: &egui::Context, shell: &mut Shell) {
             ui.add_space(8.0);
             ui.label(RichText::new("Theme").strong());
             theme_choice(ui, shell);
+            ui.add_space(8.0);
+            ui.label(RichText::new("When Fanimate starts").strong());
+            startup_choice(ui, shell);
             ui.add_space(8.0);
             ui.label(RichText::new("Updates and crashes").strong());
             ui.checkbox(&mut shell.updates.check, "Check for updates automatically")

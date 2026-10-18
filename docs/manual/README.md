@@ -12,7 +12,7 @@ This is the outline of the manual, with the essentials of each chapter. Chapters
 
 ## 2. Projects
 
-- **File › New**, **Open**, **Save** and **Save As**. A project is a `.fnm` folder of readable files ([format](../spec/fnm.md)).
+- **File › New**, **Open**, **Save** and **Save As**. A project is one `.fnm` file (a ZIP archive of readable files; [format](../spec/fnm.md)). Older projects saved as folders still open and stay folders.
 - Fanimate keeps a copy of your work after every change. If it closes unexpectedly, the next start offers to recover it.
 - **File › Open Moho or Animate Project…** brings in `.moho` and `.fla` files: see [Importing](../import.md).
 - **File › Import** (Ctrl+R) adds pictures (PNG, JPEG), Photoshop files (as layers), SVG drawings and WAV sound to the open project.

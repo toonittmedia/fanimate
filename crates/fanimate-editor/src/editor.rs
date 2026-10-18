@@ -19,14 +19,18 @@ mod bones;
 mod booleans;
 mod construct;
 mod draw;
+mod handles;
 mod import;
 mod points;
 mod shapes;
+mod shapesel;
 mod sound;
 mod svg;
 pub use bones::BoneRef;
 pub use draw::DrawStyle;
+pub use handles::{Handle, HandleMods, SelectionFrame};
 pub use points::PointRef;
+pub use shapesel::RadiusTarget;
 pub use sound::{MouthCue, SoundInfo, parse_rhubarb, sound_info};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +126,9 @@ pub struct Editor {
     bone_drag: Option<bones::BoneDrag>,
     /// The sub-layer the tools draw on in frame-by-frame layers.
     pub part: fanimate_core::Part,
+    /// The selection frame handle being dragged, and what to show beside it.
+    handle_drag: Option<handles::HandleDrag>,
+    handle_readout: Option<String>,
 }
 
 /// Retiming keys by dragging them on the timeline. The selected layers are
@@ -162,13 +169,29 @@ impl Editor {
             bone: None,
             bone_drag: None,
             part: fanimate_core::Part::default(),
+            handle_drag: None,
+            handle_readout: None,
         }
     }
 
     /// A new, empty 1280x720 project with one vector layer.
     pub fn untitled() -> Self {
-        let mut doc = Document::new("Untitled", 1280.0, 720.0, 24.0);
-        doc.end = 119;
+        Self::untitled_sized("Untitled", 1280.0, 720.0, 24.0)
+    }
+
+    /// A new, empty project for a [`Preset`](crate::Preset).
+    pub fn untitled_preset(preset: crate::Preset) -> Self {
+        let (width, height) = preset.size();
+        Self::untitled_sized("Untitled", width, height, preset.fps())
+    }
+
+    /// A new, empty project of a chosen size and frame rate, five seconds
+    /// long, with one vector layer. Sizes are kept within what the format
+    /// and the renderer accept.
+    pub fn untitled_sized(name: &str, width: f32, height: f32, fps: f32) -> Self {
+        let fps = fps.clamp(1.0, 120.0);
+        let mut doc = Document::new(name, width.clamp(16.0, 16384.0), height.clamp(16.0, 16384.0), fps);
+        doc.end = (fps * 5.0).round() as i32 - 1;
         let layer = labelled(doc.new_layer("Layer 1", LayerKind::vector(vec![])));
         let id = layer.id;
         doc.layers.push(layer);
@@ -353,6 +376,7 @@ impl Editor {
             Intersect => {
                 self.combine_shapes(fanimate_core::BoolOp::Intersect);
             }
+            ExpandShape => self.expand_shape(),
             SelectAll if self.tool.edits_points() => self.select_all_points(),
             SelectNone if self.tool.edits_points() => self.points.clear(),
             Delete => self.delete_selected(),
@@ -388,10 +412,11 @@ impl Editor {
                 use crate::action::Tool as T;
                 self.set_tool(if bone { T::AddBone } else { T::AddPoint });
             }
-            New | Open | OpenOther | OpenSample(_) | Save | SaveAs | Import | ExportVideo | RenderQueue
-            | LipSync | CheckForUpdates | InstallUpdate | Workspace(_) | Quit | ToggleOnionSkin
-            | ToggleLightTable | Preferences | CommandPalette | LayerProperties | ZoomIn | ZoomOut
-            | FitView | ActualSize => return Outcome::App(action),
+            New | NewPreset(_) | Open | OpenFolder | OpenOther | OpenSample(_) | CloseDocument
+            | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs | Import
+            | ExportVideo | RenderQueue | LipSync | CheckForUpdates | InstallUpdate | Workspace(_) | Quit
+            | ToggleOnionSkin | ToggleLightTable | Preferences | CommandPalette | LayerProperties
+            | ZoomIn | ZoomOut | FitView | ActualSize => return Outcome::App(action),
         }
         Outcome::Done
     }
@@ -428,6 +453,7 @@ impl Editor {
             Paste => self.clipboard.is_some(),
             FinishPath => self.is_drawing_path(),
             Union | Subtract | Intersect => self.can_combine(),
+            ExpandShape => self.expandable_shapes() > 0,
             SetInterpolation(_) => self.key_interpolation().is_some(),
             Ungroup => self.selected_roots().iter().any(|id| {
                 self.doc
@@ -504,7 +530,13 @@ impl Editor {
     fn prune_selection(&mut self) {
         let doc = &self.doc;
         self.selection.retain(|id| doc.find(*id).is_some());
+        // a point selection that no longer fits (the shape has other points now)
+        // would be a half of a shape: better none
+        let before = self.points.len();
         self.prune_points();
+        if self.points.len() != before {
+            self.points.clear();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1671,14 +1703,58 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_sample_is_left_to_the_app_and_closes_the_document() {
+    fn opening_a_sample_is_left_to_the_app_and_opens_a_tab() {
         let mut ed = Editor::untitled();
         let open = Action::OpenSample(crate::Sample::Hello);
         assert_eq!(ed.run(open), Outcome::App(open));
-        // so the app asks about unsaved changes first, as for New and Open
-        assert!(open.closes_document());
-        assert!(Action::New.closes_document() && Action::Quit.closes_document());
+        // opening adds a tab, so no unsaved work is at risk; quitting and
+        // updating close every document, so the app asks first
+        assert!(!open.closes_document());
+        assert!(!Action::New.closes_document() && !Action::Open.closes_document());
+        assert!(Action::Quit.closes_document() && Action::InstallUpdate.closes_document());
         assert!(!Action::Save.closes_document());
+        for tab in [
+            Action::CloseDocument,
+            Action::CloseOtherDocuments,
+            Action::NextDocument,
+            Action::PreviousDocument,
+            Action::ShowHome,
+            Action::OpenFolder,
+        ] {
+            assert_eq!(ed.run(tab), Outcome::App(tab));
+        }
+    }
+
+    #[test]
+    fn a_new_file_takes_its_size_and_frame_rate() {
+        let ed = Editor::untitled_sized("Short", 1920.0, 1080.0, 30.0);
+        assert_eq!((ed.doc.width, ed.doc.height, ed.doc.fps), (1920.0, 1080.0, 30.0));
+        // five seconds, counted from frame 0
+        assert_eq!((ed.doc.start, ed.doc.end), (0, 149));
+        assert_eq!(ed.doc.name, "Short");
+        assert_eq!(ed.doc.layers.len(), 1);
+        assert!(ed.path.is_none() && !ed.dirty);
+        // sizes the renderer cannot take are brought into range
+        let huge = Editor::untitled_sized("x", 1.0e9, 0.0, 0.0);
+        assert_eq!(
+            (huge.doc.width, huge.doc.height, huge.doc.fps),
+            (16384.0, 16.0, 1.0)
+        );
+        assert!(fanimate_fnm::validate(&huge.doc).is_clean());
+        let hd = Editor::untitled_preset(crate::Preset::Hd1080);
+        assert_eq!((hd.doc.width, hd.doc.height, hd.doc.fps), (1920.0, 1080.0, 24.0));
+        // every preset is a size the app accepts, and has its own name
+        for preset in crate::Preset::ALL {
+            let ed = Editor::untitled_preset(preset);
+            assert!(fanimate_fnm::validate(&ed.doc).is_clean(), "{preset:?}");
+            assert!(preset.menu_label().ends_with(preset.name()), "{preset:?}");
+        }
+        // the plain new file is as it always was
+        let plain = Editor::untitled();
+        assert_eq!(
+            (plain.doc.width, plain.doc.height, plain.doc.end),
+            (1280.0, 720.0, 119)
+        );
     }
 
     #[test]
@@ -1790,7 +1866,7 @@ mod tests {
         assert!(Editor::import_project(&file).is_err());
         assert!(Editor::import_project(&dir.join("missing.fla")).is_err());
         std::fs::remove_dir_all(&dir).ok();
-        assert!(Action::OpenOther.closes_document());
+        assert!(!Action::OpenOther.closes_document());
     }
 
     #[test]

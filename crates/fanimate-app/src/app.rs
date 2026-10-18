@@ -10,6 +10,7 @@ use fanimate_editor::{Action, Chord, DrawStyle, Editor, Keymap, KeymapKind, Outc
 use serde::{Deserialize, Serialize};
 
 use crate::canvas_gpu::CanvasGpu;
+use crate::docs::Startup;
 use crate::panels::{self, Tab, TabViewer};
 use crate::recovery::{self, Recovery};
 use crate::theme::{self, Palette, Theme};
@@ -35,6 +36,14 @@ struct Settings {
     /// After a crash, offer to report it.
     crash_reports: bool,
     updates: crate::update::UpdateSettings,
+    /// What opens when Fanimate starts.
+    startup: Startup,
+    /// Files opened or saved lately, newest first.
+    recent: Vec<PathBuf>,
+    /// The saved documents that were open, and the one in front, for
+    /// "reopen last session".
+    session: Vec<PathBuf>,
+    session_front: usize,
 }
 
 /// Onion skin settings, remembered between sessions.
@@ -75,11 +84,16 @@ impl Default for Settings {
             ffmpeg: None,
             crash_reports: true,
             updates: Default::default(),
+            startup: Startup::default(),
+            recent: Vec::new(),
+            session: Vec::new(),
+            session_front: 0,
         }
     }
 }
 
 /// Canvas camera: which document point is centred, and how zoomed.
+#[derive(Clone)]
 pub struct CanvasView {
     pub center: fanimate_core::Vec2,
     /// Screen points per document unit.
@@ -114,7 +128,21 @@ pub struct UiState {
     pub show_welcome: bool,
     pub palette: Option<dialogs::PaletteState>,
     /// An action waiting for "save changes?" to be answered.
-    pub confirm_discard: Option<Action>,
+    pub confirm_discard: Option<Discard>,
+    /// The Home tab's section.
+    pub home_section: crate::home::Section,
+    /// A selection frame handle or a corner radius being dragged.
+    pub handle_gesture: Option<crate::panels::handles::Gesture>,
+    /// Show a rectangle's corner radius as a percentage of its largest.
+    pub radius_relative: bool,
+    /// The selection frame as drawn last frame, which clicks are tested against.
+    pub frame: Option<fanimate_editor::SelectionFrame>,
+    /// The outline under the pointer.
+    pub hover: Option<crate::panels::handles::HoverCache>,
+    /// The floating selection toolbar's size last frame, to place it.
+    pub selbar_size: Option<egui::Vec2>,
+    /// Scroll the tab strip to the front tab on the next frame.
+    pub scroll_tab_into_view: bool,
     /// Bring the Properties tab forward on the next frame.
     pub focus_properties: bool,
     /// Layer transform when a canvas drag started.
@@ -130,6 +158,10 @@ pub struct UiState {
     /// Timeline zoom (pixels per frame) and horizontal scroll (frames).
     pub timeline_frame_width: f32,
     pub timeline_scroll: f32,
+    /// Width of the timeline's frame area last frame, for "fit all".
+    pub timeline_view_width: f32,
+    /// The pointer is over the timeline, so zoom commands zoom it, not the canvas.
+    pub timeline_hovered: bool,
     /// The widget being edited in the Properties or Style panel, so one
     /// drag or one typed value makes one undo step.
     pub active_edit: Option<egui::Id>,
@@ -145,10 +177,28 @@ pub struct UiState {
     pub workspace: Option<fanimate_editor::Workspace>,
 }
 
+/// Unsaved changes are being asked about, before this happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Discard {
+    /// An action that closes every document: quitting, installing an update.
+    Action(Action),
+    /// The front tab closes.
+    CloseTab,
+}
+
 /// Everything except the dock layout (kept apart so the dock and its tab
 /// viewer can be borrowed separately).
 pub struct Shell {
+    /// The front document (or, with no document open, a blank one that
+    /// the Home tab hides). The other open documents are parked in `docs`.
     pub editor: Editor,
+    pub docs: fanimate_editor::Tabs<crate::docs::Parked>,
+    /// Files opened or saved lately, newest first.
+    pub recent: Vec<PathBuf>,
+    /// What opens when Fanimate starts.
+    pub startup: Startup,
+    /// Hands this Fanimate the files other launches ask for.
+    instance: Option<crate::instance::Claim>,
     pub keymap: Keymap,
     pub theme: Theme,
     pub palette: Palette,
@@ -203,8 +253,9 @@ pub struct FanimateApp {
 }
 
 pub struct Options {
-    pub file: Option<PathBuf>,
+    pub files: Vec<PathBuf>,
     pub bench_bones: Option<usize>,
+    pub claim: Option<crate::instance::Claim>,
 }
 
 impl FanimateApp {
@@ -221,37 +272,8 @@ impl FanimateApp {
             .unwrap_or_else(default_layout);
         let palette = theme::apply(&cc.egui_ctx, settings.theme);
 
-        let mut status = None;
-        let mut editor = match (&opts.file, opts.bench_bones) {
-            (_, Some(bones)) => {
-                let mut ed = Editor::new(fanimate_core::samples::benchmark(bones));
-                ed.playing = true;
-                ed
-            }
-            (Some(path), None) if fanimate_import::can_import(path) => match Editor::import_project(path) {
-                Ok(ed) => ed,
-                Err(e) => {
-                    status = Some((StatusKind::Error, e));
-                    Editor::sample()
-                }
-            },
-            (Some(path), None) => match Editor::open(path) {
-                Ok((ed, report)) => {
-                    if !report.is_clean() {
-                        status = Some((StatusKind::Warning, summarise(&report)));
-                    }
-                    ed
-                }
-                Err(e) => {
-                    status = Some((StatusKind::Error, e.to_string()));
-                    Editor::sample()
-                }
-            },
-            (None, None) => Editor::sample(),
-        };
-        if let Some((kind, msg)) = status {
-            editor.set_status(kind, msg);
-        }
+        // the blank document the Home tab hides until a document is opened
+        let mut editor = Editor::untitled();
         editor.draw = settings.draw;
 
         let canvas = cc.wgpu_render_state.as_ref().map(CanvasGpu::new);
@@ -286,6 +308,10 @@ impl FanimateApp {
         let mut app = Self {
             dock,
             shell: Shell {
+                docs: Default::default(),
+                recent: settings.recent.clone(),
+                startup: settings.startup,
+                instance: opts.claim,
                 icon,
                 recovery: Recovery::new(recovery_root),
                 onion: settings.onion,
@@ -330,7 +356,19 @@ impl FanimateApp {
                 allow_close: false,
             },
         };
-        recovery::start(&mut app.shell);
+        match opts.bench_bones {
+            Some(bones) => {
+                let mut ed = Editor::new(fanimate_core::samples::benchmark(bones));
+                ed.playing = true;
+                app.shell.open_document(ed);
+            }
+            None => app.shell.open_startup(
+                &opts.files,
+                settings.startup,
+                &settings.session,
+                settings.session_front,
+            ),
+        }
         app
     }
 }
@@ -415,12 +453,6 @@ pub fn workspace_layout(w: fanimate_editor::Workspace) -> DockState<Tab> {
     dock
 }
 
-fn summarise(report: &fanimate_fnm::Report) -> String {
-    let n = report.issues.len();
-    let fixed = report.repaired_count();
-    format!("Opened with {n} issue(s); {fixed} repaired automatically. Save to keep the repairs.")
-}
-
 impl eframe::App for FanimateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -441,7 +473,9 @@ impl eframe::App for FanimateApp {
         handle_input(&ctx, shell);
 
         titlebar::show(ui, shell);
+        crate::doctabs::show(ui, shell);
         panels::status_bar(ui, shell);
+        poll_instance(&ctx, shell);
 
         if shell.ui.focus_properties {
             if let Some(path) = self.dock.find_tab(&Tab::Properties) {
@@ -450,18 +484,24 @@ impl eframe::App for FanimateApp {
             shell.ui.focus_properties = false;
         }
 
+        // the timeline sets this while it draws, if the pointer is over it
+        shell.ui.timeline_hovered = false;
         let style = dock_style(ui.style(), &shell.palette);
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(shell.palette.bg))
-            .show(ui, |ui| {
-                DockArea::new(&mut self.dock)
-                    .style(style)
-                    .show_close_buttons(true)
-                    .show_add_buttons(false)
-                    .show_leaf_collapse_buttons(false)
-                    .show_leaf_close_all_buttons(false)
-                    .show_inside(ui, &mut TabViewer { shell });
-            });
+        if shell.docs.home_front() {
+            crate::home::show(ui, shell);
+        } else {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(shell.palette.bg))
+                .show(ui, |ui| {
+                    DockArea::new(&mut self.dock)
+                        .style(style)
+                        .show_close_buttons(true)
+                        .show_add_buttons(false)
+                        .show_leaf_collapse_buttons(false)
+                        .show_leaf_close_all_buttons(false)
+                        .show_inside(ui, &mut TabViewer { shell });
+                });
+        }
 
         dialogs::show(&ctx, shell);
         if shell.video.poll() {
@@ -523,12 +563,16 @@ impl eframe::App for FanimateApp {
         if shell.editor.playing || shell.bench.is_some() {
             ctx.request_repaint();
         }
-        let title = format!("{} - Fanimate", window_title(&shell.editor));
+        let title = match shell.docs.home_front() {
+            true => "Fanimate".to_owned(),
+            false => format!("{} - Fanimate", window_title(shell)),
+        };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let s = &self.shell;
+        let (session, session_front) = s.session();
         eframe::set_value(
             storage,
             SETTINGS_KEY,
@@ -542,6 +586,10 @@ impl eframe::App for FanimateApp {
                 ffmpeg: s.video.chosen.clone(),
                 crash_reports: s.crash_reports,
                 updates: s.updates.clone(),
+                startup: s.startup,
+                recent: s.recent.clone(),
+                session,
+                session_front,
             },
         );
         eframe::set_value(storage, DOCK_KEY, &self.dock);
@@ -572,21 +620,54 @@ fn dock_style(egui_style: &egui::Style, p: &Palette) -> egui_dock::Style {
         state.text_color = text;
         state.outline_color = p.border;
     }
-    style.separator.color_idle = p.bg;
+    // panels meet at a hairline, not a gap; the wider grab area stays
+    style.separator.color_idle = p.border;
     style.separator.color_hovered = p.accent;
+    style.separator.width = 1.0;
+    style.separator.extra_interact_width = 4.0;
     style
 }
 
-pub fn window_title(ed: &Editor) -> String {
+/// What the title bar and the window show: the front document's name, or
+/// Home.
+pub fn window_title(shell: &Shell) -> String {
+    if shell.docs.home_front() {
+        return "Home".into();
+    }
+    let ed = &shell.editor;
     format!("{}{}", ed.doc.name, if ed.dirty { " •" } else { "" })
+}
+
+/// Whether any open document has unsaved changes.
+pub fn any_unsaved(shell: &Shell) -> bool {
+    shell.editor.dirty || shell.docs.any_dirty()
 }
 
 /// Intercept closing the window when there are unsaved changes.
 fn handle_close_request(ctx: &egui::Context, shell: &mut Shell) {
-    if ctx.input(|i| i.viewport().close_requested()) && !shell.allow_close && shell.editor.dirty {
+    if ctx.input(|i| i.viewport().close_requested()) && !shell.allow_close && any_unsaved(shell) {
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        shell.ui.confirm_discard = Some(Action::Quit);
+        shell.ui.confirm_discard = Some(Discard::Action(Action::Quit));
     }
+}
+
+/// Open what other launches of Fanimate asked this one to open (a .fnm
+/// double-clicked in the file manager), and bring the window forward.
+fn poll_instance(ctx: &egui::Context, shell: &mut Shell) {
+    let Some(claim) = &shell.instance else { return };
+    let requests = claim.requests();
+    // look again soon: a launch is waiting for its answer
+    ctx.request_repaint_after(Duration::from_millis(400));
+    if requests.is_empty() {
+        return;
+    }
+    for files in requests {
+        for file in files {
+            shell.open_path(&file);
+        }
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
 /// egui and egui_dock show a grab hand over anything draggable, such as
@@ -617,6 +698,8 @@ fn handle_input(ctx: &egui::Context, shell: &mut Shell) {
     for event in events {
         match event {
             // egui turns Ctrl+C/X/V into these instead of key events
+            // a paste needs a document in front, so not on Home
+            egui::Event::Paste(_) if shell.docs.home_front() => {}
             egui::Event::Copy => shell.pending.push(Action::Copy),
             egui::Event::Cut => shell.pending.push(Action::Cut),
             egui::Event::Paste(text) if !shell.editor.paste(Some(&text)) => {
@@ -649,9 +732,13 @@ fn chord_of(key: Key, m: Modifiers) -> Chord {
 
 /// Run an action from any source: menu, shortcut, context menu, palette.
 pub fn dispatch(ctx: &egui::Context, shell: &mut Shell, action: Action) {
+    // with Home in front there is no document to act on
+    if shell.docs.home_front() && !crate::docs::works_on_home(action) {
+        return;
+    }
     // actions that would throw away unsaved work ask first
-    if action.closes_document() && shell.editor.dirty {
-        shell.ui.confirm_discard = Some(action);
+    if action.closes_document() && any_unsaved(shell) {
+        shell.ui.confirm_discard = Some(Discard::Action(action));
         return;
     }
     run_unchecked(ctx, shell, action);
@@ -663,12 +750,25 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
         Outcome::Done => {}
         Outcome::CopyText(text) => ctx.copy_text(text),
         Outcome::App(a) => match a {
-            Action::New => {
-                shell.replace_editor(Editor::untitled());
-            }
+            Action::New => shell.new_file(Editor::untitled()),
+            Action::NewPreset(preset) => shell.new_file(Editor::untitled_preset(preset)),
             Action::Open => open_dialog(shell),
+            Action::OpenFolder => open_folder_dialog(shell),
             Action::OpenOther => open_other_dialog(shell),
-            Action::OpenSample(sample) => shell.replace_editor(Editor::new(sample.document())),
+            Action::OpenSample(sample) => shell.open_document(Editor::new(sample.document())),
+            Action::CloseDocument => {
+                if let Some(tab) = shell.docs.active() {
+                    shell.request_close_tab(tab);
+                }
+            }
+            Action::CloseOtherDocuments => {
+                if let Some(tab) = shell.docs.active() {
+                    shell.close_other_tabs(tab);
+                }
+            }
+            Action::NextDocument => shell.cycle_tab(true),
+            Action::PreviousDocument => shell.cycle_tab(false),
+            Action::ShowHome => shell.show_home(),
             Action::Save => {
                 save(shell, false);
             }
@@ -701,6 +801,10 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::Workspace(w) => shell.ui.workspace = Some(w),
             Action::CommandPalette => shell.ui.palette = Some(Default::default()),
             Action::LayerProperties => shell.ui.focus_properties = true,
+            Action::ZoomIn if shell.ui.timeline_hovered => panels::timeline::zoom_by(shell, 1.25),
+            Action::ZoomOut if shell.ui.timeline_hovered => panels::timeline::zoom_by(shell, 0.8),
+            Action::FitView if shell.ui.timeline_hovered => panels::timeline::fit_all(shell),
+            Action::ActualSize if shell.ui.timeline_hovered => panels::timeline::reset_zoom(shell),
             Action::ZoomIn => zoom_by(shell, 1.25),
             Action::ZoomOut => zoom_by(shell, 0.8),
             Action::FitView => shell.view.fit(),
@@ -828,47 +932,41 @@ fn import_dialog(shell: &mut Shell) {
 }
 
 fn open_dialog(shell: &mut Shell) {
+    let Some(paths) = rfd::FileDialog::new()
+        .set_title("Open Fanimate projects")
+        .add_filter("Fanimate project", &["fnm"])
+        .pick_files()
+    else {
+        return;
+    };
+    for path in paths {
+        shell.open_path(&path);
+    }
+}
+
+/// Projects saved as folders (older Fanimate versions, or kept in Git) are
+/// opened by their folder.
+fn open_folder_dialog(shell: &mut Shell) {
     let Some(path) = rfd::FileDialog::new()
-        .set_title("Open a Fanimate project (.fnm folder)")
+        .set_title("Open a Fanimate project folder")
         .pick_folder()
     else {
         return;
     };
-    match Editor::open(&path) {
-        Ok((ed, report)) => {
-            shell.replace_editor(ed);
-            if report.is_clean() {
-                shell
-                    .editor
-                    .set_status(StatusKind::Info, format!("Opened {}", path.display()));
-            } else {
-                shell.editor.set_status(StatusKind::Warning, summarise(&report));
-            }
-        }
-        Err(e) => shell.editor.set_status(StatusKind::Error, e.to_string()),
-    }
+    shell.open_path(&path);
 }
 
-/// Pick a Moho or Animate project and open it as a new Fanimate project.
+/// Pick Moho or Animate projects and open each as a new Fanimate project.
 fn open_other_dialog(shell: &mut Shell) {
-    let Some(path) = rfd::FileDialog::new()
-        .set_title("Open a Moho or Animate project")
+    let Some(paths) = rfd::FileDialog::new()
+        .set_title("Open Moho or Animate projects")
         .add_filter("Moho and Animate projects", &fanimate_import::EXTENSIONS)
-        .pick_file()
+        .pick_files()
     else {
         return;
     };
-    match Editor::import_project(&path) {
-        Ok(ed) => shell.replace_editor(ed),
-        Err(e) => {
-            let file = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |f| f.to_string_lossy().into_owned(),
-            );
-            shell
-                .editor
-                .set_status(StatusKind::Error, format!("Could not open {file}: {e}"));
-        }
+    for path in paths {
+        shell.open_path(&path);
     }
 }
 
@@ -893,6 +991,7 @@ pub fn save(shell: &mut Shell, ask: bool) -> bool {
     };
     match shell.editor.save_to(&path) {
         Ok(()) => {
+            shell.remember(&path);
             // saved: a crash now would lose nothing
             recovery::record(shell);
             true
@@ -907,14 +1006,6 @@ pub fn save(shell: &mut Shell, ask: bool) -> bool {
 }
 
 impl Shell {
-    /// Switch to another document, keeping the brush and colours.
-    pub fn replace_editor(&mut self, mut editor: Editor) {
-        editor.draw = self.editor.draw;
-        self.editor = editor;
-        self.view.fit();
-        recovery::start(self);
-    }
-
     pub fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
         self.theme = theme;
         self.palette = theme::apply(ctx, theme);

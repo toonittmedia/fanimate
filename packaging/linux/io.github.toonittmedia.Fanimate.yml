@@ -29,6 +29,8 @@ modules:
       - install -Dm644 io.github.toonittmedia.Fanimate.desktop /app/share/applications/io.github.toonittmedia.Fanimate.desktop
       - install -Dm644 io.github.toonittmedia.Fanimate.metainfo.xml /app/share/metainfo/io.github.toonittmedia.Fanimate.metainfo.xml
       - install -Dm644 icon-256.png /app/share/icons/hicolor/256x256/apps/io.github.toonittmedia.Fanimate.png
+      - install -Dm644 io.github.toonittmedia.Fanimate.xml /app/share/mime/packages/io.github.toonittmedia.Fanimate.xml
+      - install -Dm644 fnm-file-512.png /app/share/icons/hicolor/512x512/mimetypes/application-x-fanimate-project.png
     sources:
       - type: dir
         path: ../../flatpak-src

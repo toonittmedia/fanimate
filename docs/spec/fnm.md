@@ -1,6 +1,6 @@
 # The `.fnm` project format
 
-**Current version: 3. Status: draft.** The format may still change before Fanimate 1.0, but every change that older readers would misread bumps the version, and Fanimate always opens files written by earlier versions. See [Version history](#version-history).
+**Current version: 4. Status: draft.** The format may still change before Fanimate 1.0, but every change that older readers would misread bumps the version, and Fanimate always opens files written by earlier versions. See [Version history](#version-history).
 
 The reference implementation is the [`fanimate-fnm`](../../crates/fanimate-fnm/) crate.
 
@@ -13,22 +13,30 @@ The reference implementation is the [`fanimate-fnm`](../../crates/fanimate-fnm/)
 
 ## Layout
 
-A project is a folder whose name ends in `.fnm`:
+A project is one file whose name ends in `.fnm`. The file is a ZIP archive, and the archive holds this folder layout:
 
 ```text
-scene.fnm/
-├── manifest.json
-├── document.json
-├── layers/
-│   ├── 0002.json
-│   └── 0005.json
-└── media/
-    └── 9f3a…-20481.png
+manifest.json
+document.json
+layers/
+├── 0002.json
+└── 0005.json
+media/
+└── 9f3a…-20481.png
 ```
 
-A single-file form (the same folder in a zip archive) is planned and will get its own extension.
+A **project folder** with the same layout (a folder whose name ends in `.fnm`) is the other form, and is equal to the file: both open, and the content of every file is the same. Fanimate saves a project that is a folder as a folder, so projects kept in Git keep their per-layer diffs; everything else is saved as a single file.
 
-All files are UTF-8 JSON. Whitespace is not significant; Fanimate writes them indented, with a final newline.
+All files are UTF-8 JSON, apart from the media files. Whitespace is not significant; Fanimate writes them indented, with a final newline.
+
+### The single file
+
+- **Any ZIP reader opens it.** Entries are stored or deflated (methods 0 and 8), names are UTF-8 with `/` separators, and every entry has a CRC-32. ZIP64 is not used, so a project over 4 GiB cannot be saved as a single file (Fanimate says so rather than writing a damaged file).
+- **The folder layout may sit at the root or one folder down**, so a project folder zipped by hand also opens.
+- **Fanimate checks every entry's checksum** when it opens a single file. An entry that does not match is reported as damaged; a project with a damaged layer does not open silently with that layer missing.
+- **Saving is atomic.** The new file is written beside the old one as `.<name>.saving`, read back and checked (it must open and have the same layers), flushed to disk, and only then renamed over the old file. A crash or a full disk leaves the old file as it was; a failed save leaves no stray files.
+- **Saving the same project twice writes the same bytes** (entries in a fixed order, a fixed timestamp), so the file works with tools that compare or deduplicate files.
+- **The file starts with `PK`** (a ZIP signature). The type is told by the `.fnm` extension and by the `manifest.json` inside. On Linux the shared MIME type is `application/x-fanimate-project` with the glob `*.fnm`; on macOS the type is `app.fanimate.project`.
 
 ## Media files
 
@@ -36,19 +44,19 @@ Pictures used by image layers live in the `media` folder, as PNG or JPEG files, 
 
 ## `manifest.json`
 
-Identifies the folder as a Fanimate project.
+Identifies the project. A folder or archive without it is not a project.
 
 ```json
 {
   "format": "fnm",
-  "version": 3,
+  "version": 4,
   "generator": "fanimate 0.0.6"
 }
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
-| `format` | string | Always `"fnm"`. A folder without it is not a project. |
+| `format` | string | Always `"fnm"`. Anything without it is not a project. |
 | `version` | integer | Format version. Readers must refuse versions newer than they support. |
 | `generator` | string | Program that wrote the file. Informational only. |
 
@@ -93,10 +101,12 @@ Each file in `layers/` holds one top-level layer. Child layers of groups and bon
 | `label` | string | Optional (version 3). Label colour: `"red"`, `"orange"`, `"yellow"`, `"lime"`, `"green"`, `"teal"`, `"cyan"`, `"blue"`, `"violet"` or `"pink"`. Without it, Fanimate shows the colour at position `id` mod 10 in that list. Readers ignore names they do not know. |
 | `visible` | boolean | Optional, default `true` |
 | `opacity` | [channel](#channels) of number | 0 to 1. Multiplies with ancestors' opacity. |
-| `transform` | object | `position` (channel of [vector](#vectors)), `rotation` (channel of number, radians), `scale` (channel of vector) |
+| `transform` | object | `position` (channel of [vector](#vectors)), `rotation` (channel of number, radians), `scale` (channel of vector), and optionally (version 4) `pivot` |
 | `type` | string | `"vector"`, `"group"`, `"bone"`, `"image"`, `"frames"`, `"switch"` or `"audio"` (the last four version 3); decides the remaining fields |
 
-A layer's transform applies scale, then rotation, then position, relative to its parent.
+A layer's transform applies scale, then rotation, then position, relative to its parent, about the layer's **pivot**.
+
+`transform.pivot` (optional, version 4) is a [vector](#vectors): a point in the layer's own space that rotation and scale turn and stretch the layer about. It is not animated. A point `p` of the layer lands at `position + pivot + rotate(scale(p - pivot))` in its parent. The pivot stays put as the layer turns, and `position` moves the pivot with the layer. Without a pivot it is the layer's origin, `(0, 0)`, which is how every layer saved before version 4 turns; the field is left out when it is `(0, 0)`. A pivot that is not a finite point of at most 10 000 000 units from the origin is an error, repaired by removing it.
 
 ### `"type": "vector"`
 
@@ -204,8 +214,15 @@ A skeleton. Shapes on vector layers anywhere inside `children` can bind to its b
 | `widths` | array of numbers | Optional (version 1). The stroke's [width profile](#width-profiles). |
 | `path_keys` | array of keys | Optional (version 2). [Point keyframes](#point-keyframes): the path at chosen frames. |
 | `skin` | array | Optional (version 3). [Smooth binding](#smooth-binding): per on-curve point, the bones it follows. Takes the place of `bone`. |
+| `rect` | object | Optional (version 4). Says the shape is a rectangle: `x`, `y`, `width`, `height` and `radius` (the corner radius, 0 to half the shorter side), in the layer's space. See [Rectangles](#rectangles). |
 
 A bound shape's points are stored in the **rest pose**. At each frame the shape moves rigidly with its bone: from the bone's rest transform to its current transform. Weighted deformation (one point following several bones) will be added in a later version.
+
+### Rectangles
+
+`rect` records how a rectangle was made, so that its corner radius can still be changed after it is drawn. **The `path` is the shape**: a reader that ignores `rect` draws and edits the path as it always did. A reader that uses `rect` must use it only while the path is still the one the rectangle makes: four straight sides (`M`, `L`, `L`, `L`, `Z`, starting at `(x, y)`) when `radius` is 0, and with a radius above 0 four straight sides and four cubic corners (`M`, `L`, `C`, `L`, `C`, `L`, `C`, `L`, `C`, `Z`, starting at `(x + radius, y)`), both going clockwise on screen, within 0.01 of each point. If the path differs (a point was edited), or the shape has a width profile, point keys or a smooth binding, the shape is an ordinary path and `rect` means nothing. Fanimate does not need the field removed when it stops applying; the check is made when it is used.
+
+Values that are not finite, a width or height of 0 or less, or a radius outside 0 to half the shorter side, are a warning, repaired by removing `rect`.
 
 ### Width profiles
 
@@ -403,6 +420,8 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | `skin` whose length does not match the path's on-curve points | Error | Remove the skin |
 | `skin` weight naming a missing bone, or not a finite non-negative number | Error | Remove that weight |
 | `skin` outside any bone layer | Warning | Remove the skin |
+| `transform.pivot` not finite, or over 10 000 000 units from the origin | Error | Remove the pivot |
+| `rect` that is not finite, or has no size, or a radius outside its range | Warning | Remove `rect` |
 | Bone `limits` not a finite range with min ≤ max | Error | Remove the limits |
 | Bone `strength` not a positive number | Warning | Use the default |
 | Drawings on negative frames | Error | Remove them |
@@ -437,3 +456,8 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | 1 | Development builds after Fanimate 0.0.5 (never released) | Shapes may have a stroke width profile (`widths`), written by the brush | Version 0 files need no conversion. A version 0 reader would ignore `widths` and draw brush strokes at one width, so the version was bumped. |
 | 2 | Fanimate 0.0.6 | Shapes may have point keyframes (`path_keys`) | Older files need no conversion. An older reader would ignore `path_keys` and draw animated drawings without their animation, so the version was bumped. |
 | 3 | Fanimate 0.0.7 | Layers may have a label colour (`label`); bones may have `limits`, `pinned` and `strength`; shapes may have a smooth binding (`skin`); bone layers may have actions and Smart Bone actions; image layers and the `media` folder; frame-by-frame, switch and audio layers | Older files need no conversion. An older reader would drop labels and draw smoothly bound artwork unbound, so the version was bumped. |
+| 4 | Development builds after Fanimate 0.2.1 | Layers may have a pivot (`transform.pivot`); shapes may say they are rectangles (`rect`) | Older files need no conversion: without a pivot a layer turns about its origin, as it always did, and without `rect` a shape is a path. An older reader would turn a layer with a pivot about its origin and show it in the wrong place, so the version was bumped. |
+
+### The single-file container
+
+Development builds after Fanimate 0.2.1 save a project as one ZIP file instead of a folder (see [Layout](#layout)). This did not bump the version by itself: the files inside are the ones version 3 defines. A reader that only knows folders refuses a single file as "not a Fanimate project" rather than misreading it, and folders written by earlier versions open unchanged. The first change to what the files hold (the pivot and the rectangle, version 4) bumped the version.

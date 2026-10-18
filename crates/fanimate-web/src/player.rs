@@ -14,7 +14,7 @@ use wasm_bindgen::prelude::*;
 use crate::theme::{self, Palette};
 
 const DOWNLOAD: &str = "https://github.com/toonittmedia/fanimate/releases";
-const KINDS: [&str; 5] = ["zip", "moho", "mohoproj", "fla", "animeproj"];
+const KINDS: [&str; 6] = ["fnm", "zip", "moho", "mohoproj", "fla", "animeproj"];
 
 /// Start Fanimate in the page's `<canvas id="fanimate">`.
 #[wasm_bindgen(start)]
@@ -137,7 +137,7 @@ impl Player {
         let ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let file = rfd::AsyncFileDialog::new()
-                .add_filter("Fanimate (.zip), Moho and Animate projects", &KINDS)
+                .add_filter("Fanimate (.fnm), Moho and Animate projects", &KINDS)
                 .pick_file()
                 .await;
             if let Some(f) = file {
@@ -159,7 +159,7 @@ impl Player {
             let open = egui::Button::new(RichText::new("Open…").color(p.on_button)).fill(p.button);
             if ui
                 .add(open)
-                .on_hover_text("A Fanimate project packed as .zip, a Moho project or an Animate .fla")
+                .on_hover_text("A Fanimate .fnm project, a Moho project or an Animate .fla")
                 .clicked()
             {
                 self.pick_file(ui.ctx());
@@ -304,32 +304,16 @@ fn open_bytes(name: &str, bytes: &[u8]) -> Result<(Document, Vec<String>), Strin
         "moho" | "mohoproj" | "anime" | "animeproj" => {
             fanimate_import::moho::import(stem, bytes, &|_| None).map(|im| (im.doc, im.notes))
         }
-        "zip" => {
-            let archive = fanimate_import::zip::Archive::read(bytes)?;
-            // the project folder may be the archive's root or one folder down
-            let manifest = archive
-                .names()
-                .find(|n| n.rsplit('/').next() == Some("manifest.json"))
-                .ok_or("the archive holds no Fanimate project")?
-                .to_owned();
-            let prefix = manifest.trim_end_matches("manifest.json").to_owned();
-            let read = |rel: &str| -> std::io::Result<Vec<u8>> {
-                match archive.get(&format!("{prefix}{rel}")) {
-                    Some(Ok(b)) => Ok(b),
-                    Some(Err(e)) => Err(std::io::Error::other(e)),
-                    None => Err(std::io::ErrorKind::NotFound.into()),
-                }
-            };
-            let (doc, report) = fanimate_fnm::load_from(stem, &read).map_err(|e| e.to_string())?;
+        // a project file, or a project folder packed by hand
+        "fnm" | "zip" => {
+            let (doc, report) = fanimate_fnm::load_archive(stem, bytes).map_err(|e| e.to_string())?;
             let notes = match report.repaired_count() {
                 0 => Vec::new(),
                 n => vec![format!("{n} problems repaired")],
             };
             Ok((doc, notes))
         }
-        _ => Err(
-            "Fanimate in the browser opens .fnm projects packed as .zip, Moho and Animate .fla files".into(),
-        ),
+        _ => Err("Fanimate in the browser opens .fnm projects, Moho and Animate .fla files".into()),
     }
 }
 

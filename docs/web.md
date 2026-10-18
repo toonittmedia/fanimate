@@ -4,7 +4,7 @@ The web build (`crates/fanimate-web`) runs the same engine, renderer and importe
 
 ## What it does
 
-- Opens a Fanimate project packed as a `.zip` (the `.fnm` folder zipped), a Moho project (`.moho`, `.mohoproj`) or an Animate `.fla`: pick it with **Open…** or drop it on the page.
+- Opens a Fanimate project (a single `.fnm` file, or a project folder packed as a `.zip`), a Moho project (`.moho`, `.mohoproj`) or an Animate `.fla`: pick it with **Open…** or drop it on the page.
 - Plays the animation at the project's frame rate (Space plays and pauses) and scrubs with the frame slider.
 - Shows and hides layers.
 - Pans (drag) and zooms (scroll); double-click fits the canvas again.
@@ -17,7 +17,7 @@ The web build (`crates/fanimate-web`) runs the same engine, renderer and importe
 - **No sound.** Audio layers are not played.
 - **Files stay on the computer.** The page reads the file you pick in the browser; nothing is uploaded anywhere.
 - **Colours** can look slightly different from the desktop app, because browsers adjust page colours to the display's colour profile.
-- **Project sync with the desktop app** (the roadmap's longer-term goal) is not built: move projects as `.zip` files.
+- **Project sync with the desktop app** (the roadmap's longer-term goal) is not built: move projects as `.fnm` files.
 
 ## Building and hosting
 

@@ -379,6 +379,7 @@ fn at_frame(shape: &Shape, frame: f32) -> Cow<'_, Shape> {
             widths: shape.widths.clone(),
             path_keys: Vec::new(),
             skin: shape.skin.clone(),
+            rect: shape.rect,
         }),
     }
 }

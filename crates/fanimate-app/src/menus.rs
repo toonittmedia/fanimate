@@ -2,7 +2,7 @@
 //! the same command always looks and behaves the same.
 
 use eframe::egui;
-use fanimate_editor::{Action, KeymapKind, Sample, Tool};
+use fanimate_editor::{Action, KeymapKind, Preset, Sample, Tool};
 
 use crate::app::Shell;
 use crate::panels::Tab;
@@ -59,6 +59,8 @@ pub fn item_checked(ui: &mut egui::Ui, shell: &mut Shell, action: Action, checke
             .map_or("Redo".to_owned(), |l| format!("Redo {l}")),
         // the submenu already says "Open Sample"
         Action::OpenSample(sample) => sample.name().to_owned(),
+        // the submenu already says "New from Preset"
+        Action::NewPreset(preset) => preset.name().to_owned(),
         // the submenu already says "Workspace"
         Action::Workspace(w) => w.name().to_owned(),
         // a switch menu lists the layers to show by name
@@ -73,7 +75,10 @@ pub fn item_checked(ui: &mut egui::Ui, shell: &mut Shell, action: Action, checke
         .shortcut_text(shell.keymap.shortcut_text(action))
         .selected(checked)
         .gap(12.0);
-    if ui.add_enabled(shell.editor.can_run(action), button).clicked() {
+    // with Home in front only what needs no document can run
+    let enabled =
+        shell.editor.can_run(action) && (!shell.docs.home_front() || crate::docs::works_on_home(action));
+    if ui.add_enabled(enabled, button).clicked() {
         shell.pending.push(action);
         ui.close();
     }
@@ -86,7 +91,14 @@ fn items(ui: &mut egui::Ui, shell: &mut Shell, actions: &[Action]) {
 }
 
 pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
-    items(ui, shell, &[Action::New, Action::Open, Action::OpenOther]);
+    item(ui, shell, Action::New);
+    ui.menu_button("New from Preset", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        for preset in Preset::ALL {
+            item(ui, shell, Action::NewPreset(preset));
+        }
+    });
+    items(ui, shell, &[Action::Open, Action::OpenFolder, Action::OpenOther]);
     ui.menu_button("Open Sample", |ui| {
         ui.set_min_width(MENU_MIN_WIDTH);
         for sample in Sample::ALL {
@@ -95,6 +107,7 @@ pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
     });
     ui.separator();
     items(ui, shell, &[Action::Save, Action::SaveAs]);
+    items(ui, shell, &[Action::CloseDocument, Action::ShowHome]);
     ui.separator();
     item(ui, shell, Action::Import);
     items(ui, shell, &[Action::ExportVideo, Action::RenderQueue]);
@@ -130,7 +143,16 @@ pub fn edit(ui: &mut egui::Ui, shell: &mut Shell) {
 
 /// Commands on the shapes with selected points.
 pub fn shape_items(ui: &mut egui::Ui, shell: &mut Shell) {
-    items(ui, shell, &[Action::Union, Action::Subtract, Action::Intersect]);
+    items(
+        ui,
+        shell,
+        &[
+            Action::Union,
+            Action::Subtract,
+            Action::Intersect,
+            Action::ExpandShape,
+        ],
+    );
 }
 
 pub fn keymap_menu(ui: &mut egui::Ui, shell: &mut Shell) {

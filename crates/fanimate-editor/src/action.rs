@@ -6,10 +6,23 @@
 pub enum Action {
     // File
     New,
+    /// A new file of a common size and frame rate.
+    NewPreset(Preset),
     Open,
     /// Open a Moho or Adobe Animate project as a new Fanimate project.
     OpenOther,
     OpenSample(Sample),
+    /// Open a project saved as a folder (older projects, and ones kept in Git).
+    OpenFolder,
+    /// Close the open document's tab.
+    CloseDocument,
+    /// Close every tab but this one (tabs with unsaved changes stay).
+    CloseOtherDocuments,
+    /// The next and the previous document tab.
+    NextDocument,
+    PreviousDocument,
+    /// The Home tab: new files, recent files and templates.
+    ShowHome,
     Save,
     SaveAs,
     /// Import pictures, Photoshop or SVG files, or sound.
@@ -46,6 +59,8 @@ pub enum Action {
     Union,
     Subtract,
     Intersect,
+    /// Turn the selected rectangles into plain paths, to edit point by point.
+    ExpandShape,
     Preferences,
     CommandPalette,
     // Layer
@@ -119,11 +134,18 @@ impl Action {
         use Action::*;
         match self {
             New => "New",
+            NewPreset(p) => p.menu_label(),
             Open => "Open…",
             OpenOther => "Open Moho or Animate Project…",
             OpenSample(Sample::Hello) => "Open Sample: Hello Fanimate",
             OpenSample(Sample::Benchmark) => "Open Sample: Benchmark Rig",
             OpenSample(Sample::StressTest) => "Open Sample: Stress Test",
+            OpenFolder => "Open Project Folder…",
+            CloseDocument => "Close",
+            CloseOtherDocuments => "Close Other Tabs",
+            NextDocument => "Next Tab",
+            PreviousDocument => "Previous Tab",
+            ShowHome => "Home",
             Save => "Save",
             SaveAs => "Save As…",
             Import => "Import…",
@@ -147,6 +169,7 @@ impl Action {
             Rename => "Rename Layer",
             FinishPath => "Finish Path",
             Union => "Union Shapes",
+            ExpandShape => "Expand Shape",
             Subtract => "Subtract Front Shape",
             Intersect => "Intersect Shapes",
             Preferences => "Preferences…",
@@ -212,7 +235,13 @@ impl Action {
         let mut v = vec![
             New,
             Open,
+            OpenFolder,
             OpenOther,
+            CloseDocument,
+            CloseOtherDocuments,
+            NextDocument,
+            PreviousDocument,
+            ShowHome,
             Save,
             SaveAs,
             Import,
@@ -236,6 +265,7 @@ impl Action {
             Union,
             Subtract,
             Intersect,
+            ExpandShape,
             Preferences,
             CommandPalette,
             NewVectorLayer,
@@ -276,18 +306,17 @@ impl Action {
         v.extend(fanimate_core::Interpolation::ALL.map(SetInterpolation));
         v.extend(fanimate_core::Part::ALL.map(SetPart));
         v.extend(Sample::ALL.iter().map(|s| OpenSample(*s)));
+        v.extend(Preset::ALL.iter().map(|p| NewPreset(*p)));
         v.extend(self::Workspace::ALL.map(Action::Workspace));
         v.extend(crate::action::Tool::ALL.iter().map(|t| Tool(*t)));
         v
     }
 
-    /// Whether the action closes the open document, so unsaved changes must
-    /// be saved or discarded first.
+    /// Whether the action closes every open document, so unsaved changes
+    /// must be saved or discarded first. Opening and creating documents do
+    /// not: they open a new tab.
     pub fn closes_document(self) -> bool {
-        matches!(
-            self,
-            Self::New | Self::Open | Self::OpenOther | Self::OpenSample(_) | Self::InstallUpdate | Self::Quit
-        )
+        matches!(self, Self::InstallUpdate | Self::Quit)
     }
 }
 
@@ -398,6 +427,67 @@ impl Sample {
             Self::Benchmark => samples::benchmark(40),
             Self::StressTest => samples::benchmark(400),
         }
+    }
+}
+
+/// A common size and frame rate for a new file, shown on the Home tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Preset {
+    Hd1080,
+    Hd720,
+    Uhd4k,
+    Square,
+    Vertical,
+    Social,
+}
+
+impl Preset {
+    pub const ALL: [Preset; 6] = [
+        Self::Hd1080,
+        Self::Hd720,
+        Self::Uhd4k,
+        Self::Square,
+        Self::Vertical,
+        Self::Social,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Hd1080 => "HD 1080p",
+            Self::Hd720 => "HD 720p",
+            Self::Uhd4k => "4K UHD",
+            Self::Square => "Square",
+            Self::Vertical => "Vertical",
+            Self::Social => "Social 4:5",
+        }
+    }
+
+    /// The menu and command palette wording.
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            Self::Hd1080 => "New: HD 1080p",
+            Self::Hd720 => "New: HD 720p",
+            Self::Uhd4k => "New: 4K UHD",
+            Self::Square => "New: Square",
+            Self::Vertical => "New: Vertical",
+            Self::Social => "New: Social 4:5",
+        }
+    }
+
+    /// Width and height in pixels.
+    pub fn size(self) -> (f32, f32) {
+        match self {
+            Self::Hd1080 => (1920.0, 1080.0),
+            Self::Hd720 => (1280.0, 720.0),
+            Self::Uhd4k => (3840.0, 2160.0),
+            Self::Square => (1080.0, 1080.0),
+            Self::Vertical => (1080.0, 1920.0),
+            Self::Social => (1080.0, 1350.0),
+        }
+    }
+
+    pub fn fps(self) -> f32 {
+        24.0
     }
 }
 
@@ -542,7 +632,7 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Self::TransformLayer => {
-                "Drag to move the selected layer. If the layer is animated, a keyframe is set on the current frame."
+                "Drag to move the selected layer; drag the handles to scale and the round button to rotate (Shift: proportions or 15 degrees). The dot is the pivot. An animated layer gets a keyframe on this frame."
             }
             Self::Freehand => {
                 "Draw brush strokes on the selected vector layer. A pen's pressure sets the width; set the size, smoothing and taper in the Style panel."
@@ -559,7 +649,7 @@ impl Tool {
             Self::Pan => "Drag to pan the canvas. Middle-drag pans with any tool.",
             Self::Zoom => "Click to zoom in, Alt-click to zoom out. Ctrl+scroll zooms with any tool.",
             Self::SelectPoints => {
-                "Click a point to select it, Shift-click to add, or drag a box around points. Drag selected points to move them."
+                "Click a shape to select it whole, or a point to select just that. Shift or Ctrl adds. Drag a shape or selected points to move them; drag a box to pick the shapes it touches (Alt: only the points inside)."
             }
             Self::TranslatePoints => {
                 "Drag to move the selected points, or the nearest point if none are selected."

@@ -214,7 +214,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                window_title(&shell.editor),
+                window_title(shell),
                 egui::FontId::proportional(13.0),
                 shell.palette.text_muted,
             );

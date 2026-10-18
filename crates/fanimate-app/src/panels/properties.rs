@@ -135,6 +135,12 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                 return;
             };
             let mut opacity = shell.editor.layer_opacity(id).unwrap_or(1.0) * 100.0;
+            // working out where the pivot is draws the layer; not while playing
+            let shown_pivot = if shell.editor.playing {
+                None
+            } else {
+                shell.editor.layer_pivot(id)
+            };
 
             ui.label("Opacity");
             let r = ui.add(egui::Slider::new(&mut opacity, 0.0..=100.0).suffix("%"));
@@ -191,7 +197,40 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                 begin_edit(shell, &r, "Transform layer");
                 shell.editor.set_layer_transform(id, t);
             }
+
+            // the centre of rotation and scale: one of nine anchors of the
+            // layer's box, or any point, by number
+            ui.label("Pivot");
+            let mut pivot_edit = None;
+            ui.horizontal(|ui| {
+                if let Some((fx, fy)) = pivot_grid(ui, shell) {
+                    shell.editor.move_pivot_to_anchor(fx, fy);
+                }
+                ui.vertical(|ui| {
+                    let shown = shown_pivot.unwrap_or(t.pivot);
+                    let (mut x, mut y) = (shown.x, shown.y);
+                    let mut edited = None;
+                    for v in [&mut x, &mut y] {
+                        let r = ui.add(egui::DragValue::new(v).speed(1.0).max_decimals(1));
+                        if r.changed() {
+                            edited = Some(r);
+                        }
+                    }
+                    if let Some(r) = edited {
+                        pivot_edit = Some((r, fanimate_core::Vec2::new(x, y)));
+                    }
+                });
+            });
+            ui.label("");
+            ui.end_row();
+            if let Some((r, p)) = pivot_edit {
+                begin_edit(shell, &r, "Move pivot");
+                shell
+                    .editor
+                    .set_layer_pivot(id, fanimate_core::Vec2::new(p.x, p.y));
+            }
         });
+    rectangle(ui, shell);
 
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
@@ -485,6 +524,110 @@ fn bone(ui: &mut egui::Ui, shell: &mut Shell, b: fanimate_editor::BoneRef) {
     if let Some((r, label)) = changed {
         begin_edit(shell, &r, label);
         shell.editor.edit_bone(b, |bone| *bone = edited);
+    }
+}
+
+/// Nine anchors of the layer's box (corners, middles of the sides, centre),
+/// the one the pivot is on drawn solid. Returns the one clicked, as fractions
+/// across and down the box.
+fn pivot_grid(ui: &mut egui::Ui, shell: &Shell) -> Option<(f32, f32)> {
+    let p = shell.palette;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3.0, p.bg);
+    ui.painter().rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, p.border),
+        egui::StrokeKind::Inside,
+    );
+    // working out where the pivot is draws the layer; not while playing
+    let at = if shell.editor.playing {
+        None
+    } else {
+        shell.editor.pivot_fraction()
+    };
+    let mut clicked = None;
+    for row in 0..3 {
+        for col in 0..3 {
+            let (fx, fy) = (col as f32 / 2.0, row as f32 / 2.0);
+            let center = rect.min + egui::vec2(8.0 + col as f32 * 15.0, 8.0 + row as f32 * 15.0);
+            let spot = egui::Rect::from_center_size(center, egui::vec2(12.0, 12.0));
+            let r = ui.interact(
+                spot,
+                ui.id().with(("pivot-anchor", row, col)),
+                egui::Sense::click(),
+            );
+            let here = at.is_some_and(|a| (a.x - fx).abs() < 0.02 && (a.y - fy).abs() < 0.02);
+            if here {
+                ui.painter().circle_filled(center, 4.0, p.accent);
+            } else {
+                let c = if r.hovered() { p.text } else { p.text_muted };
+                ui.painter().circle_stroke(center, 3.0, egui::Stroke::new(1.0, c));
+            }
+            if r.on_hover_text("Put the pivot here").clicked() {
+                clicked = Some((fx, fy));
+            }
+        }
+    }
+    clicked
+}
+
+/// A rectangle's corner radius, and Expand Shape: shown while one shape that
+/// is still a rectangle is selected.
+fn rectangle(ui: &mut egui::Ui, shell: &mut Shell) {
+    let Some(target) = shell.editor.radius_target() else {
+        return;
+    };
+    ui.add_space(8.0);
+    heading(ui, shell, "Rectangle");
+    let max = target.rect.max_radius();
+    let relative = shell.ui.radius_relative;
+    // as a percentage, 100% is the most that fits: half the shorter side
+    let mut shown = if relative {
+        target.rect.radius / max.max(f32::EPSILON) * 100.0
+    } else {
+        target.rect.radius
+    };
+    let mut edit = None;
+    egui::Grid::new("rect-props")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Corner radius");
+            let drag = if relative {
+                egui::DragValue::new(&mut shown)
+                    .range(0.0..=100.0)
+                    .speed(0.5)
+                    .suffix("%")
+            } else {
+                egui::DragValue::new(&mut shown)
+                    .range(0.0..=max)
+                    .speed(0.5)
+                    .suffix(" px")
+            };
+            let r = ui.add(drag.max_decimals(1));
+            if r.changed() {
+                edit = Some(r);
+            }
+            ui.end_row();
+            ui.label("Rounding");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut shell.ui.radius_relative, false, "Absolute");
+                ui.selectable_value(&mut shell.ui.radius_relative, true, "Relative");
+            });
+            ui.end_row();
+        });
+    if let Some(r) = edit {
+        begin_edit(shell, &r, "Corner radius");
+        let radius = if relative { shown / 100.0 * max } else { shown };
+        shell.editor.set_corner_radius(radius);
+    }
+    if ui
+        .button("Expand Shape")
+        .on_hover_text("Turn the rectangle into a plain path, to edit point by point")
+        .clicked()
+    {
+        shell.pending.push(Action::ExpandShape);
     }
 }
 

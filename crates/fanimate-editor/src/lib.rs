@@ -10,11 +10,13 @@ mod action;
 mod editor;
 mod history;
 mod keymap;
+mod tabs;
 
-pub use action::{Action, Sample, Tool, ToolGroup, Workspace, search};
+pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search};
 pub use editor::{
-    BoneRef, DrawStyle, Editor, MouthCue, Outcome, Placement, PointRef, SelectMode, SoundInfo, StatusKind,
-    parse_rhubarb, sound_info,
+    BoneRef, DrawStyle, Editor, Handle, HandleMods, MouthCue, Outcome, Placement, PointRef, RadiusTarget,
+    SelectMode, SelectionFrame, SoundInfo, StatusKind, parse_rhubarb, sound_info,
 };
 pub use history::History;
 pub use keymap::{Chord, Keymap, KeymapKind};
+pub use tabs::{TabInfo, Tabs};

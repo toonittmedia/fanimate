@@ -46,6 +46,8 @@ LicenseFile=..\..\LICENSE-MIT
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; tells Explorer the .fnm association changed
+ChangesAssociations=yes
 CloseApplications=yes
 RestartApplications=no
 ; an update must not leave a half-installed copy
@@ -60,11 +62,24 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 Source: "{#SourceDir}\fanimate.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\fanimate-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\brand\file-icon\fnm-file.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
 ; the separate program Fanimate runs for lip sync
 Source: "{#SourceDir}\rhubarb\*"; DestDir: "{app}\rhubarb"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+
+[Registry]
+; .fnm files open in Fanimate and show its file icon. Written under HKA, so it
+; is the current user's (no administrator needed) unless the installer was
+; run for all users. Removed again on uninstall.
+Root: HKA; Subkey: "Software\Classes\.fnm"; ValueType: string; ValueName: ""; ValueData: "Fanimate.Project"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.fnm"; ValueType: string; ValueName: "Content Type"; ValueData: "application/x-fanimate-project"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Fanimate.Project"; ValueType: string; ValueName: ""; ValueData: "Fanimate project"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Fanimate.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\fnm-file.ico"
+Root: HKA; Subkey: "Software\Classes\Fanimate.Project\shell\open"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Fanimate"
+Root: HKA; Subkey: "Software\Classes\Fanimate.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\fanimate.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\fanimate.exe\SupportedTypes"; ValueType: string; ValueName: ".fnm"; ValueData: ""
 
 [InstallDelete]
 ; 0.1.0 shipped FFmpeg; video export now uses Windows' own encoder or the user's FFmpeg

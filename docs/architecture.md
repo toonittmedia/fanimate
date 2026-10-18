@@ -31,7 +31,7 @@ Menus, shortcuts, right-click menus and the command palette all queue an `Action
 
 ## Where things live on disk
 
-- A project: a `.fnm` folder ([specification](spec/fnm.md)).
+- A project: a single `.fnm` file, a ZIP archive of readable JSON files; a `.fnm` folder with the same files also opens ([specification](spec/fnm.md)).
 - Settings, crash recovery journals, crash reports, downloaded updates and the render queue: the user data folder ([Installing](install.md)).
 
 More detail for contributors is in [CLAUDE.md](../CLAUDE.md) (rules and key facts) and [CONTRIBUTING.md](../CONTRIBUTING.md) (workflow).

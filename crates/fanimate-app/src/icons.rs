@@ -50,6 +50,13 @@ pub enum Icon {
     SwitchLayer,
     AudioLayer,
     Grip,
+    Home,
+    Close,
+    Rotate,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    ZoomFit,
 }
 
 macro_rules! lucide {
@@ -120,6 +127,13 @@ impl Icon {
             Self::SwitchLayer => lucide!("toggle-left"),
             Self::AudioLayer => lucide!("audio-lines"),
             Self::Grip => lucide!("grip-vertical"),
+            Self::Home => lucide!("house"),
+            Self::Close => lucide!("x"),
+            Self::Rotate => lucide!("rotate-cw"),
+            Self::ZoomIn => lucide!("zoom-in"),
+            Self::ZoomOut => lucide!("zoom-out"),
+            Self::ZoomReset => lucide!("rotate-ccw"),
+            Self::ZoomFit => lucide!("maximize-2"),
         }
     }
 }
@@ -265,6 +279,13 @@ mod tests {
             Icon::SwitchLayer,
             Icon::AudioLayer,
             Icon::Grip,
+            Icon::Home,
+            Icon::Close,
+            Icon::Rotate,
+            Icon::ZoomIn,
+            Icon::ZoomOut,
+            Icon::ZoomReset,
+            Icon::ZoomFit,
         ]);
         icons
     }

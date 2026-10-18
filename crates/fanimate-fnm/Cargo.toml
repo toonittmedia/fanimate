@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 fanimate-core.workspace = true
 serde.workspace = true
+miniz_oxide = "0.8"
 serde_json.workspace = true
 thiserror.workspace = true
 

@@ -1575,6 +1575,7 @@ name = "fanimate-fnm"
 version = "0.2.1"
 dependencies = [
  "fanimate-core",
+ "miniz_oxide 0.8.9",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1585,8 +1586,8 @@ name = "fanimate-import"
 version = "0.2.1"
 dependencies = [
  "fanimate-core",
+ "fanimate-fnm",
  "image",
- "miniz_oxide 0.8.9",
  "roxmltree",
  "serde_json",
 ]

@@ -34,6 +34,6 @@ pub use eval::{DrawItem, ImageItem, evaluate};
 pub use frames::{Cel, Part};
 pub use glam::{Affine2, Vec2};
 pub use media::{Audio, Image, Media, MediaFile};
-pub use path::{Path, PathCmd, Shape, Stroke, Style};
+pub use path::{Path, PathCmd, RectParams, Shape, Stroke, Style};
 pub use scene::{Document, Label, Layer, LayerId, LayerKind};
 pub use transform::{AnimTransform, Transform};

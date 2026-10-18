@@ -9,10 +9,14 @@ use crate::app::Shell;
 use crate::icons::{self, Icon};
 use crate::menus;
 
+use super::properties::{begin_edit, end_edits};
+
 const NAMES_WIDTH: f32 = 170.0;
 const RULER_HEIGHT: f32 = 22.0;
 const ROW_HEIGHT: f32 = 22.0;
 const DEFAULT_FRAME_WIDTH: f32 = 12.0;
+const MIN_FRAME_WIDTH: f32 = 2.0;
+const MAX_FRAME_WIDTH: f32 = 60.0;
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     action_banner(ui, shell);
@@ -34,6 +38,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         pos2(frames_rect.right(), frames_rect.top() + RULER_HEIGHT),
     );
 
+    shell.ui.timeline_view_width = frames_rect.width();
+    shell.ui.timeline_hovered = ui.rect_contains_pointer(full);
     zoom_and_scroll(ui, shell, frames_rect, start, end);
     let fw = shell.ui.timeline_frame_width;
     let scroll = shell.ui.timeline_scroll;
@@ -51,6 +57,17 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     // ruler: click or drag to scrub
     let painter = ui.painter_at(full);
     painter.rect_filled(ruler, 0.0, p.bg);
+    // the playing range is lit; what lies beyond it is the future, dimmed
+    let range_left = x_of(start as f32) - fw / 2.0;
+    let range_right = x_of(end as f32) + fw / 2.0;
+    painter.rect_filled(
+        Rect::from_min_max(
+            pos2(range_left.max(ruler.left()), ruler.top()),
+            pos2(range_right.min(ruler.right()), ruler.bottom()),
+        ),
+        0.0,
+        p.accent.gamma_multiply(0.18),
+    );
     let ruler_resp = ui.interact(ruler, Id::new("timeline-ruler"), Sense::click_and_drag());
     if (ruler_resp.clicked() || ruler_resp.dragged())
         && let Some(pos) = ruler_resp.interact_pointer_pos()
@@ -59,9 +76,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     }
     let label_every = nice_step(48.0 / fw);
     let first = frame_at(ruler.left()).max(start);
-    let last = frame_at(ruler.right()).min(end);
+    // the ruler runs on past the end frame
+    let last = frame_at(ruler.right());
     for f in first..=last {
         let x = x_of(f as f32);
+        let tick = if f > end {
+            p.text_muted.gamma_multiply(0.5)
+        } else {
+            p.text_muted
+        };
         let second = (f - start) as f32 % fps == 0.0;
         let h = if second {
             10.0
@@ -72,7 +95,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         };
         painter.line_segment(
             [pos2(x, ruler.bottom() - h), pos2(x, ruler.bottom())],
-            Stroke::new(1.0, p.text_muted),
+            Stroke::new(1.0, tick),
         );
         if f % label_every == 0 {
             painter.text(
@@ -80,7 +103,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                 egui::Align2::LEFT_TOP,
                 f.to_string(),
                 egui::FontId::proportional(10.0),
-                p.text_muted,
+                tick,
             );
         }
     }
@@ -102,9 +125,24 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     // frame range end marker and playhead on top
     let painter = ui.painter_at(Rect::from_min_max(frames_rect.min, full.max));
     let end_x = x_of(end as f32) + fw / 2.0;
+    if end_x < full.right() {
+        // dim the rows past the end; keys there stay visible but quiet
+        painter.rect_filled(
+            Rect::from_min_max(pos2(end_x.max(frames_rect.left()), ruler.bottom()), full.max),
+            0.0,
+            p.bg.gamma_multiply(0.45),
+        );
+    }
+    let boundary = Stroke::new(1.5, p.text_muted);
+    // the range starts at a clear line on the left edge of its first frame
+    let start_x = x_of(start as f32) - fw / 2.0;
+    if start_x >= frames_rect.left() - 0.5 {
+        let x = start_x.max(frames_rect.left()) + 0.75;
+        painter.line_segment([pos2(x, ruler.top()), pos2(x, full.bottom())], boundary);
+    }
     painter.line_segment(
         [pos2(end_x, ruler.top()), pos2(end_x, full.bottom())],
-        Stroke::new(1.0, p.border),
+        Stroke::new(1.0, p.text_muted.gamma_multiply(0.6)),
     );
     let x = x_of(shell.editor.frame.floor());
     painter.line_segment(
@@ -130,6 +168,58 @@ fn nice_step(min: f32) -> Frame {
         .unwrap_or(1920)
 }
 
+/// The scroll (in frames from the start) that keeps `anchor`, a frame, at
+/// the same place on screen when the frame width changes from `old` to `new`.
+fn zoomed_scroll(anchor: f32, start: f32, scroll: f32, old: f32, new: f32) -> f32 {
+    // a frame is drawn centred in its cell, so its x is (offset + 0.5) cells
+    let x = (anchor - start - scroll) * old + old / 2.0;
+    anchor - start - (x - new / 2.0) / new
+}
+
+/// Change the zoom to `width` pixels per frame, keeping `anchor` in place.
+fn set_frame_width(shell: &mut Shell, width: f32, anchor: f32) {
+    let (start, end) = (shell.editor.doc.start as f32, shell.editor.doc.end as f32);
+    let ui = &mut shell.ui;
+    let old = ui.timeline_frame_width.clamp(MIN_FRAME_WIDTH, MAX_FRAME_WIDTH);
+    let new = width.clamp(MIN_FRAME_WIDTH, MAX_FRAME_WIDTH);
+    ui.timeline_scroll = zoomed_scroll(anchor, start, ui.timeline_scroll, old, new).clamp(0.0, end - start);
+    ui.timeline_frame_width = new;
+}
+
+/// Where zoom buttons and shortcuts zoom around: the playhead if it is on
+/// screen, else the middle of the view.
+fn zoom_anchor(shell: &Shell) -> f32 {
+    let ui = &shell.ui;
+    let fw = ui.timeline_frame_width.max(MIN_FRAME_WIDTH);
+    let first = shell.editor.doc.start as f32 + ui.timeline_scroll;
+    let last = first + ui.timeline_view_width / fw;
+    let now = shell.editor.frame.floor();
+    // a frame is on screen when its centre is
+    if (first..=last).contains(&(now + 0.5)) {
+        now
+    } else {
+        (first + last) / 2.0
+    }
+}
+
+pub fn zoom_by(shell: &mut Shell, factor: f32) {
+    let anchor = zoom_anchor(shell);
+    set_frame_width(shell, shell.ui.timeline_frame_width * factor, anchor);
+}
+
+pub fn reset_zoom(shell: &mut Shell) {
+    let anchor = zoom_anchor(shell);
+    set_frame_width(shell, DEFAULT_FRAME_WIDTH, anchor);
+}
+
+/// Zoom so the whole frame range fits the view.
+pub fn fit_all(shell: &mut Shell) {
+    let frames = (shell.editor.doc.end - shell.editor.doc.start + 1).max(1) as f32;
+    let width = (shell.ui.timeline_view_width / frames).clamp(MIN_FRAME_WIDTH, MAX_FRAME_WIDTH);
+    shell.ui.timeline_frame_width = width;
+    shell.ui.timeline_scroll = 0.0;
+}
+
 fn zoom_and_scroll(ui: &egui::Ui, shell: &mut Shell, area: Rect, start: Frame, end: Frame) {
     let hovered = ui.rect_contains_pointer(area);
     if !hovered {
@@ -137,7 +227,13 @@ fn zoom_and_scroll(ui: &egui::Ui, shell: &mut Shell, area: Rect, start: Frame, e
     }
     let (zoom, scroll, mods) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.modifiers));
     if zoom != 1.0 {
-        shell.ui.timeline_frame_width = (shell.ui.timeline_frame_width * zoom).clamp(2.0, 60.0);
+        // zoom around the frame under the pointer
+        let fw = shell.ui.timeline_frame_width;
+        let pointer_x = ui
+            .input(|i| i.pointer.hover_pos())
+            .map_or(area.center().x, |p| p.x);
+        let anchor = start as f32 + shell.ui.timeline_scroll + (pointer_x - area.left() - fw / 2.0) / fw;
+        set_frame_width(shell, fw * zoom, anchor);
     } else if scroll.x != 0.0 || (mods.shift && scroll.y != 0.0) {
         let dx = if scroll.x != 0.0 { scroll.x } else { scroll.y };
         let max = (end - start) as f32;
@@ -464,10 +560,22 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
         {
             shell.editor.go_to(f);
         }
-        ui.label(
-            RichText::new(format!("of {end}  ·  {} fps", shell.editor.doc.fps))
-                .color(shell.palette.text_muted),
-        );
+        // the last frame of the animation, set right here
+        ui.label(RichText::new("of").color(shell.palette.text_muted));
+        let mut new_end = end;
+        let r = ui
+            .add(
+                egui::DragValue::new(&mut new_end)
+                    .range(start..=100_000)
+                    .speed(0.2),
+            )
+            .on_hover_text("Last frame of the animation. Frames after it stay on the timeline.");
+        if r.changed() {
+            begin_edit(shell, &r, "Change last frame");
+            shell.editor.doc.end = new_end;
+            shell.editor.frame = shell.editor.frame.min(new_end as f32);
+        }
+        ui.label(RichText::new(format!("{} fps", shell.editor.doc.fps)).color(shell.palette.text_muted));
         ui.separator();
         for (icon, action) in [
             (Icon::AddKey, Action::AddKey),
@@ -517,12 +625,64 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
         {
             shell.ui.open_tab = Some(crate::panels::Tab::XSheet);
         }
+        // zoom, at the right: shortcuts and Ctrl+scroll work too
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                RichText::new("Ctrl+scroll to zoom")
-                    .size(11.0)
-                    .color(shell.palette.text_muted),
-            );
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let zoom_tip = |shell: &Shell, what: &str, a: Action| {
+                let s = shell.keymap.shortcut_text(a);
+                let keys = if s.is_empty() {
+                    "Ctrl+scroll also zooms".to_owned()
+                } else {
+                    format!("{s} while the pointer is over the timeline; Ctrl+scroll also zooms")
+                };
+                format!("{what}. {keys}.")
+            };
+            let mut zoom = None;
+            for (icon, what, action) in [
+                (Icon::ZoomFit, "Fit the whole animation", Action::FitView),
+                (Icon::ZoomReset, "Reset timeline zoom", Action::ActualSize),
+                (Icon::ZoomIn, "Zoom in on the timeline", Action::ZoomIn),
+                (Icon::ZoomOut, "Zoom out of the timeline", Action::ZoomOut),
+            ] {
+                if icons::button(ui, icon, 24.0, false, false)
+                    .on_hover_text(zoom_tip(shell, what, action))
+                    .clicked()
+                {
+                    zoom = Some(action);
+                }
+            }
+            match zoom {
+                Some(Action::FitView) => fit_all(shell),
+                Some(Action::ActualSize) => reset_zoom(shell),
+                Some(Action::ZoomIn) => zoom_by(shell, 1.25),
+                Some(Action::ZoomOut) => zoom_by(shell, 0.8),
+                _ => {}
+            }
         });
     });
+    end_edits(ui, shell);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where a frame is drawn, in pixels from the left of the frame area.
+    fn x_of(frame: f32, start: f32, scroll: f32, width: f32) -> f32 {
+        (frame - start - scroll) * width + width / 2.0
+    }
+
+    #[test]
+    fn zooming_keeps_the_anchor_frame_in_place() {
+        for (anchor, scroll, old, new) in [
+            (30.0, 10.0, 12.0, 24.0),
+            (30.0, 0.0, 12.0, 3.0),
+            (5.0, 2.0, 40.0, 60.0),
+        ] {
+            let s = zoomed_scroll(anchor, 0.0, scroll, old, new);
+            let before = x_of(anchor, 0.0, scroll, old);
+            let after = x_of(anchor, 0.0, s, new);
+            assert!((before - after).abs() < 1e-3, "{before} vs {after}");
+        }
+    }
 }

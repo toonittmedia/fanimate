@@ -1,7 +1,9 @@
 //! Apply the brand themes (brand/tokens/tokens.json) to egui.
 
 use eframe::egui::epaint::text::{FontTweak, HintingTarget, SmoothHinting};
-use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke, Visuals};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Shadow, Stroke, Visuals,
+};
 use serde::{Deserialize, Serialize};
 
 const TOKENS: &str = include_str!("../../../brand/tokens/tokens.json");
@@ -163,8 +165,17 @@ pub fn apply(ctx: &egui::Context, theme: Theme) -> Palette {
     v.hyperlink_color = p.accent_strong;
     v.selection.bg_fill = p.accent.gamma_multiply(0.45);
     v.selection.stroke = Stroke::new(1.0, p.accent_strong);
-    v.window_corner_radius = CornerRadius::same(6);
-    v.menu_corner_radius = CornerRadius::same(6);
+    v.window_corner_radius = CornerRadius::same(4);
+    v.menu_corner_radius = CornerRadius::same(4);
+    // flat: a 1 px border does the separating. Only popups that float over
+    // the canvas (menus, tooltips) keep a faint shadow so they stay readable.
+    v.window_shadow = Shadow::NONE;
+    v.popup_shadow = Shadow {
+        offset: [0, 2],
+        blur: 6,
+        spread: 0,
+        color: Color32::from_black_alpha(if p.dark { 70 } else { 28 }),
+    };
     v.warn_fg_color = p.keyframe;
     v.error_fg_color = p.error;
 
@@ -204,7 +215,12 @@ pub fn apply(ctx: &egui::Context, theme: Theme) -> Palette {
     } else {
         egui::Theme::Light
     };
-    ctx.options_mut(|o| o.theme_preference = egui_theme.into());
+    ctx.options_mut(|o| {
+        o.theme_preference = egui_theme.into();
+        // Ctrl+Plus, Ctrl+Minus and Ctrl+0 are Fanimate's own zoom commands
+        // (canvas or timeline); egui must not also scale the whole interface
+        o.zoom_with_keyboard = false;
+    });
     ctx.set_visuals_of(egui_theme, v);
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);

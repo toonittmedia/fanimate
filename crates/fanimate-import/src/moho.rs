@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn a_moho_archive_is_read() {
         let json = project().to_string();
-        let zip = crate::zip::tests::build(&[("Project.mohoproj", json.as_bytes()), ("preview.jpg", b"")]);
+        let zip = crate::zip::write(&[("Project.mohoproj", json.as_bytes()), ("preview.jpg", b"")]).unwrap();
         let im = import("Zipped", &zip, &|_| None).unwrap();
         assert_eq!(im.doc.layers.len(), 1);
     }

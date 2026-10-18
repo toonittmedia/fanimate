@@ -259,24 +259,21 @@ impl Editor {
         if !radii.is_finite() || radii.min_element() * sane_zoom(zoom) < 0.5 {
             return None;
         }
-        let (name, path) = match tool {
-            Tool::Rectangle => ("Rectangle", Path::rect(center - radii, radii * 2.0, 0.0)),
-            Tool::Ellipse => ("Ellipse", Path::ellipse(center, radii)),
-            _ => return None,
-        };
         let d = &self.draw;
         let outline = (d.outline || d.fill.is_none()).then_some(Stroke {
             color: d.line,
             width: d.width,
         });
-        Some(Shape::new(
-            name,
-            path,
-            Style {
-                fill: d.fill,
-                stroke: outline,
-            },
-        ))
+        let style = Style {
+            fill: d.fill,
+            stroke: outline,
+        };
+        Some(match tool {
+            // a rectangle remembers it is one, so its corners can be rounded
+            Tool::Rectangle => Shape::rectangle("Rectangle", center - radii, radii * 2.0, 0.0, style),
+            Tool::Ellipse => Shape::new("Ellipse", Path::ellipse(center, radii), style),
+            _ => return None,
+        })
     }
 
     /// Add the shape from [`drag_shape`](Self::drag_shape), as one undo step.
@@ -344,7 +341,7 @@ impl Editor {
 
     /// Like [`shape_at`](Self::shape_at), among the shapes the tools edit
     /// (see [`Editor::layer_shapes`]).
-    fn editable_shape_at(&self, p: Vec2, tolerance: f32) -> Option<(LayerId, usize)> {
+    pub(super) fn editable_shape_at(&self, p: Vec2, tolerance: f32) -> Option<(LayerId, usize)> {
         self.hit(p, tolerance, true, false)
     }
 

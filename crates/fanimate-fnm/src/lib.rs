@@ -1,6 +1,8 @@
 //! The open Fanimate `.fnm` project format.
 //!
-//! A `.fnm` project is a folder:
+//! A `.fnm` project is one file: a ZIP archive that holds this folder layout.
+//! A project folder with the same layout also opens, and stays a folder when
+//! saved.
 //!
 //! ```text
 //! scene.fnm/
@@ -22,9 +24,13 @@ pub mod history;
 mod io;
 pub mod journal;
 pub mod validate;
+pub mod zip;
 
 pub use history::{HistoryRecord, HistoryState};
-pub use io::{FORMAT_NAME, FORMAT_VERSION, is_media_name, load, load_and_repair, load_from, save};
+pub use io::{
+    FORMAT_NAME, FORMAT_VERSION, is_media_name, load, load_and_repair, load_archive, load_from, save,
+    save_folder,
+};
 pub use journal::{Journal, Recoverable, SessionInfo, find_recoverable};
 pub use validate::{Issue, Report, Severity, repair, validate};
 

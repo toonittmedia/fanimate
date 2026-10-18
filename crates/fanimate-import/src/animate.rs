@@ -1271,16 +1271,16 @@ mod tests {
         let main = doc(&format!(
             r#"<DOMLayer name="Art"><frames><DOMFrame index="0"><elements>{SQUARE}</elements></DOMFrame></frames></DOMLayer>"#
         ));
-        let zip = crate::zip::tests::build(&[("DOMDocument.xml", main.as_bytes())]);
+        let zip = crate::zip::write(&[("DOMDocument.xml", main.as_bytes())]).unwrap();
         assert_eq!(import_fla("A", &zip).unwrap().doc.layers.len(), 1);
         assert!(
             import_fla("A", b"\xd0\xcf\x11\xe0 old flash")
                 .unwrap_err()
                 .contains("CS4")
         );
-        let empty = crate::zip::tests::build(&[("other.xml", b"<x/>")]);
+        let empty = crate::zip::write(&[("other.xml", b"<x/>")]).unwrap();
         assert!(import_fla("A", &empty).is_err());
-        let broken = crate::zip::tests::build(&[("DOMDocument.xml", b"<DOMDocument><timelines>")]);
+        let broken = crate::zip::write(&[("DOMDocument.xml", b"<DOMDocument><timelines>")]).unwrap();
         assert!(import_fla("A", &broken).is_err());
     }
 

@@ -128,7 +128,7 @@ impl Queue {
         let dir = self.dir(&id);
         fs::create_dir_all(&dir)?;
         let written = (|| {
-            fanimate_fnm::save(doc, self.project(&id)).map_err(std::io::Error::other)?;
+            fanimate_fnm::save_folder(doc, self.project(&id)).map_err(std::io::Error::other)?;
             let job = Job {
                 id: id.clone(),
                 name: doc.name.clone(),

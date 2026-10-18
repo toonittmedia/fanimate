@@ -10,9 +10,9 @@ authors.workspace = true
 
 [dependencies]
 fanimate-core.workspace = true
+fanimate-fnm.workspace = true
 serde_json.workspace = true
 image.workspace = true
-miniz_oxide = "0.8"
 roxmltree = "0.21"
 
 [lints]

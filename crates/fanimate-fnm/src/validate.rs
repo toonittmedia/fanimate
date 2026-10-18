@@ -75,6 +75,9 @@ impl fmt::Display for Report {
 /// layers, and the room above keeps new ids from overflowing.
 pub const MAX_LAYER_ID: u32 = 1 << 30;
 
+/// The farthest a layer's pivot may be from its origin, in layer units.
+const PIVOT_LIMIT: f32 = 1.0e7;
+
 /// Check a document without changing it.
 pub fn validate(doc: &Document) -> Report {
     // The checks share one code path with repair; run it on a scratch copy.
@@ -252,6 +255,21 @@ impl Checker {
         self.channel(&mut layer.transform.position, &loc, "transform.position", end);
         self.channel(&mut layer.transform.rotation, &loc, "transform.rotation", end);
         self.channel(&mut layer.transform.scale, &loc, "transform.scale", end);
+        if let Some(pivot) = layer.transform.pivot
+            && !(pivot.is_finite() && pivot.abs().max_element() <= PIVOT_LIMIT)
+        {
+            self.issue(
+                Severity::Error,
+                &loc,
+                format!(
+                    "transform.pivot {pivot} is not a point in the layer; the layer turns about its origin"
+                ),
+                true,
+            );
+            if self.repair {
+                layer.transform.pivot = None;
+            }
+        }
 
         match &mut layer.kind {
             LayerKind::Vector { shapes } => {
@@ -444,6 +462,19 @@ impl Checker {
         }
         if shape.path.points().any(|p| !p.is_finite()) {
             self.issue(Severity::Error, sloc, "path has non-finite points".into(), false);
+        }
+        if let Some(rect) = shape.rect
+            && !rect.is_valid()
+        {
+            self.issue(
+                Severity::Warning,
+                sloc,
+                "rectangle settings are not a rectangle; the shape is an ordinary path".into(),
+                true,
+            );
+            if self.repair {
+                shape.rect = None;
+            }
         }
         self.widths(shape, sloc);
         self.path_keys(shape, sloc, end);
@@ -1069,5 +1100,49 @@ mod tests {
             validate(&doc)
         );
         assert_eq!(doc.fps, 24.0);
+    }
+
+    #[test]
+    fn bad_pivots_and_rectangles_are_repaired() {
+        use fanimate_core::{Color, Shape, Style, Vec2};
+        let mut doc = Document::new("p", 100.0, 100.0, 24.0);
+        let mut rect = Shape::rectangle(
+            "r",
+            Vec2::ZERO,
+            Vec2::new(10.0, 10.0),
+            2.0,
+            Style::fill(Color::BLACK),
+        );
+        rect.rect.as_mut().unwrap().width = f32::NAN;
+        let mut layer = doc.new_layer("l", LayerKind::vector(vec![rect]));
+        layer.transform.pivot = Some(Vec2::new(f32::INFINITY, 0.0));
+        doc.layers.push(layer);
+        let report = validate(&doc);
+        assert_eq!(report.issues.len(), 2, "{report}");
+        let report = repair(&mut doc);
+        assert_eq!(report.repaired_count(), 2, "{report}");
+        assert_eq!(doc.layers[0].transform.pivot, None);
+        let LayerKind::Vector { shapes } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        assert!(shapes[0].rect.is_none());
+        assert!(validate(&doc).is_clean());
+    }
+
+    #[test]
+    fn good_pivots_and_rectangles_are_clean() {
+        use fanimate_core::{Color, Shape, Style, Vec2};
+        let mut doc = Document::new("p", 100.0, 100.0, 24.0);
+        let rect = Shape::rectangle(
+            "r",
+            Vec2::ZERO,
+            Vec2::new(10.0, 10.0),
+            2.0,
+            Style::fill(Color::BLACK),
+        );
+        let mut layer = doc.new_layer("l", LayerKind::vector(vec![rect]));
+        layer.transform.pivot = Some(Vec2::new(5.0, 5.0));
+        doc.layers.push(layer);
+        assert!(validate(&doc).is_clean());
     }
 }
