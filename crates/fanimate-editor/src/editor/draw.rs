@@ -436,11 +436,11 @@ impl Editor {
         true
     }
 
-    fn shape(&self, id: LayerId, index: usize) -> Option<&Shape> {
+    pub(super) fn shape(&self, id: LayerId, index: usize) -> Option<&Shape> {
         self.layer_shapes(id)?.get(index)
     }
 
-    fn shape_mut(&mut self, id: LayerId, index: usize) -> Option<&mut Shape> {
+    pub(super) fn shape_mut(&mut self, id: LayerId, index: usize) -> Option<&mut Shape> {
         self.layer_shapes_mut(id)?.get_mut(index)
     }
 

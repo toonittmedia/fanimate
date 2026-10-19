@@ -1,6 +1,6 @@
 # UX pass: tabs, Home, handles, drawing tools, snapping
 
-Companion to [Phase 1](phase-1.md). This is a planned set of changes, agreed with the project owner on 2026-10-18. Nothing here is built yet. Update the status table as each phase lands, and move finished items into the Phase 1 status when they ship.
+Companion to [Phase 1](phase-1.md). This is a planned set of changes, agreed with the project owner on 2026-10-18. Phases A to F are built and ship in 0.2.2; the items still marked open below are not. Move finished items into the Phase 1 status when they ship.
 
 Reference material: screenshots of Vector Studio (ves.puter.com) kept in `reference/` for layout and interaction only. Clean room rules apply: we follow the interaction model, never code or artwork.
 
@@ -22,7 +22,7 @@ Reference material: screenshots of Vector Studio (ves.puter.com) kept in `refere
 | Selecting | Click inside a shape or on its stroke selects the whole shape. Double-click or Alt+click enters point editing. Marquee selects shapes it touches. |
 | Curvature | A new tool beside Pen: click adds points along a smooth curve, Alt+click makes a corner, Esc finishes, a live ghost segment shows the next piece. Status bar shows the hints. |
 | Drawing tools | See [Tools](#tools). |
-| Snapping | Rulers with guides, grid, snap to grid, guides, points, shape edges and centres, canvas bounds, pixels and angles. |
+| Snapping | Rulers with guides, grid, snap to grid, guides, canvas bounds, pixels and angles (snapping to shape edges and centres comes later). |
 | Timeline range | The playing range (start to end) is marked by a clear boundary line on its left edge at the start frame, and the range is shaded. The ruler and rows keep going past the end into the future, dimmed, as in Moho. The end frame is editable from the transport bar (the "of 47" number). |
 | Timeline zoom | Zoom in, zoom out and "reset zoom" buttons in the timeline header, plus a fit-all button, besides Ctrl+scroll. |
 | Keyboard zoom | Ctrl+Plus, Ctrl+Minus and Ctrl+0 never scale the UI. They zoom the canvas (or the timeline when it has focus). |
@@ -106,20 +106,27 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 
 ### Phase E: Keys and tools
 
-- [ ] Curvature tool, with ghost segment and status hints
-- [ ] Shape tools: Line, Polygon, Star, Triangle (radius handles where they apply)
-- [ ] Editing tools: Delete Edge, Magnet, Scale Points, Rotate Points
-- [ ] Fill and stroke tools: Draw Shape, Freehand with width, Line Width, Stroke Exposure
-- [ ] Shape Builder (Shift+M in the default keymap): drag across regions to merge or subtract
-- [ ] Each tool: an `Action`, bindings in both keymaps (or deliberately unbound in Moho), an icon (Lucide, or `icons/fanimate/`), a tooltip and a test
+- [x] Curvature tool: click adds Catmull-Rom smooth points, Alt+click adds a corner, Esc finishes. Live ghost segment in the canvas preview. Status-bar hint. `Tool::Curvature`, bound to `C` in both keymaps.
+- [x] Shape tools: Line (`L`), Polygon (`Shift+L`), Star (`Shift+O`), Triangle (`Shift+R`). Drag to draw; scroll wheel adjusts sides / points while dragging; Alt adjusts star inner radius. Path builders in `fanimate-core` (`Path::line`, `Path::polygon`, `Path::star`, `Path::triangle`). All tested.
+- [x] Editing tools: Delete Edge (click a segment, splits into two open paths), Magnet (attract / Alt=repel points in radius), Scale Points (drag from centroid), Rotate Points (drag angle from centroid, Shift snaps 15°). All bound in both keymaps and working via canvas.
+- [x] Fill and stroke tools: Draw Shape (click copies style), Freehand with Width (variable pressure via drag-Y), Line Width (drag adjusts widths profile). All bound. Stroke Exposure is bound but shown disabled, and its hint says it comes later.
+- [x] Shape Builder (`Shift+M` Fanimate and Moho): drag across overlapping regions to unite them; Alt+drag to subtract. Uses the existing `combine` / `BoolOp` backend. Tested.
+- [x] Each tool: `Tool` variant, `label`, `group`, `hint`, `is_available`, keymap bindings in both presets, an SVG icon in `icons/fanimate/`, wired in `icons.rs`. 13 new tests in `tools_e.rs` (290 total, all pass).
+- [ ] Not built: Stroke Exposure. It needs a trim-fraction field per shape (a format bump), so the tool is listed as unavailable until then.
 
 ### Phase F: Rulers, grid, snapping
 
-- [ ] Rulers in px, pt, mm and in, with draggable guides; right-click a guide to delete or lock it
-- [ ] Grid with spacing and subdivisions, drawn under artwork, never exported
-- [ ] Snapping to grid, guides, points, shape edges and centres, and canvas bounds, with a hint line while dragging; hold a modifier to bypass; per-target toggles in View > Snapping
-- [ ] Pixel snapping, and angle snapping (Shift = 15 degrees) for lines, bones and rotation
-- [ ] Snapping lives in `fanimate-editor` (pure functions, unit tested) so every tool shares it
+- [x] Rulers along the top and left edges of the canvas, with px tick marks, sub-ticks, a cursor-position line, and units at every major tick. Shown/hidden from View > Rulers.
+- [x] Draggable guides: drag from the horizontal ruler for a vertical guide, drag from the vertical ruler for a horizontal guide. Right-click a guide on the canvas to delete or lock it (locked guides cannot be accidentally dragged). Guides are stored in `Shell::guides`.
+- [x] Grid with configurable spacing and subdivisions, drawn under the artwork in the canvas (View > Grid). Major lines use the border colour; minor lines are dimmed. The grid hides when zoom would make it too dense (< 4 px between minor lines).
+- [x] Snap module (`fanimate-editor/src/snap.rs`): pure functions, 6 unit tests. Targets: pixel grid, document grid, guides, canvas bounds (edges and centre), with `SnapResult` carrying a hint line. Angle snapping helper `snap_angle`. `SnapSettings` and `GridSettings` are serialised and restored between sessions.
+- [x] View > Snapping sub-menu: per-target toggles (pixels, grid, guides, bounds), the angle step used while Shift is held, grid spacing and subdivisions, all live-editable without closing the menu.
+- [ ] Not built: snapping to other shapes' points, edges and centres. The toggle was removed rather than left doing nothing.
+- [x] Snap hint line on the canvas while dragging (drawn in a semi-transparent accent colour after the GPU texture; cleared at the start of each frame so it vanishes when no drag is active).
+- [x] Tool integration: `do_snap()` is called by every tool that drags a position — Move Layer, Select/Translate Points, Add Point, Pen, bone drag (AddBone/SelectBone/Pose), Rectangle, Ellipse, Line, Polygon, Star, Triangle. Shape drag `to` endpoints are snapped on each frame.
+- [x] Pixel snapping: the pixel-snap candidate is produced by the snap module and the canvas tools call it via `do_snap()`.
+- [x] Angle snapping for bones: Shift+AddBone snaps the bone angle to multiples of `snap.angle_step` degrees after position snapping. The `snap_angle` helper is used.
+- [x] Units other than px (pt, mm, in) in the ruler: the corner button cycles through `RulerUnit` variants (px → pt → mm → in → px); tick labels convert via `px_to_unit()` at the configured DPI.
 
 ## Open items for the owner
 

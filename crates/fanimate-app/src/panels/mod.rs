@@ -1,11 +1,13 @@
 //! The dockable panels and the status bar.
 
 mod actions;
+mod bones;
 pub mod canvas;
 pub mod handles;
 mod history;
 mod layers;
 mod properties;
+pub mod rulers;
 mod selbar;
 mod style;
 pub mod timeline;
@@ -34,10 +36,11 @@ pub enum Tab {
     Actions,
     History,
     XSheet,
+    Bones,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Self::Canvas,
         Self::Tools,
         Self::Layers,
@@ -47,6 +50,7 @@ impl Tab {
         Self::Actions,
         Self::History,
         Self::XSheet,
+        Self::Bones,
     ];
 
     pub fn title(self) -> &'static str {
@@ -60,6 +64,7 @@ impl Tab {
             Self::Actions => "Actions",
             Self::History => "History",
             Self::XSheet => "X-Sheet",
+            Self::Bones => "Bones",
         }
     }
 }
@@ -91,6 +96,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::History => history::show(ui, shell),
             Tab::XSheet => xsheet::show(ui, shell),
             Tab::Actions => actions::show(ui, shell),
+            Tab::Bones => bones::show(ui, shell),
         }
     }
 
@@ -100,7 +106,9 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
         match tab {
-            Tab::Canvas | Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet => [false, false],
+            Tab::Canvas | Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet | Tab::Bones => {
+                [false, false]
+            }
             _ => [false, true],
         }
     }

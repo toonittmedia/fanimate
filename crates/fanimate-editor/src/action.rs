@@ -521,12 +521,27 @@ pub enum Tool {
     TranslatePoints,
     AddPoint,
     Pen,
+    /// Click adds smooth points along a curve; Alt+click adds a corner.
+    Curvature,
     Freehand,
     Rectangle,
     Ellipse,
+    Line,
+    Polygon,
+    Star,
+    Triangle,
     Eraser,
     PaintBucket,
     Eyedropper,
+    DeleteEdge,
+    Magnet,
+    ScalePoints,
+    RotatePoints,
+    DrawShape,
+    FreehandWidth,
+    LineWidth,
+    StrokeExposure,
+    ShapeBuilder,
     #[default]
     TransformLayer,
     SelectBone,
@@ -538,17 +553,31 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 17] = [
+    pub const ALL: [Tool; 31] = [
         Self::SelectPoints,
         Self::TranslatePoints,
         Self::AddPoint,
         Self::Pen,
+        Self::Curvature,
         Self::Freehand,
+        Self::FreehandWidth,
         Self::Rectangle,
         Self::Ellipse,
+        Self::Line,
+        Self::Polygon,
+        Self::Star,
+        Self::Triangle,
         Self::Eraser,
+        Self::DeleteEdge,
+        Self::Magnet,
+        Self::ScalePoints,
+        Self::RotatePoints,
         Self::PaintBucket,
         Self::Eyedropper,
+        Self::DrawShape,
+        Self::LineWidth,
+        Self::StrokeExposure,
+        Self::ShapeBuilder,
         Self::TransformLayer,
         Self::SelectBone,
         Self::AddBone,
@@ -564,12 +593,26 @@ impl Tool {
             Self::TranslatePoints => "Transform Points",
             Self::AddPoint => "Add Point",
             Self::Pen => "Pen",
+            Self::Curvature => "Curvature",
             Self::Freehand => "Freehand",
+            Self::FreehandWidth => "Freehand with Width",
             Self::Rectangle => "Rectangle",
             Self::Ellipse => "Ellipse",
+            Self::Line => "Line",
+            Self::Polygon => "Polygon",
+            Self::Star => "Star",
+            Self::Triangle => "Triangle",
             Self::Eraser => "Eraser",
+            Self::DeleteEdge => "Delete Edge",
+            Self::Magnet => "Magnet",
+            Self::ScalePoints => "Scale Points",
+            Self::RotatePoints => "Rotate Points",
             Self::PaintBucket => "Paint Bucket",
             Self::Eyedropper => "Eyedropper",
+            Self::DrawShape => "Draw Shape",
+            Self::LineWidth => "Line Width",
+            Self::StrokeExposure => "Stroke Exposure",
+            Self::ShapeBuilder => "Shape Builder",
             Self::TransformLayer => "Transform Layer",
             Self::SelectBone => "Select Bone",
             Self::AddBone => "Add Bone",
@@ -586,11 +629,26 @@ impl Tool {
             | Self::TranslatePoints
             | Self::AddPoint
             | Self::Pen
+            | Self::Curvature
             | Self::Freehand
+            | Self::FreehandWidth
             | Self::Rectangle
             | Self::Ellipse
-            | Self::Eraser => ToolGroup::Draw,
-            Self::PaintBucket | Self::Eyedropper => ToolGroup::Fill,
+            | Self::Line
+            | Self::Polygon
+            | Self::Star
+            | Self::Triangle
+            | Self::Eraser
+            | Self::DeleteEdge
+            | Self::Magnet
+            | Self::ScalePoints
+            | Self::RotatePoints
+            | Self::ShapeBuilder => ToolGroup::Draw,
+            Self::PaintBucket
+            | Self::Eyedropper
+            | Self::DrawShape
+            | Self::LineWidth
+            | Self::StrokeExposure => ToolGroup::Fill,
             Self::TransformLayer => ToolGroup::Layer,
             Self::SelectBone | Self::AddBone | Self::ManipulateBones | Self::PaintWeights => ToolGroup::Bone,
             Self::Pan | Self::Zoom => ToolGroup::Workspace,
@@ -606,12 +664,25 @@ impl Tool {
                 | Self::TranslatePoints
                 | Self::AddPoint
                 | Self::Pen
+                | Self::Curvature
                 | Self::Freehand
+                | Self::FreehandWidth
                 | Self::Eraser
                 | Self::Rectangle
                 | Self::Ellipse
+                | Self::Line
+                | Self::Polygon
+                | Self::Star
+                | Self::Triangle
+                | Self::DeleteEdge
+                | Self::Magnet
+                | Self::ScalePoints
+                | Self::RotatePoints
                 | Self::PaintBucket
                 | Self::Eyedropper
+                | Self::DrawShape
+                | Self::LineWidth
+                | Self::ShapeBuilder
                 | Self::TransformLayer
                 | Self::SelectBone
                 | Self::AddBone
@@ -625,7 +696,16 @@ impl Tool {
     /// Whether the tool works on points, so Delete and Select All act on
     /// points rather than layers.
     pub fn edits_points(self) -> bool {
-        matches!(self, Self::SelectPoints | Self::TranslatePoints | Self::AddPoint)
+        matches!(
+            self,
+            Self::SelectPoints
+                | Self::TranslatePoints
+                | Self::AddPoint
+                | Self::DeleteEdge
+                | Self::Magnet
+                | Self::ScalePoints
+                | Self::RotatePoints
+        )
     }
 
     /// Status-bar help while the tool is active.
@@ -637,8 +717,19 @@ impl Tool {
             Self::Freehand => {
                 "Draw brush strokes on the selected vector layer. A pen's pressure sets the width; set the size, smoothing and taper in the Style panel."
             }
+            Self::FreehandWidth => {
+                "Draw brush strokes whose width you drag on each segment. Set the base width in the Style panel."
+            }
             Self::Rectangle => "Drag to draw a rectangle. Shift makes a square; Alt draws from the centre.",
             Self::Ellipse => "Drag to draw an ellipse. Shift makes a circle; Alt draws from the centre.",
+            Self::Line => "Drag to draw a straight line. Shift snaps to 15-degree steps.",
+            Self::Polygon => {
+                "Drag to draw a regular polygon. Scroll the mouse wheel to change the number of sides."
+            }
+            Self::Star => {
+                "Drag to draw a star. Scroll the mouse wheel to change the number of points. Alt adjusts the inner radius."
+            }
+            Self::Triangle => "Drag to draw an equilateral triangle. Shift snaps the angle.",
             Self::PaintBucket => {
                 "Click a shape to fill it with the fill colour, or a brush stroke to recolour it with the line colour."
             }
@@ -659,6 +750,31 @@ impl Tool {
             }
             Self::Pen => {
                 "Click to add corner points, drag to add smooth ones. Click the first point to close the shape; Enter or Esc finishes an open path."
+            }
+            Self::Curvature => {
+                "Click to add smooth points along a curve; Alt+click adds a corner. Click the first point to close. Esc finishes an open path."
+            }
+            Self::DeleteEdge => "Click a segment to delete it, splitting the shape into two open paths.",
+            Self::Magnet => {
+                "Drag near points to attract or repel them. Hold Alt to repel. The draw width sets the magnet radius."
+            }
+            Self::ScalePoints => {
+                "Drag to scale the selected points around their centre. Shift keeps them on the same axes."
+            }
+            Self::RotatePoints => {
+                "Drag to rotate the selected points around their centre. Shift snaps to 15-degree steps."
+            }
+            Self::DrawShape => {
+                "Click to pick the fill and stroke colours from the shape under the pointer and apply them to new artwork."
+            }
+            Self::LineWidth => {
+                "Drag along a stroke to widen or narrow it. The speed of the drag sets the new width."
+            }
+            Self::StrokeExposure => {
+                "Coming in a later release: trim the start or end of a stroke. It needs a file format change first."
+            }
+            Self::ShapeBuilder => {
+                "Drag across overlapping regions to unite them; Alt+drag subtracts them. Release to see the result."
             }
             Self::SelectBone => {
                 "Click a bone to select it. Drag its tip to change its length and rest angle, or its joint to move it."

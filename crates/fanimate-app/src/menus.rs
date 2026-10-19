@@ -306,6 +306,58 @@ pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
     let light = shell.light_table;
     item_checked(ui, shell, Action::ToggleLightTable, light);
     ui.separator();
+    // Phase F: rulers, grid and snapping
+    let rulers = shell.show_rulers;
+    if ui
+        .checkbox(&mut shell.show_rulers.clone(), "Rulers")
+        .on_hover_text("Show rulers along the canvas edges")
+        .clicked()
+    {
+        shell.show_rulers = !rulers;
+    }
+    let grid = shell.show_grid;
+    if ui
+        .checkbox(&mut shell.show_grid.clone(), "Grid")
+        .on_hover_text("Show the canvas grid")
+        .clicked()
+    {
+        shell.show_grid = !grid;
+    }
+    ui.menu_button("Snapping", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        let s = &mut shell.snap;
+        ui.checkbox(&mut s.pixels, "Snap to pixels");
+        ui.checkbox(&mut s.grid, "Snap to grid");
+        ui.checkbox(&mut s.guides, "Snap to guides");
+        ui.checkbox(&mut s.bounds, "Snap to canvas bounds");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Angle step (Shift)");
+            ui.add(
+                egui::DragValue::new(&mut s.angle_step)
+                    .range(1.0..=90.0)
+                    .suffix("°")
+                    .speed(1.0),
+            );
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        let g = &mut shell.grid;
+        ui.horizontal(|ui| {
+            ui.label("Grid spacing");
+            ui.add(
+                egui::DragValue::new(&mut g.spacing)
+                    .range(1.0..=1000.0)
+                    .speed(1.0)
+                    .suffix(" px"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Subdivisions");
+            ui.add(egui::DragValue::new(&mut g.subdivisions).range(1..=20).speed(0.1));
+        });
+    });
+    ui.separator();
     ui.menu_button("Theme", |ui| {
         for theme in Theme::ALL {
             if ui.radio(shell.theme == theme, theme.label()).clicked() {

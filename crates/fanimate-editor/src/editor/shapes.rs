@@ -66,6 +66,27 @@ impl Editor {
         }
     }
 
+    /// Move shape `from` to position `to` (both indices in the current
+    /// shapes list). One undo step. Does nothing when `from == to` or
+    /// either index is out of range.
+    pub fn reorder_shape(&mut self, id: LayerId, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        let count = self.layer_shapes(id).map_or(0, Vec::len);
+        if from >= count || to >= count {
+            return;
+        }
+        self.checkpoint("Reorder shapes");
+        if let Some(shapes) = self.layer_shapes_mut(id) {
+            let shape = shapes.remove(from);
+            shapes.insert(to, shape);
+        }
+        // fix up any point selections that referred to the moved shapes
+        self.points.clear();
+        self.dirty = true;
+    }
+
     /// Whether a drawn item is one the tools edit: any shape of a vector
     /// layer, or a shape in the active sub-layer of a drawing.
     pub(super) fn editable(&self, item: &DrawItem<'_>) -> bool {

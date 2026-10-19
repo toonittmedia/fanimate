@@ -170,8 +170,12 @@ impl Shell {
         ui.renaming = None;
         ui.drag_origin = None;
         ui.shape_drag = None;
+        ui.shape_drag_e = None;
         ui.point_gesture = None;
         ui.pen_down = false;
+        ui.curvature_down = false;
+        ui.magnet_active = false;
+        ui.points_transform_origin = None;
         ui.active_edit = None;
     }
 

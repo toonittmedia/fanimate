@@ -10,13 +10,15 @@ mod action;
 mod editor;
 mod history;
 mod keymap;
+pub mod snap;
 mod tabs;
 
 pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search};
 pub use editor::{
     BoneRef, DrawStyle, Editor, Handle, HandleMods, MouthCue, Outcome, Placement, PointRef, RadiusTarget,
-    SelectMode, SelectionFrame, SoundInfo, StatusKind, parse_rhubarb, sound_info,
+    SelectMode, SelectionFrame, ShapeBuilderState, SoundInfo, StatusKind, parse_rhubarb, sound_info,
 };
 pub use history::History;
 pub use keymap::{Chord, Keymap, KeymapKind};
+pub use snap::{GridSettings, Guide, SnapSettings};
 pub use tabs::{TabInfo, Tabs};

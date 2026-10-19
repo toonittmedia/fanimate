@@ -140,10 +140,6 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         let x = start_x.max(frames_rect.left()) + 0.75;
         painter.line_segment([pos2(x, ruler.top()), pos2(x, full.bottom())], boundary);
     }
-    painter.line_segment(
-        [pos2(end_x, ruler.top()), pos2(end_x, full.bottom())],
-        Stroke::new(1.0, p.text_muted.gamma_multiply(0.6)),
-    );
     let x = x_of(shell.editor.frame.floor());
     painter.line_segment(
         [pos2(x, ruler.top()), pos2(x, full.bottom())],

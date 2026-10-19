@@ -44,6 +44,11 @@ struct Settings {
     /// "reopen last session".
     session: Vec<PathBuf>,
     session_front: usize,
+    /// Grid and snap settings (per session).
+    grid: fanimate_editor::GridSettings,
+    snap: fanimate_editor::SnapSettings,
+    /// Ruler unit (px, pt, mm, in).
+    ruler_unit: crate::panels::rulers::RulerUnit,
 }
 
 /// Onion skin settings, remembered between sessions.
@@ -88,6 +93,9 @@ impl Default for Settings {
             recent: Vec::new(),
             session: Vec::new(),
             session_front: 0,
+            grid: Default::default(),
+            snap: Default::default(),
+            ruler_unit: Default::default(),
         }
     }
 }
@@ -121,6 +129,10 @@ pub struct UiState {
     pub renaming: Option<(LayerId, String)>,
     /// Give the rename field focus (and select its text) on the next frame.
     pub rename_focus: bool,
+    /// A bone being renamed in place: (layer_id, bone_index, current_text).
+    pub bone_rename: Option<(fanimate_core::LayerId, usize, String)>,
+    /// Give the bone rename field focus on the next frame.
+    pub bone_rename_focus: bool,
     pub layer_filter: String,
     pub show_preferences: bool,
     pub show_shortcuts: bool,
@@ -153,6 +165,14 @@ pub struct UiState {
     pub point_gesture: Option<crate::panels::canvas::PointGesture>,
     /// Whether the pointer went down with the Pen on the canvas.
     pub pen_down: bool,
+    /// Whether the pointer went down with the Curvature tool on the canvas.
+    pub curvature_down: bool,
+    /// The drag-start for Phase E shape tools (Line, Polygon, Star, Triangle).
+    pub shape_drag_e: Option<fanimate_core::Vec2>,
+    /// Magnet: whether a drag is in progress (checkpoint taken once).
+    pub magnet_active: bool,
+    /// Scale/Rotate Points: anchor point and last-drag position.
+    pub points_transform_origin: Option<(fanimate_core::Vec2, fanimate_core::Vec2)>,
     /// The status message on screen, and when it appeared.
     pub status_since: Option<(String, Instant)>,
     /// Timeline zoom (pixels per frame) and horizontal scroll (frames).
@@ -175,6 +195,8 @@ pub struct UiState {
     pub show_update: bool,
     /// Arrange the panels this way on the next frame.
     pub workspace: Option<fanimate_editor::Workspace>,
+    /// The snap hint line to draw this frame (document space start, end).
+    pub snap_hint: Option<(fanimate_core::Vec2, fanimate_core::Vec2)>,
 }
 
 /// Unsaved changes are being asked about, before this happens.
@@ -197,6 +219,18 @@ pub struct Shell {
     pub recent: Vec<PathBuf>,
     /// What opens when Fanimate starts.
     pub startup: Startup,
+    /// Grid display and spacing settings.
+    pub grid: fanimate_editor::GridSettings,
+    /// Snap settings.
+    pub snap: fanimate_editor::SnapSettings,
+    /// Guides placed by the user by dragging from the rulers.
+    pub guides: Vec<fanimate_editor::Guide>,
+    /// Show rulers along the canvas edges.
+    pub show_rulers: bool,
+    /// Show the canvas grid.
+    pub show_grid: bool,
+    /// Unit displayed in the rulers.
+    pub ruler_unit: crate::panels::rulers::RulerUnit,
     /// Hands this Fanimate the files other launches ask for.
     instance: Option<crate::instance::Claim>,
     pub keymap: Keymap,
@@ -268,7 +302,11 @@ impl FanimateApp {
         let dock = cc
             .storage
             .and_then(|s| eframe::get_value::<DockState<Tab>>(s, DOCK_KEY))
-            .filter(|d| d.iter_all_tabs().count() == Tab::ALL.len())
+            .filter(|d| {
+                // Accept saved layouts that have the old count (9) or the new one (10)
+                let n = d.iter_all_tabs().count();
+                n == Tab::ALL.len() || n + 1 == Tab::ALL.len()
+            })
             .unwrap_or_else(default_layout);
         let palette = theme::apply(&cc.egui_ctx, settings.theme);
 
@@ -311,6 +349,12 @@ impl FanimateApp {
                 docs: Default::default(),
                 recent: settings.recent.clone(),
                 startup: settings.startup,
+                grid: settings.grid.clone(),
+                snap: settings.snap.clone(),
+                guides: Vec::new(),
+                show_rulers: true,
+                show_grid: false,
+                ruler_unit: settings.ruler_unit,
                 instance: opts.claim,
                 icon,
                 recovery: Recovery::new(recovery_root),
@@ -425,7 +469,8 @@ pub fn workspace_layout(w: fanimate_editor::Workspace) -> DockState<Tab> {
                 0.72,
                 vec![Tab::Properties, Tab::Actions, Tab::Style],
             );
-            s.split_below(right, 0.5, vec![Tab::Layers, Tab::History]);
+            let [props, _layers] = s.split_below(right, 0.35, vec![Tab::Bones]);
+            s.split_below(props, 0.6, vec![Tab::Layers, Tab::History]);
             let [canvas, _] = s.split_below(left, 0.72, vec![Tab::Timeline, Tab::XSheet]);
             s.split_left(canvas, 0.09, vec![Tab::Tools]);
         }
@@ -590,6 +635,9 @@ impl eframe::App for FanimateApp {
                 recent: s.recent.clone(),
                 session,
                 session_front,
+                grid: s.grid.clone(),
+                snap: s.snap.clone(),
+                ruler_unit: s.ruler_unit,
             },
         );
         eframe::set_value(storage, DOCK_KEY, &self.dock);

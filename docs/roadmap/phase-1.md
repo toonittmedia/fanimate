@@ -6,7 +6,7 @@ Companion to the [product vision](../product-vision.md). The brand assets propos
 
 ## Status
 
-*Updated with 0.2.0 and the first Gate 1 measurements. Estimated durations for the remaining work are in [section 4](#4-milestones).*
+*Updated with 0.2.2 (the [UX pass](ux-pass.md): tabs, Home, single-file projects, handles, new drawing tools, rulers and snapping) and the first Gate 1 measurements. Estimated durations for the remaining work are in [section 4](#4-milestones).*
 
 | Milestone | Status |
 |---|---|

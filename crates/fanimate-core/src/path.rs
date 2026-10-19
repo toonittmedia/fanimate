@@ -134,6 +134,57 @@ impl Path {
             .close()
     }
 
+    /// A straight open path from `from` to `to`.
+    pub fn line(from: Vec2, to: Vec2) -> Self {
+        Self::new().move_to(from).line_to(to)
+    }
+
+    /// A regular polygon with `sides` sides, centred at `center`, with
+    /// circumradius `radius`. The first vertex is at the top (−y axis).
+    /// `sides` is clamped to at least 3.
+    pub fn polygon(center: Vec2, radius: f32, sides: u32) -> Self {
+        let n = sides.max(3) as f32;
+        let angle0 = -std::f32::consts::FRAC_PI_2; // top
+        let pts: Vec<Vec2> = (0..sides.max(3))
+            .map(|i| {
+                let a = angle0 + std::f32::consts::TAU * i as f32 / n;
+                center + Vec2::new(a.cos(), a.sin()) * radius
+            })
+            .collect();
+        let mut p = Self::new().move_to(pts[0]);
+        for &pt in &pts[1..] {
+            p = p.line_to(pt);
+        }
+        p.close()
+    }
+
+    /// A star with `points` points, centred at `center`. `outer` is the tip
+    /// radius and `inner` the valley radius. The first tip is at the top.
+    /// `points` is clamped to at least 2.
+    pub fn star(center: Vec2, outer: f32, inner: f32, points: u32) -> Self {
+        let n = points.max(2);
+        let n2 = n * 2;
+        let angle0 = -std::f32::consts::FRAC_PI_2; // top tip
+        let pts: Vec<Vec2> = (0..n2)
+            .map(|i| {
+                let a = angle0 + std::f32::consts::TAU * i as f32 / n2 as f32;
+                let r = if i % 2 == 0 { outer } else { inner };
+                center + Vec2::new(a.cos(), a.sin()) * r
+            })
+            .collect();
+        let mut p = Self::new().move_to(pts[0]);
+        for &pt in &pts[1..] {
+            p = p.line_to(pt);
+        }
+        p.close()
+    }
+
+    /// An equilateral triangle centred at `center` with circumradius `radius`.
+    /// The top vertex is at the top (−y axis).
+    pub fn triangle(center: Vec2, radius: f32) -> Self {
+        Self::polygon(center, radius, 3)
+    }
+
     /// The path as straight pieces: one point list per subpath, and whether
     /// it is closed. Curves are split finely enough to stay within about
     /// `tolerance` of the true curve.

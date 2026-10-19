@@ -26,12 +26,14 @@ mod shapes;
 mod shapesel;
 mod sound;
 mod svg;
+mod tools_e;
 pub use bones::BoneRef;
 pub use draw::DrawStyle;
 pub use handles::{Handle, HandleMods, SelectionFrame};
 pub use points::PointRef;
 pub use shapesel::RadiusTarget;
 pub use sound::{MouthCue, SoundInfo, parse_rhubarb, sound_info};
+pub use tools_e::ShapeBuilderState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectMode {
@@ -115,6 +117,15 @@ pub struct Editor {
     add_point: Option<construct::AddPointDrag>,
     /// The path being drawn with the Pen.
     pen: Option<construct::PenPath>,
+    /// The path being drawn with the Curvature tool.
+    curvature: Option<tools_e::CurvaturePath>,
+    /// Polygon side count (3..=32), Star point count (2..=16), for the drag tools.
+    pub poly_sides: u32,
+    pub star_points: u32,
+    /// Star inner-radius fraction (inner/outer), 0..1.
+    pub star_inner: f32,
+    /// Shape Builder drag state.
+    pub shape_builder: Option<ShapeBuilderState>,
     clipboard: Option<String>,
     /// Last plainly clicked layer, the anchor for Shift-click ranges.
     anchor: Option<LayerId>,
@@ -163,6 +174,11 @@ impl Editor {
             erase: None,
             add_point: None,
             pen: None,
+            curvature: None,
+            poly_sides: 6,
+            star_points: 5,
+            star_inner: 0.4,
+            shape_builder: None,
             clipboard: None,
             anchor: None,
             key_drag: None,
@@ -364,7 +380,8 @@ impl Editor {
             Unbind => {
                 self.unbind();
             }
-            // Esc ends a Pen path, keeping it, as in Illustrator
+            // Esc ends a Pen or Curvature path, keeping it, as in Illustrator
+            SelectNone | FinishPath if self.is_drawing_curvature() => self.finish_curvature(),
             SelectNone | FinishPath if self.is_drawing_path() => self.finish_path(),
             FinishPath => {}
             Union => {
@@ -467,6 +484,9 @@ impl Editor {
     pub fn set_tool(&mut self, tool: Tool) {
         if tool != Tool::Pen {
             self.finish_path();
+        }
+        if tool != Tool::Curvature {
+            self.cancel_curvature();
         }
         self.tool = tool;
         if !tool.is_available() {

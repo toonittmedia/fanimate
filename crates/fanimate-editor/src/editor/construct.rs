@@ -178,7 +178,7 @@ impl Editor {
 
     /// The shape segment nearest `at` (document space) on the point layer,
     /// within `tolerance`: the shape, and where on which command.
-    fn segment_at(&self, at: Vec2, tolerance: f32) -> Option<((LayerId, usize), usize, f32)> {
+    pub(super) fn segment_at(&self, at: Vec2, tolerance: f32) -> Option<((LayerId, usize), usize, f32)> {
         let frame = self.current_frame() as f32;
         self.shape_transforms()
             .into_iter()

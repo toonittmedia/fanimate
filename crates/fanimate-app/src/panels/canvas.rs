@@ -10,11 +10,40 @@ use crate::app::Shell;
 use crate::menus;
 use crate::panels::handles::{self, Hit, Screen};
 
+/// Apply snapping to a document-space point. Stores the hint line in
+/// `shell.ui.snap_hint` so the overlay can draw it. Returns the snapped point.
+fn do_snap(shell: &mut Shell, p: Vec2) -> Vec2 {
+    // Only snap while a drag is active (not on hover)
+    let result = fanimate_editor::snap::snap(
+        p,
+        &shell.snap,
+        &shell.grid,
+        &shell.guides,
+        shell.editor.doc.size(),
+        shell.view.zoom,
+    );
+    shell.ui.snap_hint = result.hint;
+    result.position
+}
+
 const FIT_MARGIN: f32 = 32.0;
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
-    let rect = ui.available_rect_before_wrap();
-    let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    // Clear the snap hint from the previous frame; tool gestures set it again
+    // during this frame if a drag is active.
+    shell.ui.snap_hint = None;
+
+    let full_rect = ui.available_rect_before_wrap();
+
+    // Reserve ruler strips along the top and left.
+    let ruler_size = if shell.show_rulers {
+        crate::panels::rulers::RULER_SIZE
+    } else {
+        0.0
+    };
+    let rect = egui::Rect::from_min_max(full_rect.min + egui::vec2(ruler_size, ruler_size), full_rect.max);
+
+    let response = ui.allocate_rect(full_rect, Sense::click_and_drag());
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
     let doc_size = shell.editor.doc.size();
@@ -34,6 +63,18 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         let d = p - rect.center();
         center + Vec2::new(d.x, d.y) / zoom
     };
+
+    // Rulers and guides (before the canvas content so guides appear on top
+    // of the grid but under the artwork).
+    {
+        let (center, zoom) = (shell.view.center, shell.view.zoom);
+        let to_screen_v = |p: Vec2| to_screen(center, zoom, p);
+        let to_doc_z = |z: f32, p: Pos2| to_doc(center, z, p);
+        crate::panels::rulers::rulers(ui, shell, full_rect, &to_doc_z, &to_screen_v);
+        // Grid (drawn before the GPU texture)
+        let painter = ui.painter_at(rect);
+        crate::panels::rulers::grid(&painter, shell, rect, &to_screen_v);
+    }
 
     navigate(&ctx, &response, shell, rect, &to_doc);
 
@@ -66,13 +107,17 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     freehand_tool(&ctx, &response, shell, &to_doc);
     eraser_tool(&ctx, &response, shell, &to_doc);
     let shape_preview = shape_tools(&ctx, &response, shell, &to_doc);
+    let shape_e_preview = shape_tools_e(&ctx, &response, shell, &to_doc);
     click_tools(&response, shell, &to_doc);
+    click_tools_e(&ctx, &response, shell, &to_doc);
     if tools_free {
         point_tools(&ctx, &response, shell, &to_doc);
     }
+    editing_tools_e(&ctx, &response, shell, &to_doc);
     add_point_tool(&response, shell, &to_doc);
     bone_tools(&ctx, &response, shell, &to_doc);
     pen_tool(&ctx, &response, shell, &to_doc);
+    curvature_tool(&ctx, &response, shell, &to_doc);
 
     // what is under the pointer decides the cursor: a handle, else the tool
     let hover_hit = response
@@ -110,7 +155,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             .editor
             .stroke_preview()
             .or(shape_preview)
-            .or_else(|| shell.editor.pen_preview(pointer));
+            .or(shape_e_preview)
+            .or_else(|| shell.editor.pen_preview(pointer))
+            .or_else(|| shell.editor.curvature_preview(pointer));
         let id = canvas.draw(
             rs,
             &shell.editor.doc,
@@ -134,11 +181,23 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         );
     }
 
+    // Snap hint line over the artwork
+    if let Some((a, b)) = shell.ui.snap_hint {
+        let sa = to_screen(shell.view.center, shell.view.zoom, a);
+        let sb = to_screen(shell.view.center, shell.view.zoom, b);
+        let painter = ui.painter_at(rect);
+        painter.line_segment(
+            [sa, sb],
+            Stroke::new(1.0, shell.palette.accent.gamma_multiply(0.6)),
+        );
+    }
+
     overlays(ui, shell, rect, &to_screen);
     selection_overlay(ui, shell, &response, &screen, hover_hit);
     crate::panels::selbar::show(ui.ctx(), shell, rect, &screen);
     point_overlay(ui, shell, rect, &to_screen);
     pen_overlay(ui, shell, rect, &to_screen);
+    curvature_overlay(ui, shell, rect, &to_screen);
     weight_overlay(ui, shell, rect, &to_screen);
     brush_cursor(ui, &response, shell);
 
@@ -204,13 +263,27 @@ fn tool_cursor(ctx: &egui::Context, response: &egui::Response, tool: Tool) -> eg
         Tool::Zoom if ctx.input(|i| i.modifiers.alt) => CursorIcon::ZoomOut,
         Tool::Zoom => CursorIcon::ZoomIn,
         Tool::Freehand
+        | Tool::FreehandWidth
         | Tool::AddPoint
         | Tool::Pen
+        | Tool::Curvature
         | Tool::AddBone
         | Tool::PaintWeights
         | Tool::Eraser
         | Tool::Rectangle
         | Tool::Ellipse
+        | Tool::Line
+        | Tool::Polygon
+        | Tool::Star
+        | Tool::Triangle
+        | Tool::DeleteEdge
+        | Tool::Magnet
+        | Tool::ScalePoints
+        | Tool::RotatePoints
+        | Tool::DrawShape
+        | Tool::LineWidth
+        | Tool::StrokeExposure
+        | Tool::ShapeBuilder
         | Tool::PaintBucket
         | Tool::Eyedropper => CursorIcon::Crosshair,
     }
@@ -315,7 +388,9 @@ fn transform_tool(
         && let Some((id, origin)) = shell.ui.drag_origin
     {
         let total = response.total_drag_delta().unwrap_or_default();
-        let doc_delta = Vec2::new(total.x, total.y) / shell.view.zoom;
+        let raw_delta = Vec2::new(total.x, total.y) / shell.view.zoom;
+        let snapped_pos = do_snap(shell, origin.position + raw_delta);
+        let doc_delta = snapped_pos - origin.position;
         // drag in document space -> movement in the layer's parent space
         let parent = shell.editor.parent_world(id);
         let local = parent.matrix2.inverse() * doc_delta;
@@ -337,7 +412,7 @@ fn freehand_tool(
     shell: &mut Shell,
     to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
 ) {
-    if shell.editor.tool != Tool::Freehand {
+    if !matches!(shell.editor.tool, Tool::Freehand | Tool::FreehandWidth) {
         if shell.editor.is_drawing() {
             shell.editor.cancel_stroke();
         }
@@ -487,7 +562,7 @@ fn shape_tools(
         shell.ui.shape_drag = press_origin.map(|p| to_doc(center, zoom, p));
     }
     let from = shell.ui.shape_drag?;
-    let to = to_doc(center, zoom, response.interact_pointer_pos()?);
+    let to = do_snap(shell, to_doc(center, zoom, response.interact_pointer_pos()?));
     if response.drag_stopped() {
         shell.ui.shape_drag = None;
         shell
@@ -606,7 +681,8 @@ fn point_tools(
     };
     match gesture {
         PointGesture::Move(last) => {
-            let now = doc(pos);
+            let raw = doc(pos);
+            let now = do_snap(shell, raw);
             shell.editor.drag_points(now - last);
             shell.ui.point_gesture = Some(PointGesture::Move(now));
         }
@@ -656,7 +732,8 @@ fn add_point_tool(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn
     if let Some(PointGesture::Move(last)) = shell.ui.point_gesture
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let now = doc(pos);
+        let raw = doc(pos);
+        let now = do_snap(shell, raw);
         shell.editor.drag_points(now - last);
         shell.ui.point_gesture = Some(PointGesture::Move(now));
     }
@@ -740,7 +817,18 @@ fn bone_tools(
                 .paint_weights(doc(pos), shell.editor.draw.weight_brush / 2.0, amount, mods.alt);
             ctx.request_repaint();
         } else if shell.editor.is_dragging_bone() {
-            shell.editor.drag_bone(doc(pos));
+            let mut tip = do_snap(shell, doc(pos));
+            // Shift + AddBone: snap the bone angle to 15° multiples
+            if tool == Tool::AddBone
+                && mods.shift
+                && let Some(joint) = shell.editor.bone_drag_joint()
+            {
+                let raw_angle = (tip - joint).y.atan2((tip - joint).x);
+                let snapped = fanimate_editor::snap::snap_angle(raw_angle, shell.snap.angle_step);
+                let len = (tip - joint).length();
+                tip = joint + Vec2::new(snapped.cos(), snapped.sin()) * len;
+            }
+            shell.editor.drag_bone(tip);
         }
     }
     if response.drag_stopped() {
@@ -796,7 +884,8 @@ fn pen_tool(
         if response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
-            shell.editor.pen_drag(doc(pos));
+            let snapped = do_snap(shell, doc(pos));
+            shell.editor.pen_drag(snapped);
         }
         if released {
             shell.ui.pen_down = false;
@@ -893,6 +982,46 @@ fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Ve
         shell
             .editor
             .set_status(fanimate_editor::StatusKind::Info, "Click on a shape");
+    }
+}
+
+/// Phase E: click-based tools (DrawShape).
+fn click_tools_e(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    shell: &mut Shell,
+    to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
+) {
+    let tool = shell.editor.tool;
+    if !matches!(tool, Tool::DrawShape) {
+        return;
+    }
+    // Fire on a click (no movement) OR a very short primary-button drag
+    // (stylus / mouse jitter). `clicked_by` requires the pointer to stay
+    // within egui's own click-distance threshold; the drag_stopped path
+    // catches releases that are just outside it.
+    let (press_origin, primary_released) =
+        ctx.input(|i| (i.pointer.press_origin(), i.pointer.primary_released()));
+    let is_tap = response.clicked_by(egui::PointerButton::Primary);
+    let is_short_drag = primary_released
+        && response
+            .interact_pointer_pos()
+            .zip(press_origin)
+            .is_some_and(|(end, start)| (end - start).length() <= HIT_SLOP_PX * 3.0);
+    if !is_tap && !is_short_drag {
+        return;
+    }
+    let Some(pos) = response.interact_pointer_pos() else {
+        return;
+    };
+    let _ = ctx; // modifiers available if needed in future
+    let p = to_doc(shell.view.center, shell.view.zoom, pos);
+    let slop = HIT_SLOP_PX / shell.view.zoom;
+    if !shell.editor.pick_draw_style(p, slop) {
+        shell.editor.set_status(
+            fanimate_editor::StatusKind::Info,
+            "Click on a shape to copy its colours",
+        );
     }
 }
 
@@ -1068,5 +1197,263 @@ fn overlays(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(Vec2, 
             drawn.push(rig);
             bone_overlay(&painter, shell, rig, to_screen);
         }
+    }
+}
+
+// ===========================================================================
+// Phase E tool interactions
+// ===========================================================================
+
+/// Shape tools E: Line, Polygon, Star, Triangle. Drag to preview; release to
+/// commit. Scroll wheel adjusts the side/point count while dragging.
+fn shape_tools_e(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    shell: &mut Shell,
+    to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
+) -> Option<fanimate_core::Shape> {
+    let tool = shell.editor.tool;
+    if !matches!(tool, Tool::Line | Tool::Polygon | Tool::Star | Tool::Triangle) {
+        shell.ui.shape_drag_e = None;
+        return None;
+    }
+    let (center, zoom) = (shell.view.center, shell.view.zoom);
+    let (mods, scroll, press_origin) =
+        ctx.input(|i| (i.modifiers, i.smooth_scroll_delta, i.pointer.press_origin()));
+
+    // Scroll wheel adjusts sides / point count
+    if response.hovered() && scroll.y != 0.0 {
+        let delta = if scroll.y > 0.0 { 1 } else { -1 };
+        if mods.alt && tool == Tool::Star {
+            shell.editor.adjust_star_inner(delta as f32 * 0.05);
+        } else {
+            shell.editor.adjust_shape_sides(delta);
+        }
+    }
+
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        shell.ui.shape_drag_e = press_origin.map(|p| to_doc(center, zoom, p));
+    }
+    let from = shell.ui.shape_drag_e?;
+    let to = do_snap(shell, to_doc(center, zoom, response.interact_pointer_pos()?));
+    if response.drag_stopped() {
+        shell.ui.shape_drag_e = None;
+        shell
+            .editor
+            .add_drag_shape_e(tool, from, to, mods.shift, mods.alt, zoom);
+        return None;
+    }
+    shell
+        .editor
+        .drag_shape_e(tool, from, to, mods.shift, mods.alt, zoom)
+}
+
+/// Editing tools E: Delete Edge, Magnet, Scale Points, Rotate Points,
+/// Line Width, Stroke Exposure, Shape Builder.
+fn editing_tools_e(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    shell: &mut Shell,
+    to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
+) {
+    let tool = shell.editor.tool;
+    let (center, zoom) = (shell.view.center, shell.view.zoom);
+    let doc = |p: egui::Pos2| to_doc(center, zoom, p);
+    let slop = POINT_SLOP_PX / zoom;
+    let mods = ctx.input(|i| i.modifiers);
+
+    match tool {
+        // ---- Delete Edge ----
+        Tool::DeleteEdge => {
+            if response.clicked_by(egui::PointerButton::Primary)
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let p = doc(pos);
+                if !shell.editor.delete_edge_at(p, slop * 2.0) {
+                    shell.editor.set_status(
+                        fanimate_editor::StatusKind::Info,
+                        "Click on a line segment to delete it",
+                    );
+                }
+            }
+        }
+
+        // ---- Magnet ----
+        Tool::Magnet => {
+            let radius = shell.editor.draw.width * zoom / 2.0;
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                shell.editor.checkpoint_magnet();
+                shell.ui.magnet_active = true;
+            }
+            if shell.ui.magnet_active {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    shell
+                        .editor
+                        .apply_magnet(doc(pos), shell.editor.draw.width * 3.0, 0.15, mods.alt);
+                    ctx.request_repaint();
+                }
+                if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
+                    shell.ui.magnet_active = false;
+                }
+            }
+            let _ = radius;
+        }
+
+        // ---- Scale Points ----
+        Tool::ScalePoints => {
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(start) = ctx.input(|i| i.pointer.press_origin())
+            {
+                shell.editor.checkpoint("Scale points");
+                shell.ui.points_transform_origin = Some((doc(start), doc(start)));
+            }
+            if let Some((anchor, last)) = shell.ui.points_transform_origin
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let now = doc(pos);
+                let (old_len, new_len) = (
+                    (last - anchor).length().max(1e-6),
+                    (now - anchor).length().max(1e-6),
+                );
+                let factor = new_len / old_len;
+                if (factor - 1.0).abs() > 1e-4 {
+                    // Shift = scale uniformly; without Shift = scale both axes equally
+                    shell.editor.scale_selected_points(factor, factor);
+                    shell.ui.points_transform_origin = Some((anchor, now));
+                }
+            }
+            if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
+                shell.ui.points_transform_origin = None;
+            }
+        }
+
+        // ---- Rotate Points ----
+        Tool::RotatePoints => {
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(start) = ctx.input(|i| i.pointer.press_origin())
+            {
+                shell.editor.checkpoint("Rotate points");
+                let centre = shell.editor.selected_points_centroid();
+                shell.ui.points_transform_origin = Some((centre, doc(start)));
+            }
+            if let Some((centre, last)) = shell.ui.points_transform_origin
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let now = doc(pos);
+                let old_angle = (last - centre).y.atan2((last - centre).x);
+                let new_angle = (now - centre).y.atan2((now - centre).x);
+                let mut delta = new_angle - old_angle;
+                if mods.shift {
+                    let step = 15.0_f32.to_radians();
+                    delta = (delta / step).round() * step;
+                }
+                if delta.abs() > 1e-4 {
+                    shell.editor.rotate_selected_points(delta);
+                    shell.ui.points_transform_origin = Some((centre, now));
+                }
+            }
+            if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
+                shell.ui.points_transform_origin = None;
+            }
+        }
+
+        // ---- Line Width ----
+        Tool::LineWidth => {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                shell.editor.checkpoint("Line width");
+                shell.ui.magnet_active = true;
+            }
+            if shell.ui.magnet_active {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let drag_speed = response.drag_delta().length() * zoom;
+                    let new_width = (shell.editor.draw.width + drag_speed * 0.1).max(0.5);
+                    shell.editor.apply_line_width(doc(pos), slop * 6.0, new_width);
+                }
+                if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
+                    shell.ui.magnet_active = false;
+                }
+            }
+        }
+
+        // ---- Shape Builder ----
+        Tool::ShapeBuilder => {
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(start) = ctx.input(|i| i.pointer.press_origin())
+            {
+                shell.editor.shape_builder = Some(fanimate_editor::ShapeBuilderState {
+                    from: doc(start),
+                    subtract: mods.alt,
+                });
+            }
+            if response.drag_stopped()
+                && let Some(state) = shell.editor.shape_builder.take()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                shell
+                    .editor
+                    .apply_shape_builder(state.from, doc(pos), state.subtract);
+            }
+            if !response.dragged_by(egui::PointerButton::Primary) {
+                shell.editor.shape_builder = None;
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// Curvature tool: click to add smooth/corner points; Esc to finish.
+fn curvature_tool(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    shell: &mut Shell,
+    to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
+) {
+    if shell.editor.tool != Tool::Curvature {
+        if shell.editor.is_drawing_curvature() {
+            shell.editor.cancel_curvature();
+        }
+        return;
+    }
+    let (center, zoom) = (shell.view.center, shell.view.zoom);
+    let doc = |p: egui::Pos2| to_doc(center, zoom, p);
+    let slop = POINT_SLOP_PX / zoom;
+    let (pressed, released, mods, origin) = ctx.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_released(),
+            i.modifiers,
+            i.pointer.press_origin(),
+        )
+    });
+    if pressed
+        && response.hovered()
+        && let Some(at) = origin
+    {
+        shell.ui.curvature_down = shell.editor.curvature_down(doc(at), mods.alt, slop);
+    }
+    if shell.ui.curvature_down && released {
+        shell.ui.curvature_down = false;
+        shell.editor.curvature_up();
+    }
+}
+
+/// The Curvature path's on-canvas points (dots at each committed position).
+fn curvature_overlay(
+    ui: &egui::Ui,
+    shell: &Shell,
+    rect: Rect,
+    to_screen: &impl Fn(Vec2, f32, Vec2) -> egui::Pos2,
+) {
+    if shell.editor.tool != Tool::Curvature {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let (c, z, p) = (shell.view.center, shell.view.zoom, shell.palette);
+    for (i, at) in shell.editor.curvature_points().into_iter().enumerate() {
+        let s = to_screen(c, z, at);
+        let r = Rect::from_center_size(s, egui::vec2(7.0, 7.0));
+        painter.rect_filled(r, 1.0, if i == 0 { p.accent } else { p.panel });
+        painter.rect_stroke(r, 1.0, Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
     }
 }

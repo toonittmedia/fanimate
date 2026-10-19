@@ -79,6 +79,96 @@ impl Editor {
         }
     }
 
+    /// Set the parent of bone `b` to `new_parent` (or to root if `None`).
+    /// Refuses cycles (a bone cannot be its own ancestor). One undo step.
+    pub fn set_bone_parent(&mut self, b: BoneRef, new_parent: Option<usize>) -> bool {
+        // refuse if new_parent is b itself or a descendant of b
+        if let Some(np) = new_parent {
+            if np == b.bone {
+                return false;
+            }
+            // walk up from np: if we reach b.bone, it's a cycle
+            let Some(sk) = self.skeleton(b.layer) else {
+                return false;
+            };
+            let mut cur = Some(np);
+            loop {
+                match cur {
+                    Some(i) if i == b.bone => return false,
+                    Some(i) => cur = sk.bones.get(i).and_then(|bn| bn.parent),
+                    None => break,
+                }
+            }
+        }
+        self.checkpoint("Reparent bone");
+        if let Some(bone) = self.skeleton_mut(b.layer).and_then(|s| s.bones.get_mut(b.bone)) {
+            bone.parent = new_parent;
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move bone at `from` to index `to` within its layer's skeleton, shifting
+    /// all parent indices accordingly. No-op if `from == to` or out of range.
+    /// One undo step.
+    pub fn reorder_bone(&mut self, layer: LayerId, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        let Some(skeleton) = self.skeleton_mut(layer) else {
+            return;
+        };
+        let n = skeleton.bones.len();
+        if from >= n || to >= n {
+            return;
+        }
+        self.checkpoint("Reorder bone");
+        // Build the renumber map: after moving `from` to `to`, each old index
+        // maps to its new position.
+        // Removing `from` shifts everything above it down by 1; then inserting
+        // at `to` shifts everything at and above `to` up by 1.
+        let map: Vec<Option<usize>> = (0..n)
+            .map(|i| {
+                Some(if i == from {
+                    to
+                } else if from < to {
+                    // e.g. move 1→3: old 0→0, 1→3, 2→1, 3→2, 4→4
+                    if i > from && i <= to { i - 1 } else { i }
+                } else {
+                    // e.g. move 3→1: old 0→0, 1→2, 2→3, 3→1, 4→4
+                    if i >= to && i < from { i + 1 } else { i }
+                })
+            })
+            .collect();
+
+        // Reorder the bones vec
+        let skeleton = self.skeleton_mut(layer).expect("checked above");
+        let bone = skeleton.bones.remove(from);
+        skeleton.bones.insert(to, bone);
+        // Patch parent refs inside the skeleton
+        for b in &mut skeleton.bones {
+            b.parent = b.parent.and_then(|p| map.get(p).copied().flatten());
+        }
+        // Patch any action references
+        skeleton.actions.retain_mut(|a| a.renumber(&map));
+        // Patch child-layer (bound artwork) bone refs
+        if let Some(layer_node) = self.doc.find_mut(layer)
+            && let LayerKind::Bone { children, .. } = &mut layer_node.kind
+        {
+            children.iter_mut().for_each(|c| renumber_bones(c, &map));
+        }
+        // Update the selected bone index
+        if let Some(sel) = &mut self.bone
+            && sel.layer == layer
+            && let Some(Some(new_i)) = map.get(sel.bone)
+        {
+            sel.bone = *new_i;
+        }
+        self.dirty = true;
+    }
+
     /// Each bone of `layer` as posed now: (index, joint, tip) in document
     /// space.
     pub fn bone_positions(&self, layer: LayerId) -> Vec<(usize, Vec2, Vec2)> {
@@ -245,6 +335,20 @@ impl Editor {
 
     pub fn is_dragging_bone(&self) -> bool {
         self.bone_drag.is_some()
+    }
+
+    /// During an AddBone drag, the joint (origin) of the bone being drawn,
+    /// in document space. Used for angle snapping.
+    pub fn bone_drag_joint(&self) -> Option<Vec2> {
+        if let Some(BoneDrag::Add { bone }) = self.bone_drag {
+            let positions = self.bone_positions(bone.layer);
+            positions
+                .into_iter()
+                .find(|(i, _, _)| *i == bone.bone)
+                .map(|(_, joint, _)| joint)
+        } else {
+            None
+        }
     }
 
     /// Point bone `b`'s tip at `to`: length and rest angle.
