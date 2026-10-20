@@ -247,6 +247,11 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // Needs a real graphics adapter. Windows only: on the Linux CI runner the
+    // software Vulkan driver crashes the test process at exit once a second
+    // device has been made in it, and the renderer's own tests (in
+    // fanimate-render) cover drawing on every platform.
+    #[cfg(windows)]
     #[test]
     fn a_template_is_drawn_when_there_is_a_graphics_adapter() {
         // skips where there is none
