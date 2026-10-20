@@ -2,10 +2,11 @@
 //! "save changes?" prompt, the command palette, reporting a crash and
 //! updating Fanimate.
 
-use eframe::egui::{self, Id, Key, RichText};
+use eframe::egui::{self, Id, Key, RichText, vec2};
 use fanimate_editor::{Action, KeymapKind};
 
 use crate::app::{Discard, Shell, run_unchecked, save};
+use crate::kit::{self, Backdrop};
 use crate::theme::Theme;
 
 #[derive(Default)]
@@ -97,7 +98,7 @@ fn crash(ctx: &egui::Context, shell: &mut Shell) {
     });
     shell.crash_reports = ask;
     if report {
-        ctx.open_url(egui::OpenUrl::new_tab(crate::crash::issue_url(pending)));
+        crate::links::open(&crate::crash::issue_url(pending));
     }
     if (report || close)
         && let Some(p) = shell.crash.take()
@@ -106,20 +107,26 @@ fn crash(ctx: &egui::Context, shell: &mut Shell) {
     }
 }
 
-/// The Update Fanimate window.
+/// The Update Fanimate dialog.
 fn update(ctx: &egui::Context, shell: &mut Shell) {
     use crate::update::{Install, State, Version};
     let state = shell.updater.state();
-    let muted = shell.palette.text_muted;
-    let mut open = true;
+    let p = shell.palette;
+    let muted = p.text_muted;
     let mut close = false;
-    egui::Window::new("Update Fanimate")
-        .open(&mut open)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .collapsible(false)
-        .resizable(false)
-        .default_width(380.0)
-        .show(ctx, |ui| match &state {
+    // with release notes to read, the dialog is taller
+    let size = match &state {
+        State::Available(r) if !r.notes.trim().is_empty() => vec2(560.0, 470.0),
+        _ => vec2(420.0, 190.0),
+    };
+    let closed = kit::modal(
+        ctx,
+        &p,
+        "update",
+        "Update Fanimate",
+        size,
+        Backdrop::Closes,
+        |ui| match &state {
             State::Idle | State::Checking { .. } | State::UpToDate | State::Failed(_) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -129,15 +136,36 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
             State::Available(r) => {
                 ui.label(RichText::new(format!("Fanimate {} is available", r.version)).strong());
                 ui.label(RichText::new(format!("You have version {}.", Version::current())).color(muted));
-                ui.hyperlink_to("What's new", &r.page);
-                ui.add_space(6.0);
+                crate::links::link(ui, "Release page", &r.page);
+                ui.add_space(4.0);
+                if !r.notes.trim().is_empty() {
+                    // the notes, with room left for the buttons under them
+                    let blocks = crate::markdown::parse(&r.notes);
+                    egui::Frame::NONE
+                        .fill(p.bg)
+                        .stroke(egui::Stroke::new(1.0, p.border))
+                        .corner_radius(6)
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("update-notes")
+                                .max_height((ui.available_height() - 90.0).max(80.0))
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width() - 8.0);
+                                    crate::markdown::show(ui, &p, &blocks);
+                                });
+                        });
+                    ui.add_space(6.0);
+                }
                 match (&r.file, &shell.install) {
                     (Some(_), _) => {
                         ui.horizontal(|ui| {
-                            if ui.add(primary(shell, "Download")).clicked()
+                            if ui.add(kit::primary(&p, "Download")).clicked()
                                 && let Some(dir) = eframe::storage_dir("Fanimate")
                             {
                                 shell.updater.download(r.clone(), dir.join("updates"));
+                                close = true;
                             }
                             if ui.button("Skip this version").clicked() {
                                 shell.updates.skipped = Some(r.version.to_string());
@@ -145,6 +173,11 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
                                 close = true;
                             }
                         });
+                        kit::note(
+                            ui,
+                            &p,
+                            "The download runs in the background; progress shows in the status bar.",
+                        );
                     }
                     (None, Install::Managed) => {
                         ui.label(
@@ -159,15 +192,22 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
                             )
                             .color(muted),
                         );
-                        ui.hyperlink_to("Fanimate releases", crate::update::DOWNLOAD_PAGE);
+                        crate::links::link(ui, "Fanimate releases", crate::update::DOWNLOAD_PAGE);
                     }
                 }
             }
             State::Downloading(r) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Downloading and checking Fanimate {}…", r.version));
-                });
+                ui.label(format!("Downloading Fanimate {}…", r.version));
+                let bar = match shell.updater.progress() {
+                    Some(f) => egui::ProgressBar::new(f).show_percentage(),
+                    None => egui::ProgressBar::new(0.0).animate(true),
+                };
+                ui.add(bar.desired_width(ui.available_width()).fill(p.accent));
+                kit::note(
+                    ui,
+                    &p,
+                    "You can close this and keep working. Progress shows in the status bar.",
+                );
             }
             State::Ready(r, _) => {
                 ui.label(RichText::new(format!("Fanimate {} is ready to install", r.version)).strong());
@@ -178,13 +218,14 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
                     .color(muted),
                 );
                 ui.add_space(6.0);
-                if ui.add(primary(shell, "Restart and Update")).clicked() {
+                if ui.add(kit::primary(&p, "Restart and Update")).clicked() {
                     shell.pending.push(Action::InstallUpdate);
                     close = true;
                 }
             }
-        });
-    shell.ui.show_update = open && !close;
+        },
+    );
+    shell.ui.show_update = !(closed || close);
 }
 
 /// What opens first. Also on the Home tab.
@@ -296,6 +337,52 @@ fn unsaved_names(shell: &Shell, pending: Discard) -> Vec<String> {
             .filter(|t| t.dirty)
             .map(|t| t.title.clone())
             .collect(),
+    }
+}
+
+/// "Change “Rig” to a group? This removes 12 bones and 3 actions."
+pub fn confirm_convert(ctx: &egui::Context, shell: &mut Shell) {
+    let Some((to, lost)) = shell.ui.confirm_convert.clone() else {
+        return;
+    };
+    let name = shell
+        .editor
+        .primary()
+        .and_then(|id| shell.editor.doc.find(id))
+        .map(|l| l.name.clone())
+        .unwrap_or_default();
+    let p = shell.palette;
+    let mut answer: Option<bool> = None;
+    let modal = egui::Modal::new(Id::new("confirm-convert")).show(ctx, |ui| {
+        ui.set_width(400.0);
+        ui.label(
+            RichText::new(format!("Change “{name}” to a {}?", to.label().to_lowercase()))
+                .size(16.0)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.label(format!("This removes {lost}. The layers inside stay."));
+        ui.label(RichText::new("You can undo it right after.").color(p.text_muted));
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.add(kit::primary(&p, "Change")).clicked() {
+                answer = Some(true);
+            }
+            if ui.button("Cancel").clicked() {
+                answer = Some(false);
+            }
+        });
+    });
+    if modal.should_close() {
+        answer = Some(false);
+    }
+    match answer {
+        Some(true) => {
+            shell.ui.confirm_convert = None;
+            shell.pending.push(Action::ConfirmConvertLayerType(to));
+        }
+        Some(false) => shell.ui.confirm_convert = None,
+        None => {}
     }
 }
 
@@ -456,38 +543,191 @@ fn palette(ctx: &egui::Context, shell: &mut Shell) {
     }
 }
 
+/// The pages of Preferences.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PrefsPage {
+    #[default]
+    General,
+    Interface,
+    Canvas,
+    Video,
+}
+
+impl PrefsPage {
+    const ALL: [PrefsPage; 4] = [Self::General, Self::Interface, Self::Canvas, Self::Video];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Interface => "Interface",
+            Self::Canvas => "Canvas",
+            Self::Video => "Video formats",
+        }
+    }
+}
+
 fn preferences(ctx: &egui::Context, shell: &mut Shell) {
-    let mut open = true;
-    egui::Window::new("Preferences")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(440.0)
-        .show(ctx, |ui| {
-            ui.label(RichText::new("Keyboard shortcuts").strong());
-            keymap_choice(ui, shell);
-            if ui.link("Show all shortcuts").clicked() {
-                shell.ui.show_shortcuts = true;
-            }
-            ui.add_space(8.0);
-            ui.label(RichText::new("Theme").strong());
-            theme_choice(ui, shell);
-            ui.add_space(8.0);
-            ui.label(RichText::new("When Fanimate starts").strong());
-            startup_choice(ui, shell);
-            ui.add_space(8.0);
-            ui.label(RichText::new("Updates and crashes").strong());
-            ui.checkbox(&mut shell.updates.check, "Check for updates automatically")
-                .on_hover_text("Turn off to stay on this version, for example during a production");
-            if ui.button("Check now").clicked() {
-                shell.pending.push(Action::CheckForUpdates);
-            }
-            ui.checkbox(&mut shell.crash_reports, "After a crash, offer to report it");
-            ui.add_space(8.0);
-            ui.label(RichText::new("Video formats").strong());
-            video_formats(ui, shell);
+    let p = shell.palette;
+    let closed = kit::modal(
+        ctx,
+        &p,
+        "preferences",
+        "Preferences",
+        vec2(660.0, 470.0),
+        Backdrop::Closes,
+        |ui| {
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    vec2(150.0, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(150.0);
+                        for page in PrefsPage::ALL {
+                            let selected = shell.ui.prefs_page == page;
+                            let (rect, r) = ui.allocate_exact_size(vec2(150.0, 30.0), egui::Sense::click());
+                            if selected {
+                                ui.painter().rect_filled(rect, 4.0, p.accent.gamma_multiply(0.25));
+                            } else if r.hovered() {
+                                ui.painter().rect_filled(rect, 4.0, p.panel);
+                            }
+                            ui.painter().text(
+                                egui::pos2(rect.left() + 10.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                page.label(),
+                                egui::FontId::proportional(13.0),
+                                if selected { p.text } else { p.text_muted },
+                            );
+                            if r.clicked() {
+                                shell.ui.prefs_page = page;
+                            }
+                        }
+                    },
+                );
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                let height = ui.available_height();
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .id_salt(("prefs-page", shell.ui.prefs_page.label()))
+                        .max_height(height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match shell.ui.prefs_page {
+                            PrefsPage::General => prefs_general(ui, shell),
+                            PrefsPage::Interface => prefs_interface(ui, shell),
+                            PrefsPage::Canvas => prefs_canvas(ui, shell),
+                            PrefsPage::Video => {
+                                kit::section(ui, &p, "Video formats", |ui| video_formats(ui, shell));
+                            }
+                        });
+                });
+            });
+        },
+    );
+    if closed {
+        shell.ui.show_preferences = false;
+    }
+}
+
+fn prefs_general(ui: &mut egui::Ui, shell: &mut Shell) {
+    let p = shell.palette;
+    kit::section(ui, &p, "When Fanimate starts", |ui| startup_choice(ui, shell));
+    kit::section(ui, &p, "Updates and crashes", |ui| {
+        ui.checkbox(&mut shell.updates.check, "Check for updates automatically")
+            .on_hover_text("Turn off to stay on this version, for example during a production");
+        if ui.button("Check now").clicked() {
+            shell.pending.push(Action::CheckForUpdates);
+        }
+        ui.add_space(4.0);
+        ui.checkbox(&mut shell.crash_reports, "After a crash, offer to report it");
+    });
+}
+
+fn prefs_interface(ui: &mut egui::Ui, shell: &mut Shell) {
+    let p = shell.palette;
+    kit::section(ui, &p, "Keyboard shortcuts", |ui| {
+        keymap_choice(ui, shell);
+        if ui.button("Show all shortcuts…").clicked() {
+            shell.ui.show_shortcuts = true;
+        }
+    });
+    kit::section(ui, &p, "Theme", |ui| theme_choice(ui, shell));
+}
+
+fn prefs_canvas(ui: &mut egui::Ui, shell: &mut Shell) {
+    use crate::panels::rulers::RulerUnit;
+    let p = shell.palette;
+    kit::section(ui, &p, "Rulers and grid", |ui| {
+        kit::form(ui, "prefs-view", |ui| {
+            kit::row(ui, "Rulers", |ui| {
+                ui.checkbox(&mut shell.show_rulers, "Show along the canvas edges");
+            });
+            kit::row(ui, "Units", |ui| {
+                egui::ComboBox::from_id_salt("prefs-units")
+                    .selected_text(shell.ruler_unit.label())
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        for unit in [RulerUnit::Px, RulerUnit::Pt, RulerUnit::Mm, RulerUnit::In] {
+                            ui.selectable_value(&mut shell.ruler_unit, unit, unit.label());
+                        }
+                    });
+            });
+            kit::row(ui, "Grid", |ui| {
+                ui.checkbox(&mut shell.show_grid, "Show on the canvas");
+            });
+            kit::row(ui, "Spacing", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut shell.grid.spacing)
+                        .range(1.0..=1000.0)
+                        .speed(1.0)
+                        .suffix(" px"),
+                );
+            });
+            kit::row(ui, "Subdivisions", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut shell.grid.subdivisions)
+                        .range(1..=20)
+                        .speed(0.1),
+                );
+            });
         });
-    shell.ui.show_preferences = open;
+    });
+    kit::section(ui, &p, "Snapping", |ui| {
+        let s = &mut shell.snap;
+        ui.checkbox(&mut s.pixels, "Snap to pixels");
+        ui.checkbox(&mut s.grid, "Snap to grid");
+        ui.checkbox(&mut s.guides, "Snap to guides");
+        ui.checkbox(&mut s.bounds, "Snap to canvas bounds");
+        ui.checkbox(&mut s.shapes, "Snap to other shapes");
+        ui.add_space(4.0);
+        kit::form(ui, "prefs-snap", |ui| {
+            kit::row(ui, "Angle step (Shift)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut s.angle_step)
+                        .range(1.0..=90.0)
+                        .suffix("°")
+                        .speed(1.0),
+                );
+            });
+        });
+    });
+    kit::section(ui, &p, "Onion skin", |ui| {
+        let o = &mut shell.onion;
+        ui.checkbox(&mut o.on, "Show onion skin");
+        kit::form(ui, "prefs-onion", |ui| {
+            kit::row(ui, "Frames before", |ui| {
+                ui.add(egui::DragValue::new(&mut o.before).range(0..=10));
+            });
+            kit::row(ui, "Frames after", |ui| {
+                ui.add(egui::DragValue::new(&mut o.after).range(0..=10));
+            });
+        });
+        ui.checkbox(&mut o.keys, "Drawings and keys only")
+            .on_hover_text("Show the previous and next drawings, however long they are held");
+        ui.checkbox(&mut o.all_layers, "All layers")
+            .on_hover_text("Otherwise only the selected layers");
+    });
 }
 
 /// What makes MP4 here, and the FFmpeg that adds the other video formats.
@@ -562,7 +802,7 @@ fn video_formats(ui: &mut egui::Ui, shell: &mut Shell) {
             tools.look();
         }
     });
-    ui.hyperlink_to("How to get FFmpeg", crate::formats::HOW_TO_GET_FFMPEG);
+    crate::links::link(ui, "How to get FFmpeg", crate::formats::HOW_TO_GET_FFMPEG);
 }
 
 /// "a, b and c".
@@ -575,12 +815,16 @@ fn list(items: &[&str]) -> String {
 }
 
 fn shortcuts(ctx: &egui::Context, shell: &mut Shell) {
-    let mut open = true;
-    egui::Window::new(format!("Keyboard Shortcuts: {}", shell.keymap.kind.label()))
-        .open(&mut open)
-        .collapsible(false)
-        .default_size([420.0, 520.0])
-        .show(ctx, |ui| {
+    const MENUS: [&str; 6] = ["File", "Edit", "Layer", "Animation", "View", "Tools"];
+    let p = shell.palette;
+    let closed = kit::modal(
+        ctx,
+        &p,
+        "shortcuts",
+        "Keyboard Shortcuts",
+        vec2(560.0, 500.0),
+        Backdrop::Closes,
+        |ui| {
             ui.horizontal(|ui| {
                 for kind in KeymapKind::ALL {
                     if ui
@@ -590,60 +834,101 @@ fn shortcuts(ctx: &egui::Context, shell: &mut Shell) {
                         shell.set_keymap(kind);
                     }
                 }
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::Grid::new("shortcut-grid")
-                    .striped(true)
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        for action in Action::all() {
-                            let keys = shell.keymap.shortcut_text(action);
-                            if keys.is_empty() {
-                                continue;
-                            }
-                            ui.label(action.label());
-                            ui.label(RichText::new(keys).monospace().color(shell.palette.accent_strong));
-                            ui.end_row();
-                        }
-                    });
-            });
-        });
-    shell.ui.show_shortcuts = open;
-}
-
-fn about(ctx: &egui::Context, shell: &mut Shell) {
-    let mut open = true;
-    egui::Window::new("About Fanimate")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .max_width(380.0)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::Image::new((shell.icon.id(), egui::vec2(48.0, 48.0))));
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Fanimate").size(20.0).strong());
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.label(RichText::new("Free to animate.").color(shell.palette.accent_strong));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut shell.ui.shortcut_filter)
+                            .hint_text("Search shortcuts…")
+                            .desired_width(180.0),
+                    );
                 });
             });
             ui.add_space(6.0);
-            ui.label("Free, open-source 2D character animation.");
-            ui.label(RichText::new("Licensed under MIT or Apache 2.0.").color(shell.palette.text_muted));
-            ui.label(RichText::new(format!("Graphics: {}", shell.gpu_name)).color(shell.palette.text_muted));
-            ui.hyperlink_to(
-                "github.com/toonittmedia/fanimate",
-                "https://github.com/toonittmedia/fanimate",
-            );
-            ui.add_space(6.0);
-            // separate programs shipped with Fanimate, under their own licences
-            let muted = shell.palette.text_muted;
-            ui.label(RichText::new("Ships with").strong());
-            ui.label(RichText::new("Rhubarb Lip Sync for lip sync (MIT).").color(muted));
-            ui.label(RichText::new("Inter font (OFL 1.1) and Lucide icons (ISC).").color(muted));
-        });
-    shell.ui.show_about = open;
+            let query = shell.ui.shortcut_filter.trim().to_lowercase();
+            let height = ui.available_height();
+            egui::ScrollArea::vertical()
+                .max_height(height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let mut any = false;
+                    for menu in MENUS {
+                        let rows: Vec<(&str, String)> = Action::all()
+                            .into_iter()
+                            .filter(|a| a.category() == menu)
+                            .map(|a| (a.label(), shell.keymap.shortcut_text(a)))
+                            .filter(|(label, keys)| {
+                                !keys.is_empty()
+                                    && (query.is_empty()
+                                        || label.to_lowercase().contains(&query)
+                                        || keys.to_lowercase().contains(&query))
+                            })
+                            .collect();
+                        if rows.is_empty() {
+                            continue;
+                        }
+                        any = true;
+                        ui.label(RichText::new(menu).size(11.5).strong().color(p.text_muted));
+                        egui::Grid::new(("shortcut-grid", menu))
+                            .num_columns(2)
+                            .min_col_width(380.0)
+                            .spacing([10.0, 5.0])
+                            .show(ui, |ui| {
+                                for (label, keys) in rows {
+                                    ui.label(label);
+                                    kit::chord(ui, &p, &keys);
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add_space(8.0);
+                    }
+                    if !any {
+                        ui.label(RichText::new("No shortcut matches.").color(p.text_muted));
+                    }
+                });
+        },
+    );
+    if closed {
+        shell.ui.show_shortcuts = false;
+    }
+}
+
+fn about(ctx: &egui::Context, shell: &mut Shell) {
+    let p = shell.palette;
+    let closed = kit::modal(
+        ctx,
+        &p,
+        "about",
+        "About Fanimate",
+        vec2(380.0, 270.0),
+        Backdrop::Closes,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Image::new((shell.icon.id(), vec2(48.0, 48.0))));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Fanimate").size(20.0).strong());
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    ui.label(RichText::new("Free to animate.").color(p.accent_strong));
+                });
+            });
+            ui.add_space(8.0);
+            kit::section(ui, &p, "About", |ui| {
+                ui.label("Free, open-source 2D character animation.");
+                ui.label(RichText::new("Licensed under MIT or Apache 2.0.").color(p.text_muted));
+                ui.label(RichText::new(format!("Graphics: {}", shell.gpu_name)).color(p.text_muted));
+                crate::links::link(
+                    ui,
+                    "github.com/toonittmedia/fanimate",
+                    "https://github.com/toonittmedia/fanimate",
+                );
+            });
+            kit::section(ui, &p, "Ships with", |ui| {
+                ui.label(RichText::new("Rhubarb Lip Sync for lip sync (MIT).").color(p.text_muted));
+                ui.label(RichText::new("Inter font (OFL 1.1) and Lucide icons (ISC).").color(p.text_muted));
+            });
+        },
+    );
+    if closed {
+        shell.ui.show_about = false;
+    }
 }
 
 #[cfg(test)]

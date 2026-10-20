@@ -39,6 +39,9 @@ ALLOWED = {
     "Unicode-DFS-2016",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    # file-level copyleft: fine to link unmodified (Symphonia reads MP3, Ogg,
+    # FLAC and AAC); changes to such a file must be shared, which we make none of
+    "MPL-2.0",
 }
 
 # Shipped beside the code, not through Cargo.

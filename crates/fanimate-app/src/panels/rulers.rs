@@ -5,7 +5,6 @@
 //! or lock it. The corner button cycles the unit: px → pt → mm → in.
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use fanimate_editor::Guide;
 use serde::{Deserialize, Serialize};
 
 use crate::app::Shell;
@@ -207,14 +206,17 @@ fn draw_ruler_ticks(
             Stroke::new(1.0, p.text_muted),
         );
         if major {
+            // turned a quarter, reading upwards from the tick, so a long
+            // number stays inside the 20 px strip instead of being cut off
             let label = unit.fmt(unit.px_to_unit(dy, DPI));
-            painter.text(
-                Pos2::new(v_ruler.min.x + 4.0, sy - 2.0),
-                egui::Align2::LEFT_BOTTOM,
-                label,
-                egui::FontId::proportional(9.0),
-                p.text_muted,
-            );
+            let galley = painter.layout_no_wrap(label, egui::FontId::proportional(9.0), p.text_muted);
+            let at = Pos2::new(v_ruler.min.x + 3.0, sy - 3.0);
+            painter
+                .with_clip_rect(v_ruler.intersect(painter.clip_rect()))
+                .add(
+                    egui::epaint::TextShape::new(at, galley, p.text_muted)
+                        .with_angle(-std::f32::consts::FRAC_PI_2),
+                );
         }
     }
 
@@ -231,6 +233,9 @@ fn draw_ruler_ticks(
     }
 }
 
+/// The guides across the canvas, which can be dragged (back onto a ruler to
+/// remove one), locked and deleted from a right-click menu; and dragging out
+/// of a ruler makes a new one. They belong to the project.
 #[allow(clippy::too_many_arguments)]
 fn draw_guides(
     ui: &mut egui::Ui,
@@ -242,117 +247,138 @@ fn draw_guides(
     to_doc: &impl Fn(f32, Pos2) -> fanimate_core::Vec2,
     to_screen: &impl Fn(fanimate_core::Vec2) -> Pos2,
 ) {
-    let _p = shell.palette;
-    let guide_color = Color32::from_rgb(0x40, 0xA0, 0xFF).gamma_multiply(0.7);
-    let guide_color_locked = guide_color.gamma_multiply(0.4);
-
-    // Draw existing guides
-    let mut to_delete: Option<usize> = None;
-    for (idx, guide) in shell.guides.iter().enumerate() {
+    let guide_color = Color32::from_rgb(0x40, 0xA0, 0xFF).gamma_multiply(0.8);
+    let zoom = shell.view.zoom;
+    let mut delete: Option<usize> = None;
+    let mut lock: Option<usize> = None;
+    let guides = shell.editor.doc.guides.clone();
+    for (idx, guide) in guides.iter().enumerate() {
         let color = if guide.locked {
-            guide_color_locked
+            guide_color.gamma_multiply(0.45)
         } else {
             guide_color
         };
-        if guide.vertical {
+        // where the line is on screen, and a thin strip around it to grab
+        let (line, grab) = if guide.vertical {
             let sx = to_screen(fanimate_core::Vec2::new(guide.position, 0.0)).x;
-            if sx >= canvas_rect.left() && sx <= canvas_rect.right() {
-                painter.vline(sx, canvas_rect.y_range(), Stroke::new(1.0, color));
-                // right-click → delete / lock
-                let hit = Rect::from_center_size(
+            if sx < canvas_rect.left() || sx > canvas_rect.right() {
+                continue;
+            }
+            (
+                [
+                    Pos2::new(sx, canvas_rect.top()),
+                    Pos2::new(sx, canvas_rect.bottom()),
+                ],
+                Rect::from_center_size(
                     Pos2::new(sx, canvas_rect.center().y),
                     Vec2::new(6.0, canvas_rect.height()),
-                );
-                let r = ui.interact(hit, ui.id().with(("guide", idx)), Sense::click());
-                r.context_menu(|ui| {
-                    if ui.button("Delete guide").clicked() {
-                        to_delete = Some(idx);
-                        ui.close();
-                    }
-                    if ui
-                        .button(if guide.locked {
-                            "Unlock guide"
-                        } else {
-                            "Lock guide"
-                        })
-                        .clicked()
-                    {
-                        // toggle lock: store deferred
-                        to_delete = Some(usize::MAX - idx); // encode toggle in high bit
-                        ui.close();
-                    }
-                });
-            }
+                ),
+            )
         } else {
             let sy = to_screen(fanimate_core::Vec2::new(0.0, guide.position)).y;
-            if sy >= canvas_rect.top() && sy <= canvas_rect.bottom() {
-                painter.hline(canvas_rect.x_range(), sy, Stroke::new(1.0, color));
-                let hit = Rect::from_center_size(
+            if sy < canvas_rect.top() || sy > canvas_rect.bottom() {
+                continue;
+            }
+            (
+                [
+                    Pos2::new(canvas_rect.left(), sy),
+                    Pos2::new(canvas_rect.right(), sy),
+                ],
+                Rect::from_center_size(
                     Pos2::new(canvas_rect.center().x, sy),
                     Vec2::new(canvas_rect.width(), 6.0),
-                );
-                let r = ui.interact(hit, ui.id().with(("guide", idx)), Sense::click());
-                r.context_menu(|ui| {
-                    if ui.button("Delete guide").clicked() {
-                        to_delete = Some(idx);
-                        ui.close();
-                    }
-                    if ui
-                        .button(if guide.locked {
-                            "Unlock guide"
-                        } else {
-                            "Lock guide"
-                        })
-                        .clicked()
-                    {
-                        to_delete = Some(usize::MAX - idx);
-                        ui.close();
-                    }
-                });
+                ),
+            )
+        };
+        painter.line_segment(line, Stroke::new(1.0, color));
+        let r = ui.interact(grab, ui.id().with(("guide", idx)), Sense::click_and_drag());
+        if r.hovered() || r.dragged() {
+            ui.ctx().set_cursor_icon(if guide.locked {
+                egui::CursorIcon::NotAllowed
+            } else if guide.vertical {
+                egui::CursorIcon::ResizeHorizontal
+            } else {
+                egui::CursorIcon::ResizeVertical
+            });
+        }
+        if r.drag_started_by(egui::PointerButton::Primary) && !guide.locked {
+            shell.editor.begin_guide_drag();
+            shell.ui.guide_drag = Some(idx);
+        }
+        if shell.ui.guide_drag == Some(idx)
+            && let Some(pos) = r.interact_pointer_pos()
+        {
+            let at = to_doc(zoom, pos);
+            shell
+                .editor
+                .move_guide(idx, if guide.vertical { at.x } else { at.y });
+        }
+        if r.drag_stopped() && shell.ui.guide_drag == Some(idx) {
+            shell.ui.guide_drag = None;
+            // let go over a ruler, and it goes back where it came from
+            if let Some(pos) = r.interact_pointer_pos()
+                && (h_ruler.contains(pos) || v_ruler.contains(pos))
+            {
+                delete = Some(idx);
             }
         }
+        crate::menus::context_menu(&r, |ui| {
+            if ui.button("Delete guide").clicked() {
+                delete = Some(idx);
+                ui.close();
+            }
+            if ui
+                .button(if guide.locked {
+                    "Unlock guide"
+                } else {
+                    "Lock guide"
+                })
+                .clicked()
+            {
+                lock = Some(idx);
+                ui.close();
+            }
+        });
     }
-    // Apply delete/lock
-    if let Some(idx) = to_delete {
-        if idx < usize::MAX / 2 {
-            if idx < shell.guides.len() {
-                shell.guides.remove(idx);
-            }
-        } else {
-            // toggle lock
-            let real = usize::MAX - idx;
-            if let Some(g) = shell.guides.get_mut(real) {
-                g.locked = !g.locked;
-            }
-        }
+    if let Some(idx) = delete {
+        shell.editor.delete_guide(idx);
+    } else if let Some(idx) = lock {
+        shell.editor.toggle_guide_lock(idx);
     }
 
-    // Drag from horizontal ruler → new vertical guide
+    // Drag a guide out of a ruler, as in other drawing programs: out of the
+    // top ruler comes a horizontal line, out of the left ruler a vertical one.
+    // The line follows the pointer while it is dragged, and is placed where
+    // the pointer lets go, if that is on the canvas.
+    let new_guide = Stroke::new(1.0, guide_color);
     let h_resp = ui.interact(h_ruler, ui.id().with("h-ruler-drag"), Sense::drag());
+    if h_resp.dragged()
+        && let Some(pos) = h_resp.interact_pointer_pos()
+        && pos.y > h_ruler.bottom()
+    {
+        painter.hline(canvas_rect.x_range(), pos.y, new_guide);
+    }
     if h_resp.drag_stopped()
         && let Some(pos) = h_resp.interact_pointer_pos()
         && pos.y > h_ruler.bottom()
     {
-        let doc = to_doc(shell.view.zoom, pos);
-        shell.guides.push(Guide {
-            vertical: true,
-            position: doc.x,
-            locked: false,
-        });
+        shell.editor.add_guide(false, to_doc(zoom, pos).y);
     }
-
-    // Drag from vertical ruler → new horizontal guide
     let v_resp = ui.interact(v_ruler, ui.id().with("v-ruler-drag"), Sense::drag());
+    if v_resp.dragged()
+        && let Some(pos) = v_resp.interact_pointer_pos()
+        && pos.x > v_ruler.right()
+    {
+        painter.vline(pos.x, canvas_rect.y_range(), new_guide);
+    }
     if v_resp.drag_stopped()
         && let Some(pos) = v_resp.interact_pointer_pos()
         && pos.x > v_ruler.right()
     {
-        let doc = to_doc(shell.view.zoom, pos);
-        shell.guides.push(Guide {
-            vertical: false,
-            position: doc.y,
-            locked: false,
-        });
+        shell.editor.add_guide(true, to_doc(zoom, pos).x);
+    }
+    if h_resp.dragged() || v_resp.dragged() {
+        ui.ctx().request_repaint();
     }
 }
 
@@ -367,7 +393,6 @@ pub fn grid(
     if !shell.show_grid {
         return;
     }
-    let p = shell.palette;
     let zoom = shell.view.zoom;
     let center = shell.view.center;
     let minor = shell.grid.minor_spacing();
@@ -376,8 +401,9 @@ pub fn grid(
         return;
     }
 
-    let minor_color = p.border.gamma_multiply(0.5);
-    let major_color = p.border;
+    // translucent, so they show on the white page as well as the pasteboard
+    let minor_color = Color32::from_rgba_unmultiplied(120, 120, 140, 40);
+    let major_color = Color32::from_rgba_unmultiplied(120, 120, 140, 95);
 
     // visible document range
     let left_doc = (canvas_rect.left() - canvas_rect.center().x) / zoom + center.x;

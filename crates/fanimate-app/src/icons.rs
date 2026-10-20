@@ -57,6 +57,9 @@ pub enum Icon {
     ZoomOut,
     ZoomReset,
     ZoomFit,
+    Lock,
+    Unlock,
+    Align,
 }
 
 macro_rules! lucide {
@@ -148,6 +151,9 @@ impl Icon {
             Self::ZoomOut => lucide!("zoom-out"),
             Self::ZoomReset => lucide!("rotate-ccw"),
             Self::ZoomFit => lucide!("maximize-2"),
+            Self::Lock => lucide!("lock"),
+            Self::Unlock => lucide!("lock-open"),
+            Self::Align => lucide!("align-center-vertical"),
         }
     }
 }
@@ -300,6 +306,9 @@ mod tests {
             Icon::ZoomOut,
             Icon::ZoomReset,
             Icon::ZoomFit,
+            Icon::Lock,
+            Icon::Unlock,
+            Icon::Align,
         ]);
         icons
     }

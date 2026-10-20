@@ -183,9 +183,12 @@ impl Offscreen {
         let view = View::fit(doc.size(), self.size, 0.0);
         let mut items = Vec::new();
         self.evaluator.evaluate_into(doc, frame, &mut items);
+        // the picture the document's camera takes, if it has one
+        let camera = fanimate_core::camera_at(doc, frame).unwrap_or(fanimate_core::Affine2::IDENTITY);
+        let zoom = (view.zoom * camera.matrix2.x_axis.length()).max(1e-6);
         self.tess.clear(&mut self.mesh);
-        self.tess.tolerance = 0.25 / view.zoom;
-        self.tess.canvas(doc, &mut self.mesh);
+        self.tess.tolerance = 0.25 / zoom;
+        self.tess.canvas_through(doc, &mut self.mesh, camera);
         self.tess.draw_items(&items, &mut self.mesh);
         self.renderer.render(
             &gpu.device,

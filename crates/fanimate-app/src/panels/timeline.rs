@@ -2,7 +2,7 @@
 //! keyframes per layer.
 
 use eframe::egui::{self, Id, Rangef, Rect, RichText, Sense, Shape, Stroke, pos2, vec2};
-use fanimate_core::{Frame, Interpolation, LayerId};
+use fanimate_core::{ChannelId, Frame, Interpolation, LayerId};
 use fanimate_editor::{Action, SelectMode};
 
 use crate::app::Shell;
@@ -10,6 +10,10 @@ use crate::icons::{self, Icon};
 use crate::menus;
 
 use super::properties::{begin_edit, end_edits};
+
+/// Stands for the camera where a row is named by a layer: it is not a layer,
+/// and no layer has this id.
+pub const CAMERA_ROW: LayerId = LayerId(u32::MAX);
 
 const NAMES_WIDTH: f32 = 170.0;
 const RULER_HEIGHT: f32 = 22.0;
@@ -40,7 +44,21 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
 
     shell.ui.timeline_view_width = frames_rect.width();
     shell.ui.timeline_hovered = ui.rect_contains_pointer(full);
-    zoom_and_scroll(ui, shell, frames_rect, start, end);
+    zoom_and_scroll(ui, shell, frames_rect);
+    // when a step, a key jump or the Frame field moves the playhead out of
+    // view, bring it back; a scrub drag scrolls at the edge instead (below)
+    let now = shell.editor.current_frame();
+    let was_scrubbing = std::mem::take(&mut shell.ui.timeline_scrubbing);
+    if !shell.editor.playing && !was_scrubbing && shell.ui.timeline_seen_frame != now {
+        shell.ui.timeline_scroll = reveal(
+            shell.ui.timeline_scroll,
+            start,
+            now,
+            shell.ui.timeline_frame_width,
+            frames_rect.width(),
+        );
+    }
+    shell.ui.timeline_seen_frame = now;
     let fw = shell.ui.timeline_frame_width;
     let scroll = shell.ui.timeline_scroll;
     let x_of = |f: f32| ruler.left() + (f - start as f32 - scroll) * fw + fw / 2.0;
@@ -69,10 +87,14 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         p.accent.gamma_multiply(0.18),
     );
     let ruler_resp = ui.interact(ruler, Id::new("timeline-ruler"), Sense::click_and_drag());
-    if (ruler_resp.clicked() || ruler_resp.dragged())
-        && let Some(pos) = ruler_resp.interact_pointer_pos()
-    {
-        shell.editor.go_to(frame_at(pos.x));
+    if ruler_resp.clicked() || ruler_resp.dragged() {
+        shell.ui.timeline_scrubbing = true;
+        if let Some(pos) = ruler_resp.interact_pointer_pos() {
+            shell.editor.go_to(frame_at(pos.x));
+            if ruler_resp.dragged() {
+                edge_scroll(ui, shell, frames_rect, pos.x);
+            }
+        }
     }
     let label_every = nice_step(48.0 / fw);
     let first = frame_at(ruler.left()).max(start);
@@ -117,8 +139,27 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         .auto_shrink([false, false])
         .show(&mut child, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
+            // the camera is the project's, pinned above the layers
+            camera_row(ui, shell, keys_clip, &x_of, &frame_at);
+            if shell.ui.timeline_expanded.contains(&CAMERA_ROW) {
+                for ch in ChannelId::CAMERA {
+                    property_row(ui, shell, CAMERA_ROW, ch, 0, keys_clip, &x_of, &frame_at);
+                }
+            }
             for (id, depth) in shell.editor.display_rows() {
                 row(ui, shell, id, depth, keys_clip, &x_of, &frame_at);
+                // a layer opened with a double-click lists its properties
+                if shell.ui.timeline_expanded.contains(&id) {
+                    let channels = shell
+                        .editor
+                        .doc
+                        .find(id)
+                        .map(|l| l.channels())
+                        .unwrap_or_default();
+                    for ch in channels {
+                        property_row(ui, shell, id, ch, depth, keys_clip, &x_of, &frame_at);
+                    }
+                }
             }
         });
 
@@ -172,13 +213,81 @@ fn zoomed_scroll(anchor: f32, start: f32, scroll: f32, old: f32, new: f32) -> f3
     anchor - start - (x - new / 2.0) / new
 }
 
+/// The scroll (in frames from `start`) that shows `frame` with a little
+/// room either side, changing the scroll as little as it can.
+fn reveal(scroll: f32, start: Frame, frame: Frame, frame_width: f32, view_width: f32) -> f32 {
+    let margin = (frame_width * 2.0).min(view_width / 4.0);
+    // pixels from the left of the view to the frame's cell
+    let left = (frame - start) as f32 * frame_width - scroll * frame_width;
+    let right = left + frame_width;
+    let scroll = if left < margin {
+        scroll - (margin - left) / frame_width
+    } else if right > view_width - margin {
+        scroll + (right - (view_width - margin)) / frame_width
+    } else {
+        scroll
+    };
+    scroll.max(0.0)
+}
+
+/// How fast the view scrolls, in pixels per second (to the right when
+/// positive), while the pointer holds a scrub drag at `x` in a view from
+/// `left` to `right`: nothing inside, faster the further outside.
+fn edge_speed(x: f32, left: f32, right: f32) -> f32 {
+    const ZONE: f32 = 28.0;
+    const MAX_DEPTH: f32 = 120.0;
+    const PER_PIXEL: f32 = 9.0;
+    if x > right - ZONE {
+        (x - (right - ZONE)).min(MAX_DEPTH) * PER_PIXEL
+    } else if x < left + ZONE {
+        -(left + ZONE - x).min(MAX_DEPTH) * PER_PIXEL
+    } else {
+        0.0
+    }
+}
+
+/// The last frame there is something at: the end of the animation, the
+/// latest key on any row, or the playhead.
+fn last_frame(shell: &Shell) -> Frame {
+    let ed = &shell.editor;
+    let latest_key = ed
+        .display_rows()
+        .into_iter()
+        .filter_map(|(id, _)| ed.key_frames(id).last().copied())
+        .max()
+        .unwrap_or(0);
+    let camera = ed.doc.camera.key_frames().last().copied().unwrap_or(0);
+    ed.doc.end.max(latest_key).max(camera).max(ed.current_frame())
+}
+
+/// The furthest the view may scroll, in frames from the start: until the
+/// last frame there is anything at sits at the left edge.
+fn max_scroll(shell: &Shell) -> f32 {
+    (last_frame(shell) - shell.editor.doc.start).max(0) as f32
+}
+
+/// Scroll while a scrub drag is held near or past the edge of `area`.
+fn edge_scroll(ui: &egui::Ui, shell: &mut Shell, area: Rect, x: f32) {
+    let speed = edge_speed(x, area.left(), area.right());
+    if speed == 0.0 {
+        return;
+    }
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
+    let max = max_scroll(shell);
+    let state = &mut shell.ui;
+    let fw = state.timeline_frame_width.max(MIN_FRAME_WIDTH);
+    state.timeline_scroll = (state.timeline_scroll + speed * dt / fw).clamp(0.0, max);
+    ui.ctx().request_repaint();
+}
+
 /// Change the zoom to `width` pixels per frame, keeping `anchor` in place.
 fn set_frame_width(shell: &mut Shell, width: f32, anchor: f32) {
-    let (start, end) = (shell.editor.doc.start as f32, shell.editor.doc.end as f32);
+    let start = shell.editor.doc.start as f32;
+    let max = max_scroll(shell);
     let ui = &mut shell.ui;
     let old = ui.timeline_frame_width.clamp(MIN_FRAME_WIDTH, MAX_FRAME_WIDTH);
     let new = width.clamp(MIN_FRAME_WIDTH, MAX_FRAME_WIDTH);
-    ui.timeline_scroll = zoomed_scroll(anchor, start, ui.timeline_scroll, old, new).clamp(0.0, end - start);
+    ui.timeline_scroll = zoomed_scroll(anchor, start, ui.timeline_scroll, old, new).clamp(0.0, max);
     ui.timeline_frame_width = new;
 }
 
@@ -216,11 +325,12 @@ pub fn fit_all(shell: &mut Shell) {
     shell.ui.timeline_scroll = 0.0;
 }
 
-fn zoom_and_scroll(ui: &egui::Ui, shell: &mut Shell, area: Rect, start: Frame, end: Frame) {
+fn zoom_and_scroll(ui: &egui::Ui, shell: &mut Shell, area: Rect) {
     let hovered = ui.rect_contains_pointer(area);
     if !hovered {
         return;
     }
+    let start = shell.editor.doc.start;
     let (zoom, scroll, mods) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.modifiers));
     if zoom != 1.0 {
         // zoom around the frame under the pointer
@@ -232,7 +342,7 @@ fn zoom_and_scroll(ui: &egui::Ui, shell: &mut Shell, area: Rect, start: Frame, e
         set_frame_width(shell, fw * zoom, anchor);
     } else if scroll.x != 0.0 || (mods.shift && scroll.y != 0.0) {
         let dx = if scroll.x != 0.0 { scroll.x } else { scroll.y };
-        let max = (end - start) as f32;
+        let max = max_scroll(shell);
         shell.ui.timeline_scroll =
             (shell.ui.timeline_scroll - dx / shell.ui.timeline_frame_width).clamp(0.0, max);
     }
@@ -356,7 +466,27 @@ fn row(
     if name_resp.secondary_clicked() && !selected {
         shell.editor.select(id, SelectMode::Replace);
     }
+    if name_resp.double_clicked() {
+        toggle_expanded(shell, id);
+    }
     menus::context_menu(&name_resp, |ui| menus::layer_context(ui, shell));
+    // the arrow at the end of the name opens the layer's property rows too
+    let open = shell.ui.timeline_expanded.contains(&id);
+    let arrow = Rect::from_center_size(pos2(names.right() - 12.0, names.center().y), vec2(12.0, 12.0));
+    icons::image(
+        ui.ctx(),
+        if open { Icon::Collapse } else { Icon::Expand },
+        12.0,
+        p.text_muted,
+    )
+    .paint_at(ui, arrow);
+    let arrow_resp = ui.interact(arrow.expand(4.0), Id::new(("tl-arrow", id)), Sense::click());
+    if arrow_resp
+        .on_hover_text("Show this layer's properties, to key each on its own (or double-click the layer)")
+        .clicked()
+    {
+        toggle_expanded(shell, id);
+    }
 
     // keyframes, shaped by how they move on: smooth round, linear
     // diamond, step square
@@ -364,30 +494,15 @@ fn row(
     let key_painter = ui.painter_at(keys.intersect(keys_clip));
     for (f, interp) in glyphs {
         let c = pos2(x_of(f as f32), keys.center().y);
-        let fill = if f == now { p.accent_strong } else { p.keyframe };
-        let outline = Stroke::new(1.0, p.bg);
-        match interp {
-            Some(Interpolation::Smooth) => {
-                key_painter.circle(c, 4.5, fill, outline);
-            }
-            Some(Interpolation::Step) => {
-                let r = Rect::from_center_size(c, vec2(8.0, 8.0));
-                key_painter.rect(r, 1.0, fill, outline, egui::StrokeKind::Outside);
-            }
-            _ => {
-                let s = 5.0;
-                key_painter.add(Shape::convex_polygon(
-                    vec![
-                        c + vec2(0.0, -s),
-                        c + vec2(s, 0.0),
-                        c + vec2(0.0, s),
-                        c + vec2(-s, 0.0),
-                    ],
-                    fill,
-                    outline,
-                ));
-            }
-        }
+        let fill = p.key_color(interp);
+        // the key under the playhead gets a purple ring, so its colour (the
+        // way it moves on) still reads
+        let outline = if f == now {
+            Stroke::new(1.5, p.accent_strong)
+        } else {
+            Stroke::new(1.0, p.bg)
+        };
+        key_shape(&key_painter, c, interp, fill, outline);
     }
 
     for (f, name) in &switch_names {
@@ -409,12 +524,16 @@ fn row(
         Sense::click_and_drag(),
     );
     if key_resp.clicked() || key_resp.secondary_clicked() {
+        shell.ui.timeline_scrubbing = true;
         if let Some(pos) = key_resp.interact_pointer_pos() {
             shell.editor.go_to(frame_at(pos.x));
         }
         if !selected || key_resp.clicked() {
             shell.editor.select(id, SelectMode::Replace);
         }
+    }
+    if key_resp.double_clicked() {
+        toggle_expanded(shell, id);
     }
     if key_resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(start) = ui.input(|i| i.pointer.press_origin())
@@ -434,7 +553,9 @@ fn row(
         if shell.editor.is_dragging_keys() {
             shell.editor.drag_keys_to(frame_at(pos.x));
         } else {
+            shell.ui.timeline_scrubbing = true;
             shell.editor.go_to(frame_at(pos.x));
+            edge_scroll(ui, shell, keys_clip, pos.x);
         }
     }
     if key_resp.drag_stopped() {
@@ -459,6 +580,335 @@ fn row(
         ui.separator();
         menus::item(ui, shell, Action::PrevKey);
         menus::item(ui, shell, Action::NextKey);
+    });
+}
+
+/// A key's mark: round for smooth, a diamond for linear (and for keys that
+/// differ), square for step.
+pub fn key_shape(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    interp: Option<Interpolation>,
+    fill: egui::Color32,
+    outline: Stroke,
+) {
+    match interp {
+        Some(Interpolation::Smooth) => {
+            painter.circle(c, 4.5, fill, outline);
+        }
+        Some(Interpolation::Step) => {
+            let r = Rect::from_center_size(c, vec2(8.0, 8.0));
+            painter.rect(r, 1.0, fill, outline, egui::StrokeKind::Outside);
+        }
+        _ => {
+            let s = 5.0;
+            painter.add(Shape::convex_polygon(
+                vec![
+                    c + vec2(0.0, -s),
+                    c + vec2(s, 0.0),
+                    c + vec2(0.0, s),
+                    c + vec2(-s, 0.0),
+                ],
+                fill,
+                outline,
+            ));
+        }
+    }
+}
+
+fn toggle_expanded(shell: &mut Shell, id: LayerId) {
+    let open = &mut shell.ui.timeline_expanded;
+    if !open.remove(&id) {
+        open.insert(id);
+    }
+}
+
+/// The camera's row, above the layers: its keys (all three properties
+/// together), and the arrow or a double-click to open Position, Zoom and Roll
+/// as rows of their own. It is the project's, not a layer's.
+fn camera_row(
+    ui: &mut egui::Ui,
+    shell: &mut Shell,
+    keys_clip: Rect,
+    x_of: &impl Fn(f32) -> f32,
+    frame_at: &impl Fn(f32) -> Frame,
+) {
+    let p = shell.palette;
+    let now = shell.editor.current_frame();
+    // each key frame, with the way it moves on when the properties agree
+    let camera = &shell.editor.doc.camera;
+    let glyphs: Vec<(Frame, Option<Interpolation>)> = camera
+        .key_frames()
+        .into_iter()
+        .map(|f| {
+            let mut interp: Option<Option<Interpolation>> = None;
+            for ch in ChannelId::CAMERA {
+                if let Some(i) = camera.keys(ch).and_then(|k| k.interp_at(f)) {
+                    interp = Some(match interp {
+                        None => Some(i),
+                        Some(Some(j)) if j == i => Some(i),
+                        Some(_) => None,
+                    });
+                }
+            }
+            (f, interp.flatten())
+        })
+        .collect();
+    let open = shell.ui.timeline_expanded.contains(&CAMERA_ROW);
+
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
+    let names = Rect::from_min_max(rect.min, pos2(rect.left() + NAMES_WIDTH, rect.bottom()));
+    let keys = Rect::from_min_max(pos2(names.right(), rect.top()), rect.max);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, p.bone.gamma_multiply(0.12));
+    painter.rect_filled(
+        Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
+        0.0,
+        p.bone,
+    );
+    painter.hline(
+        rect.x_range(),
+        rect.bottom(),
+        Stroke::new(1.0, p.border.gamma_multiply(0.5)),
+    );
+    painter.text(
+        pos2(names.left() + 8.0, names.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Camera",
+        egui::FontId::proportional(12.0),
+        p.text,
+    );
+    let arrow = Rect::from_center_size(pos2(names.right() - 12.0, names.center().y), vec2(12.0, 12.0));
+    icons::image(
+        ui.ctx(),
+        if open { Icon::Collapse } else { Icon::Expand },
+        12.0,
+        p.text_muted,
+    )
+    .paint_at(ui, arrow);
+
+    let key_painter = ui.painter_at(keys.intersect(keys_clip));
+    for (f, interp) in &glyphs {
+        let c = pos2(x_of(*f as f32), keys.center().y);
+        let outline = if *f == now {
+            Stroke::new(1.5, p.accent_strong)
+        } else {
+            Stroke::new(1.0, p.bg)
+        };
+        key_shape(&key_painter, c, *interp, p.key_color(*interp), outline);
+    }
+
+    let name_resp = ui.interact(names, Id::new("tl-camera-name"), Sense::click());
+    // choosing the camera shows its settings: with no layer selected, the
+    // Properties panel is the project's, camera included
+    if name_resp.clicked() {
+        shell.editor.selection.clear();
+        shell.ui.focus_properties = true;
+    }
+    let mut toggle = name_resp.double_clicked();
+    let arrow_resp = ui.interact(arrow.expand(4.0), Id::new("tl-camera-arrow"), Sense::click());
+    toggle |= arrow_resp
+        .on_hover_text("Show the camera's Position, Zoom and Roll, to key each on its own (or double-click)")
+        .clicked();
+    // click to go to a frame; drag a key to retime all of the camera's keys
+    // on it, or drag elsewhere to scrub
+    let key_resp = ui.interact(
+        keys.intersect(keys_clip),
+        Id::new("tl-camera-keys"),
+        Sense::click_and_drag(),
+    );
+    if key_resp.clicked() || key_resp.secondary_clicked() {
+        shell.ui.timeline_scrubbing = true;
+        if let Some(pos) = key_resp.interact_pointer_pos() {
+            shell.editor.go_to(frame_at(pos.x));
+        }
+    }
+    toggle |= key_resp.double_clicked();
+    if key_resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(start) = ui.input(|i| i.pointer.press_origin())
+    {
+        let from = frame_at(start.x);
+        if (x_of(from as f32) - start.x).abs() <= KEY_GRAB_PX {
+            shell.editor.begin_camera_key_drag(None, from);
+        }
+    }
+    if key_resp.dragged_by(egui::PointerButton::Primary)
+        && let Some(pos) = key_resp.interact_pointer_pos()
+    {
+        if shell.editor.is_dragging_keys() {
+            shell.editor.drag_keys_to(frame_at(pos.x));
+        } else {
+            shell.ui.timeline_scrubbing = true;
+            shell.editor.go_to(frame_at(pos.x));
+            edge_scroll(ui, shell, keys_clip, pos.x);
+        }
+    }
+    if key_resp.drag_stopped() {
+        shell.editor.end_key_drag();
+    }
+    menus::context_menu(&key_resp, |ui| {
+        ui.label(RichText::new(format!("Camera, frame {now}")).color(p.text_muted));
+        for ch in ChannelId::CAMERA {
+            menus::item(ui, shell, Action::AddChannelKey(ch));
+        }
+        ui.separator();
+        menus::item(ui, shell, Action::ResetCamera);
+        menus::item(ui, shell, Action::LookThroughCamera);
+    });
+    if toggle {
+        let open = &mut shell.ui.timeline_expanded;
+        if !open.remove(&CAMERA_ROW) {
+            open.insert(CAMERA_ROW);
+        }
+    }
+}
+
+/// One property of an open layer: its own row of keys, to key, retime and
+/// set the movement of one property without touching the others.
+#[allow(clippy::too_many_arguments)]
+fn property_row(
+    ui: &mut egui::Ui,
+    shell: &mut Shell,
+    id: LayerId,
+    ch: ChannelId,
+    depth: usize,
+    keys_clip: Rect,
+    x_of: &impl Fn(f32) -> f32,
+    frame_at: &impl Fn(f32) -> Frame,
+) {
+    let camera = ch.is_camera();
+    let layer = shell.editor.doc.find(id);
+    if layer.is_none() && !camera {
+        return;
+    }
+    let label = if camera {
+        ch.camera_label().to_owned()
+    } else {
+        layer.map(|l| l.channel_label(ch)).unwrap_or_default()
+    };
+    let frames: Vec<(Frame, Interpolation)> = {
+        let mut frames = Vec::new();
+        let keys = if camera {
+            shell.editor.doc.camera.keys(ch)
+        } else {
+            layer.and_then(|l| l.channel_keys(ch))
+        };
+        if let Some(keys) = keys {
+            keys.frames_into(&mut frames);
+            frames.sort_unstable();
+            frames
+                .into_iter()
+                .filter_map(|f| Some((f, keys.interp_at(f)?)))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    let p = shell.palette;
+    let selected = !camera && shell.editor.is_selected(id);
+    let now = shell.editor.current_frame();
+
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
+    let names = Rect::from_min_max(rect.min, pos2(rect.left() + NAMES_WIDTH, rect.bottom()));
+    let keys = Rect::from_min_max(pos2(names.right(), rect.top()), rect.max);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, p.bg.gamma_multiply(0.5));
+    if selected {
+        painter.rect_filled(rect, 0.0, p.accent.gamma_multiply(0.1));
+    }
+    painter.hline(
+        rect.x_range(),
+        rect.bottom(),
+        Stroke::new(1.0, p.border.gamma_multiply(0.35)),
+    );
+    painter.text(
+        pos2(names.left() + 8.0 + (depth + 1) as f32 * 12.0, names.center().y),
+        egui::Align2::LEFT_CENTER,
+        &label,
+        egui::FontId::proportional(11.5),
+        p.text_muted,
+    );
+
+    let key_painter = ui.painter_at(keys.intersect(keys_clip));
+    for (f, interp) in &frames {
+        let c = pos2(x_of(*f as f32), keys.center().y);
+        let outline = if *f == now {
+            Stroke::new(1.5, p.accent_strong)
+        } else {
+            Stroke::new(1.0, p.bg)
+        };
+        key_shape(
+            &key_painter,
+            c,
+            Some(*interp),
+            p.key_color(Some(*interp)),
+            outline,
+        );
+    }
+
+    // click to select the layer and go to a frame; drag a key to retime it,
+    // or drag elsewhere to scrub; right-click for this property's key menu
+    let name_resp = ui.interact(names, Id::new(("tl-prop-name", id, ch)), Sense::click());
+    if !camera && (name_resp.clicked() || name_resp.secondary_clicked()) {
+        shell.editor.select(id, SelectMode::Replace);
+    }
+    let key_resp = ui.interact(
+        keys.intersect(keys_clip),
+        Id::new(("tl-prop-keys", id, ch)),
+        Sense::click_and_drag(),
+    );
+    if key_resp.clicked() || key_resp.secondary_clicked() {
+        shell.ui.timeline_scrubbing = true;
+        if let Some(pos) = key_resp.interact_pointer_pos() {
+            shell.editor.go_to(frame_at(pos.x));
+        }
+        if !camera {
+            shell.editor.select(id, SelectMode::Replace);
+        }
+    }
+    if key_resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(start) = ui.input(|i| i.pointer.press_origin())
+    {
+        let from = frame_at(start.x);
+        if (x_of(from as f32) - start.x).abs() <= KEY_GRAB_PX && frames.iter().any(|(f, _)| *f == from) {
+            if !camera {
+                shell.editor.select(id, SelectMode::Replace);
+            }
+            shell.editor.begin_channel_key_drag(id, ch, from);
+        }
+    }
+    if key_resp.dragged_by(egui::PointerButton::Primary)
+        && let Some(pos) = key_resp.interact_pointer_pos()
+    {
+        if shell.editor.is_dragging_keys() {
+            shell.editor.drag_keys_to(frame_at(pos.x));
+        } else {
+            shell.ui.timeline_scrubbing = true;
+            shell.editor.go_to(frame_at(pos.x));
+            edge_scroll(ui, shell, keys_clip, pos.x);
+        }
+    }
+    if key_resp.drag_stopped() {
+        shell.editor.end_key_drag();
+    }
+    if key_resp.hovered()
+        && let Some(pos) = key_resp.hover_pos()
+    {
+        let f = frame_at(pos.x);
+        let on_key = (x_of(f as f32) - pos.x).abs() <= KEY_GRAB_PX && frames.iter().any(|(k, _)| *k == f);
+        if shell.editor.is_dragging_keys() || on_key {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+    }
+    menus::context_menu(&key_resp, |ui| {
+        ui.label(
+            RichText::new(format!("{label}, frame {}", shell.editor.current_frame())).color(p.text_muted),
+        );
+        menus::item(ui, shell, Action::AddChannelKey(ch));
+        menus::item(ui, shell, Action::DeleteChannelKey(ch));
+        for interp in Interpolation::ALL {
+            menus::item(ui, shell, Action::SetChannelInterpolation(ch, interp));
+        }
     });
 }
 
@@ -515,6 +965,47 @@ fn action_banner(ui: &mut egui::Ui, shell: &mut Shell) {
         });
 }
 
+/// How keys added from now on move on to the next key, with the shape and
+/// colour they have on the timeline: smooth (round, amber), linear (a
+/// diamond, blue), step (square, red).
+fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
+    let p = shell.palette;
+    let current = shell.editor.key_interp;
+    let mark = |ui: &mut egui::Ui, interp: Interpolation| {
+        let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+        key_shape(
+            ui.painter(),
+            rect.center(),
+            Some(interp),
+            p.key_color(Some(interp)),
+            Stroke::new(1.0, p.bg),
+        );
+    };
+    mark(ui, current);
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt("key-interpolation")
+        .width(70.0)
+        .selected_text(current.label())
+        .show_ui(ui, |ui| {
+            for interp in Interpolation::ALL {
+                ui.horizontal(|ui| {
+                    mark(ui, interp);
+                    if ui.selectable_label(interp == current, interp.label()).clicked() {
+                        chosen = Some(interp);
+                    }
+                });
+            }
+        })
+        .response
+        .on_hover_text(
+            "How keys you add move on to the next key. Smooth eases in and out, Linear moves at a \
+             steady speed, Step holds then jumps. Keys already on the timeline keep theirs.",
+        );
+    if let Some(interp) = chosen {
+        shell.pending.push(Action::SetKeyInterpolation(interp));
+    }
+}
+
 fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.horizontal(|ui| {
         let tip = |shell: &Shell, a: Action| {
@@ -551,7 +1042,8 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
         let mut f = shell.editor.current_frame();
         let (start, end) = (shell.editor.doc.start, shell.editor.doc.end);
         if ui
-            .add(egui::DragValue::new(&mut f).range(start..=end).speed(0.2))
+            // free to go past the last frame: later frames can hold keys too
+            .add(egui::DragValue::new(&mut f).range(start..=Frame::MAX).speed(0.2))
             .changed()
         {
             shell.editor.go_to(f);
@@ -569,7 +1061,6 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
         if r.changed() {
             begin_edit(shell, &r, "Change last frame");
             shell.editor.doc.end = new_end;
-            shell.editor.frame = shell.editor.frame.min(new_end as f32);
         }
         ui.label(RichText::new(format!("{} fps", shell.editor.doc.fps)).color(shell.palette.text_muted));
         ui.separator();
@@ -586,6 +1077,7 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
                 shell.pending.push(action);
             }
         }
+        key_interp_dropdown(ui, shell);
         ui.separator();
         // onion skin: the toggle, and its settings on right-click
         let onion = icons::button(ui, Icon::OnionSkin, 24.0, shell.onion.on, false).on_hover_text(format!(
@@ -666,6 +1158,45 @@ mod tests {
     /// Where a frame is drawn, in pixels from the left of the frame area.
     fn x_of(frame: f32, start: f32, scroll: f32, width: f32) -> f32 {
         (frame - start - scroll) * width + width / 2.0
+    }
+
+    #[test]
+    fn a_frame_out_of_view_is_scrolled_to_with_a_little_room() {
+        // 12 px frames in a 600 px view: 50 frames show
+        let (fw, view) = (12.0, 600.0);
+        // already in view: nothing moves
+        assert_eq!(reveal(0.0, 0, 10, fw, view), 0.0);
+        // past the right edge: scrolls just far enough, keeping a margin
+        let scroll = reveal(0.0, 0, 80, fw, view);
+        let right_edge = (80.0 - scroll) * fw + fw;
+        assert!(right_edge <= view - fw, "{right_edge}");
+        assert!(
+            right_edge >= view - 4.0 * fw,
+            "scrolls no further than it must: {right_edge}"
+        );
+        // before the left edge: scrolls back, never below zero
+        // frame 5 comes to two frames from the left edge (the margin)
+        assert_eq!(reveal(30.0, 0, 5, fw, view), 3.0);
+        assert_eq!(reveal(2.0, 0, 0, fw, view), 0.0);
+        // with a first frame that is not zero
+        assert_eq!(reveal(0.0, 24, 24, fw, view), 0.0);
+    }
+
+    #[test]
+    fn a_scrub_held_at_the_edge_scrolls_faster_the_further_out() {
+        let (left, right) = (100.0, 700.0);
+        // inside the view: still
+        assert_eq!(edge_speed(400.0, left, right), 0.0);
+        assert_eq!(edge_speed(right - 28.0, left, right), 0.0);
+        // at the edge and beyond it: to the right, faster and faster, then capped
+        let at_edge = edge_speed(right, left, right);
+        let beyond = edge_speed(right + 60.0, left, right);
+        let far = edge_speed(right + 5000.0, left, right);
+        assert!(0.0 < at_edge && at_edge < beyond && beyond < far);
+        assert_eq!(far, edge_speed(right + 1000.0, left, right));
+        // and to the left the same, backwards
+        assert_eq!(edge_speed(left, left, right), -at_edge);
+        assert!(edge_speed(left - 60.0, left, right) < edge_speed(left, left, right));
     }
 
     #[test]

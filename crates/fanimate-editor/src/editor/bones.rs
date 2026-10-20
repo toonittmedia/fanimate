@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use fanimate_core::bones::{self, Skeleton};
-use fanimate_core::{Affine2, Bone, Interpolation, LayerId, LayerKind, Shape, Vec2};
+use fanimate_core::{Affine2, Bone, LayerId, LayerKind, Shape, Vec2};
 
 use super::{Editor, StatusKind, labelled};
 
@@ -394,6 +394,7 @@ impl Editor {
     fn pose(&mut self, b: BoneRef, start: &[f32], grab: Vec2, to: Vec2, fk: bool) {
         let local = self.to_rig(b.layer).transform_point2(to);
         let frame = self.current_frame();
+        let interp = self.key_interp;
         let Some(skeleton) = self.skeleton_mut(b.layer) else {
             return;
         };
@@ -411,7 +412,7 @@ impl Editor {
         }
         for (i, bone) in skeleton.bones.iter_mut().enumerate() {
             if (angles[i] - start[i]).abs() > 1e-6 || bone.angle.keys.iter().any(|k| k.frame == frame) {
-                bone.angle.set_key(frame, angles[i], Interpolation::Smooth);
+                bone.angle.set_key(frame, angles[i], interp);
             }
         }
         self.dirty = true;

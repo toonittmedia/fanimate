@@ -13,16 +13,29 @@ use crate::panels::handles::{self, Hit, Screen};
 /// Apply snapping to a document-space point. Stores the hint line in
 /// `shell.ui.snap_hint` so the overlay can draw it. Returns the snapped point.
 fn do_snap(shell: &mut Shell, p: Vec2) -> Vec2 {
-    // Only snap while a drag is active (not on hover)
+    // other shapes' lines are worked out once per gesture (the document, the
+    // selection and the frame decide them), not on every pointer move
+    let key = (
+        shell.editor.revision(),
+        shell.editor.selection.clone(),
+        shell.editor.current_frame(),
+    );
+    if shell.snap.shapes && shell.ui.snap_lines.as_ref().is_none_or(|(k, _)| *k != key) {
+        let lines = shell.editor.snap_lines();
+        shell.ui.snap_lines = Some((key, lines));
+    }
+    let none = fanimate_editor::snap::ShapeLines::default();
+    let lines = shell.ui.snap_lines.as_ref().map_or(&none, |(_, l)| l);
     let result = fanimate_editor::snap::snap(
         p,
         &shell.snap,
         &shell.grid,
-        &shell.guides,
+        &shell.editor.doc.guides,
         shell.editor.doc.size(),
         shell.view.zoom,
+        lines,
     );
-    shell.ui.snap_hint = result.hint;
+    shell.ui.snap_hint = result.hints;
     result.position
 }
 
@@ -31,7 +44,13 @@ const FIT_MARGIN: f32 = 32.0;
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     // Clear the snap hint from the previous frame; tool gestures set it again
     // during this frame if a drag is active.
-    shell.ui.snap_hint = None;
+    shell.ui.snap_hint.clear();
+    // looking through the camera, the canvas is a picture, not a place to
+    // edit: the tools are off (the view still pans and zooms)
+    let looking = shell.look_through_camera;
+    if looking && shell.editor.tool != Tool::Pan {
+        shell.editor.set_tool(Tool::Pan);
+    }
 
     let full_rect = ui.available_rect_before_wrap();
 
@@ -63,18 +82,6 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         let d = p - rect.center();
         center + Vec2::new(d.x, d.y) / zoom
     };
-
-    // Rulers and guides (before the canvas content so guides appear on top
-    // of the grid but under the artwork).
-    {
-        let (center, zoom) = (shell.view.center, shell.view.zoom);
-        let to_screen_v = |p: Vec2| to_screen(center, zoom, p);
-        let to_doc_z = |z: f32, p: Pos2| to_doc(center, z, p);
-        crate::panels::rulers::rulers(ui, shell, full_rect, &to_doc_z, &to_screen_v);
-        // Grid (drawn before the GPU texture)
-        let painter = ui.painter_at(rect);
-        crate::panels::rulers::grid(&painter, shell, rect, &to_screen_v);
-    }
 
     navigate(&ctx, &response, shell, rect, &to_doc);
 
@@ -109,7 +116,6 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     let shape_preview = shape_tools(&ctx, &response, shell, &to_doc);
     let shape_e_preview = shape_tools_e(&ctx, &response, shell, &to_doc);
     click_tools(&response, shell, &to_doc);
-    click_tools_e(&ctx, &response, shell, &to_doc);
     if tools_free {
         point_tools(&ctx, &response, shell, &to_doc);
     }
@@ -181,25 +187,48 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         );
     }
 
-    // Snap hint line over the artwork
-    if let Some((a, b)) = shell.ui.snap_hint {
-        let sa = to_screen(shell.view.center, shell.view.zoom, a);
-        let sb = to_screen(shell.view.center, shell.view.zoom, b);
+    // The lines a drag snapped to, over the artwork
+    {
         let painter = ui.painter_at(rect);
-        painter.line_segment(
-            [sa, sb],
-            Stroke::new(1.0, shell.palette.accent.gamma_multiply(0.6)),
-        );
+        for (a, b) in &shell.ui.snap_hint {
+            let sa = to_screen(shell.view.center, shell.view.zoom, *a);
+            let sb = to_screen(shell.view.center, shell.view.zoom, *b);
+            painter.line_segment([sa, sb], Stroke::new(1.0, shell.palette.accent_strong));
+        }
     }
 
-    overlays(ui, shell, rect, &to_screen);
-    selection_overlay(ui, shell, &response, &screen, hover_hit);
-    crate::panels::selbar::show(ui.ctx(), shell, rect, &screen);
-    point_overlay(ui, shell, rect, &to_screen);
-    pen_overlay(ui, shell, rect, &to_screen);
-    curvature_overlay(ui, shell, rect, &to_screen);
-    weight_overlay(ui, shell, rect, &to_screen);
-    brush_cursor(ui, &response, shell);
+    // The grid, then the rulers and their guides. The canvas picture is
+    // opaque, so these go over it: drawn first, the picture hid them.
+    {
+        let (center, zoom) = (shell.view.center, shell.view.zoom);
+        let to_screen_v = |p: Vec2| to_screen(center, zoom, p);
+        let to_doc_z = |z: f32, p: Pos2| to_doc(center, z, p);
+        let painter = ui.painter_at(rect);
+        crate::panels::rulers::grid(&painter, shell, rect, &to_screen_v);
+        crate::panels::rulers::rulers(ui, shell, full_rect, &to_doc_z, &to_screen_v);
+    }
+
+    if looking {
+        let p = shell.palette;
+        ui.painter_at(rect).text(
+            rect.left_top() + egui::vec2(12.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            "Looking through the camera. Editing is off.",
+            egui::FontId::proportional(12.0),
+            p.text_muted,
+        );
+    } else {
+        camera_overlay(ui, shell, rect, &to_screen);
+        overlays(ui, shell, rect, &to_screen);
+        selection_overlay(ui, shell, &response, &screen, hover_hit);
+        crate::panels::selbar::show(ui.ctx(), shell, rect, &screen);
+        point_overlay(ui, shell, rect, &to_screen);
+        pen_overlay(ui, shell, rect, &to_screen);
+        curvature_overlay(ui, shell, rect, &to_screen);
+        weight_overlay(ui, shell, rect, &to_screen);
+        brush_cursor(ui, &response, shell);
+        line_width_overlay(ui, &response, shell, rect, &to_screen);
+    }
 
     menus::context_menu(&response, |ui| {
         menus::item(ui, shell, Action::FitView);
@@ -215,11 +244,49 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     });
 }
 
+/// The camera's frame on the canvas: what a render sees at this frame. Shown
+/// when the camera is not looking at all of the canvas, or while its row on
+/// the timeline is open.
+fn camera_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(Vec2, f32, Vec2) -> Pos2) {
+    let doc = &shell.editor.doc;
+    let open = shell
+        .ui
+        .timeline_expanded
+        .contains(&crate::panels::timeline::CAMERA_ROW);
+    if doc.camera.is_default() && !open {
+        return;
+    }
+    let Some(corners) = fanimate_core::camera_frame(doc, shell.editor.frame) else {
+        return;
+    };
+    let (c, z, p) = (shell.view.center, shell.view.zoom, shell.palette);
+    let screen: Vec<Pos2> = corners.iter().map(|q| to_screen(c, z, *q)).collect();
+    let painter = ui.painter_at(rect);
+    let stroke = Stroke::new(1.5, p.bone);
+    for i in 0..4 {
+        painter.line_segment([screen[i], screen[(i + 1) % 4]], stroke);
+    }
+    painter.text(
+        screen[0] + egui::vec2(4.0, 3.0),
+        egui::Align2::LEFT_TOP,
+        "Camera",
+        egui::FontId::proportional(11.0),
+        p.bone,
+    );
+}
+
 /// Onion skins and the light table, from the view settings. Not while
 /// playing: they would only flicker.
 fn canvas_overlays(shell: &Shell) -> crate::canvas_gpu::Overlays {
     let ed = &shell.editor;
-    let mut out = crate::canvas_gpu::Overlays::default();
+    let mut out = crate::canvas_gpu::Overlays {
+        camera: shell.look_through_camera,
+        ..Default::default()
+    };
+    // looking through the camera, only the artwork is shown
+    if shell.look_through_camera {
+        return out;
+    }
     if shell.light_table && !ed.selection.is_empty() {
         out.light_table = Some(ed.selection.clone());
     }
@@ -412,7 +479,9 @@ fn freehand_tool(
     shell: &mut Shell,
     to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
 ) {
-    if !matches!(shell.editor.tool, Tool::Freehand | Tool::FreehandWidth) {
+    // Draw Shape sketches a closed shape; the others make brush strokes
+    let outline = shell.editor.tool == Tool::DrawShape;
+    if !outline && !matches!(shell.editor.tool, Tool::Freehand | Tool::FreehandWidth) {
         if shell.editor.is_drawing() {
             shell.editor.cancel_stroke();
         }
@@ -426,8 +495,13 @@ fn freehand_tool(
     if response.clicked_by(egui::PointerButton::Primary)
         && let Some(pos) = response.interact_pointer_pos()
     {
-        // a tap leaves a dot
-        if shell.editor.begin_stroke(doc(pos), pressure, zoom) {
+        // a tap leaves a dot with a brush; a shape needs a drag to enclose something
+        if outline {
+            shell.editor.set_status(
+                fanimate_editor::StatusKind::Info,
+                "Drag around an area to sketch a shape, then let go to close and fill it",
+            );
+        } else if shell.editor.begin_stroke(doc(pos), pressure, zoom) {
             shell.editor.finish_stroke();
         }
         return;
@@ -436,10 +510,15 @@ fn freehand_tool(
         // start where the button went down: the drag only registers after
         // the pointer has moved a little
         let start = press_origin.or(response.interact_pointer_pos());
-        if let Some(start) = start
-            && !shell.editor.begin_stroke(doc(start), pressure, zoom)
-        {
-            return;
+        if let Some(start) = start {
+            let began = if outline {
+                shell.editor.begin_outline(doc(start), zoom)
+            } else {
+                shell.editor.begin_stroke(doc(start), pressure, zoom)
+            };
+            if !began {
+                return;
+            }
         }
     }
     if shell.editor.is_drawing() {
@@ -528,6 +607,53 @@ fn brush_cursor(ui: &egui::Ui, response: &egui::Response, shell: &Shell) {
         let painter = ui.painter_at(response.rect);
         painter.circle_stroke(pos, r, Stroke::new(1.0, shell.palette.bg));
         painter.circle_stroke(pos, r + 1.0, Stroke::new(1.0, shell.palette.text));
+    }
+}
+
+/// Line Width: a ring on the point a press would widen, with its width and
+/// how to change it; while dragging, the width beside the pointer.
+fn line_width_overlay(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    shell: &Shell,
+    rect: Rect,
+    to_screen: &impl Fn(Vec2, f32, Vec2) -> Pos2,
+) {
+    if shell.editor.tool != Tool::LineWidth {
+        return;
+    }
+    let p = shell.palette;
+    let (center, zoom) = (shell.view.center, shell.view.zoom);
+    let painter = ui.painter_at(rect);
+    let label = |at: Pos2, text: String| {
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.0), p.text);
+        let size = galley.size();
+        let pos = at + egui::vec2(14.0, 14.0);
+        let bg = Rect::from_min_size(pos - egui::vec2(5.0, 3.0), size + egui::vec2(10.0, 6.0));
+        painter.rect_filled(bg, 4.0, p.raised);
+        painter.rect_stroke(bg, 4.0, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        painter.galley(pos, galley, p.text);
+    };
+    if let Some(width) = shell.editor.line_width_readout() {
+        // dragging: the point stays marked, and the width follows the pointer
+        if let Some(pointer) = response.interact_pointer_pos() {
+            label(pointer, format!("Width {width:.1} px"));
+        }
+        return;
+    }
+    let Some(pointer) = response.hover_pos() else {
+        return;
+    };
+    let d = pointer - rect.center();
+    let at = center + Vec2::new(d.x, d.y) / zoom;
+    if let Some((_, point, width)) = shell.editor.line_width_point(at, POINT_SLOP_PX / zoom * 3.0) {
+        let s = to_screen(center, zoom, point);
+        painter.circle_stroke(s, 9.0, Stroke::new(2.0, p.bg));
+        painter.circle_stroke(s, 9.0, Stroke::new(1.0, p.accent_strong));
+        label(
+            pointer,
+            format!("Width {width:.1} px. Drag up to widen, down to narrow."),
+        );
     }
 }
 
@@ -985,46 +1111,6 @@ fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Ve
     }
 }
 
-/// Phase E: click-based tools (DrawShape).
-fn click_tools_e(
-    ctx: &egui::Context,
-    response: &egui::Response,
-    shell: &mut Shell,
-    to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2,
-) {
-    let tool = shell.editor.tool;
-    if !matches!(tool, Tool::DrawShape) {
-        return;
-    }
-    // Fire on a click (no movement) OR a very short primary-button drag
-    // (stylus / mouse jitter). `clicked_by` requires the pointer to stay
-    // within egui's own click-distance threshold; the drag_stopped path
-    // catches releases that are just outside it.
-    let (press_origin, primary_released) =
-        ctx.input(|i| (i.pointer.press_origin(), i.pointer.primary_released()));
-    let is_tap = response.clicked_by(egui::PointerButton::Primary);
-    let is_short_drag = primary_released
-        && response
-            .interact_pointer_pos()
-            .zip(press_origin)
-            .is_some_and(|(end, start)| (end - start).length() <= HIT_SLOP_PX * 3.0);
-    if !is_tap && !is_short_drag {
-        return;
-    }
-    let Some(pos) = response.interact_pointer_pos() else {
-        return;
-    };
-    let _ = ctx; // modifiers available if needed in future
-    let p = to_doc(shell.view.center, shell.view.zoom, pos);
-    let slop = HIT_SLOP_PX / shell.view.zoom;
-    if !shell.editor.pick_draw_style(p, slop) {
-        shell.editor.set_status(
-            fanimate_editor::StatusKind::Info,
-            "Click on a shape to copy its colours",
-        );
-    }
-}
-
 /// A bone layer's bones as tapered shapes from joint to tip, the selected
 /// one in the interaction colour, pinned ones with a square joint.
 fn bone_overlay(
@@ -1358,19 +1444,24 @@ fn editing_tools_e(
         }
 
         // ---- Line Width ----
+        // press next to a point of a stroke, drag up to widen it, down to
+        // narrow it (the point and its width show while hovering and dragging)
         Tool::LineWidth => {
-            if response.drag_started_by(egui::PointerButton::Primary) {
-                shell.editor.checkpoint("Line width");
-                shell.ui.magnet_active = true;
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(press) = ctx.input(|i| i.pointer.press_origin())
+                && shell.editor.begin_line_width(doc(press), slop * 3.0)
+            {
+                shell.ui.line_width_press = Some(press.y);
             }
-            if shell.ui.magnet_active {
+            if let Some(press_y) = shell.ui.line_width_press {
                 if let Some(pos) = response.interact_pointer_pos() {
-                    let drag_speed = response.drag_delta().length() * zoom;
-                    let new_width = (shell.editor.draw.width + drag_speed * 0.1).max(0.5);
-                    shell.editor.apply_line_width(doc(pos), slop * 6.0, new_width);
+                    // up is positive; in document units, so it scales with the zoom
+                    shell.editor.drag_line_width((press_y - pos.y) / zoom);
+                    ctx.request_repaint();
                 }
                 if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
-                    shell.ui.magnet_active = false;
+                    shell.ui.line_width_press = None;
+                    shell.editor.end_line_width();
                 }
             }
         }

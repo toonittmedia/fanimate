@@ -580,73 +580,116 @@ fn set_on_curve_point(path: &mut Path, n: usize, new_p: Vec2) {
 }
 
 // ---------------------------------------------------------------------------
-// Draw Shape (copy style)
-// ---------------------------------------------------------------------------
-
-impl Editor {
-    /// Draw Shape: set the draw style from the shape under `at`. Returns
-    /// whether a shape was found.
-    pub fn pick_draw_style(&mut self, at: Vec2, tolerance: f32) -> bool {
-        let Some((layer, idx)) = self.shape_at(at, tolerance) else {
-            return false;
-        };
-        let Some(shape) = self.shape(layer, idx) else {
-            return false;
-        };
-        let (style, name) = (shape.style, shape.name.clone());
-        if let Some(fill) = style.fill {
-            self.draw.fill = Some(fill);
-        }
-        if let Some(stroke) = style.stroke {
-            self.draw.line = stroke.color;
-            self.draw.width = stroke.width;
-        }
-        self.set_status(StatusKind::Info, format!("Style copied from \"{name}\""));
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Line Width tool (drag to adjust stroke width along a stroke)
 // ---------------------------------------------------------------------------
 
+/// A Line Width gesture: the points being widened and the width (in
+/// document units) each had when the drag began.
+pub(super) struct LineWidthDrag {
+    points: Vec<(PointRef, f32)>,
+    /// The point pressed on, whose width the readout shows.
+    anchor: PointRef,
+}
+
+/// How much a drag of one document unit changes a width.
+const LINE_WIDTH_RATE: f32 = 0.35;
+
 impl Editor {
-    /// Line Width: drag over a stroke to set the width there. `at` is the
-    /// current pointer, `last` is where it was. `width` is the new width to
-    /// apply at `at`. Modifies the widths of the stroke point nearest `at`
-    /// (document space). Call `checkpoint` once before the drag.
-    pub fn apply_line_width(&mut self, at: Vec2, tolerance: f32, new_width: f32) {
-        let Some(layer) = self.point_layer() else { return };
-        let t = self.world(layer);
-        let inv = t.inverse();
-        if !inv.is_finite() {
-            return;
+    /// The width of the stroke at a point, in document units: the stroke's
+    /// width times the profile there.
+    fn stroke_width_at(&self, r: PointRef) -> Option<f32> {
+        let shape = self.point_shape((r.layer, r.shape))?;
+        let stroke = shape.style.stroke?;
+        let factor = shape
+            .widths
+            .as_ref()
+            .and_then(|w| w.get(r.point))
+            .copied()
+            .unwrap_or(1.0);
+        Some(stroke.width * factor)
+    }
+
+    /// The point of a stroke the Line Width tool would act on at `at`: the
+    /// nearest on-curve point of the selected layer's stroked shapes within
+    /// `reach` (document units), with where it is and the width there.
+    pub fn line_width_point(&self, at: Vec2, reach: f32) -> Option<(PointRef, Vec2, f32)> {
+        self.point_positions()
+            .into_iter()
+            .filter_map(|(r, p)| Some((r, p, self.stroke_width_at(r)?)))
+            .filter(|(_, p, _)| p.distance(at) <= reach)
+            .min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)))
+    }
+
+    /// Line Width, pointer down at `at`: press next to a point of a stroke
+    /// (within `reach`, document units) and drag up to widen it, down to
+    /// narrow it. When the pointer is on a selected point, every selected
+    /// point changes together. A plain stroke gets a width profile on its
+    /// first use. One undo step. Returns false when there is no stroke there.
+    pub fn begin_line_width(&mut self, at: Vec2, reach: f32) -> bool {
+        // with no layer chosen, the stroke under the pointer is
+        if self.line_width_point(at, reach).is_none()
+            && let Some((layer, _)) = self.editable_shape_at(at, reach)
+        {
+            self.select(layer, super::SelectMode::Replace);
         }
-        let local = inv.transform_point2(at);
-        let scale = t.matrix2.x_axis.length().max(1e-6);
-        let local_tol = tolerance / scale;
-        let frame = self.current_frame() as f32;
-        let Some(shapes) = self.layer_shapes_mut(layer) else {
-            return;
+        let Some((hit, _, _)) = self.line_width_point(at, reach) else {
+            self.set_status(
+                StatusKind::Info,
+                "Press next to a point on a stroke, then drag up to widen it or down to narrow it",
+            );
+            return false;
         };
-        for shape in shapes.iter_mut() {
-            if shape.widths.is_none() {
-                continue;
+        let targets: Vec<PointRef> = if self.points.contains(&hit) {
+            self.points.iter().copied().collect()
+        } else {
+            vec![hit]
+        };
+        self.checkpoint("Change line width");
+        let mut points = Vec::new();
+        for r in targets {
+            if let Some(shape) = self.point_shape_mut((r.layer, r.shape)) {
+                let n = shape.path.on_curve_count();
+                // a plain stroke is the same width everywhere: now it can vary
+                if shape.widths.as_ref().is_none_or(|w| w.len() != n) {
+                    shape.widths = Some(vec![1.0; n]);
+                }
             }
-            let pts = shape.path_at(frame).on_curve_points();
-            let closest = pts
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.distance(local) <= local_tol * 4.0)
-                .min_by(|(_, a), (_, b)| a.distance(local).total_cmp(&b.distance(local)));
-            if let Some((i, _)) = closest
-                && let Some(ws) = &mut shape.widths
-                && let Some(w) = ws.get_mut(i)
-            {
-                let base = shape.style.stroke.map_or(1.0, |s| s.width).max(1e-6);
-                *w = (new_width / base).max(0.01);
+            if let Some(width) = self.stroke_width_at(r) {
+                points.push((r, width));
             }
         }
+        self.line_width = Some(LineWidthDrag { points, anchor: hit });
+        true
+    }
+
+    /// Line Width drag: `up` is how far the pointer has moved up since it
+    /// went down, in document units (negative for down).
+    pub fn drag_line_width(&mut self, up: f32) {
+        let Some(drag) = &self.line_width else { return };
+        let targets = drag.points.clone();
+        for (r, was) in targets {
+            let now = (was + up * LINE_WIDTH_RATE).max(0.0);
+            if let Some(shape) = self.point_shape_mut((r.layer, r.shape))
+                && let Some(stroke) = shape.style.stroke
+                && let Some(w) = shape.widths.as_mut().and_then(|w| w.get_mut(r.point))
+            {
+                *w = (now / stroke.width.max(1e-6)).max(0.01);
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The width at the point being dragged, for the readout beside the pointer.
+    pub fn line_width_readout(&self) -> Option<f32> {
+        self.stroke_width_at(self.line_width.as_ref()?.anchor)
+    }
+
+    pub fn end_line_width(&mut self) {
+        self.line_width = None;
+    }
+
+    pub fn is_dragging_line_width(&self) -> bool {
+        self.line_width.is_some()
     }
 }
 
@@ -903,6 +946,84 @@ mod tests {
                 .iter()
                 .all(|c| matches!(c, PathCmd::MoveTo(_) | PathCmd::LineTo(_)))
         );
+    }
+
+    /// An editor whose selected layer holds a two-point line with a 10 unit
+    /// stroke from (0,0) to (100,0).
+    fn stroked_line() -> Editor {
+        let mut ed = Editor::untitled();
+        ed.tool = Tool::LineWidth;
+        let id = ed.primary().unwrap();
+        let path = Path::line(Vec2::ZERO, Vec2::new(100.0, 0.0));
+        let shape = Shape::new(
+            "stroke",
+            path,
+            Style::default().with_stroke(fanimate_core::Color::BLACK, 10.0),
+        );
+        match &mut ed.doc.find_mut(id).unwrap().kind {
+            LayerKind::Vector { shapes } => shapes.push(shape),
+            _ => panic!("not a vector layer"),
+        }
+        ed
+    }
+
+    #[test]
+    fn line_width_widens_dragging_up_and_narrows_dragging_down() {
+        let mut ed = stroked_line();
+        // pressing away from any point finds nothing
+        assert!(!ed.begin_line_width(Vec2::new(50.0, 40.0), 8.0));
+        assert!(!ed.is_dragging_line_width());
+        // pressing near the first point: the stroke, plain until now, gets a profile
+        assert!(ed.line_width_point(Vec2::new(3.0, 2.0), 8.0).is_some());
+        assert!(ed.begin_line_width(Vec2::new(3.0, 2.0), 8.0));
+        assert!(shapes(&ed)[0].widths.is_some());
+        assert_eq!(ed.line_width_readout(), Some(10.0));
+        ed.drag_line_width(20.0);
+        let wider = ed.line_width_readout().unwrap();
+        assert!(wider > 10.0, "{wider}");
+        ed.drag_line_width(-20.0);
+        let narrower = ed.line_width_readout().unwrap();
+        assert!(narrower < 10.0, "{narrower}");
+        // only the point pressed on changed
+        let widths = shapes(&ed)[0].widths.clone().unwrap();
+        assert_eq!(widths.len(), 2);
+        assert_eq!(widths[1], 1.0);
+        // never negative, however far down it is dragged
+        ed.drag_line_width(-10_000.0);
+        assert!(ed.line_width_readout().unwrap() >= 0.0);
+        ed.end_line_width();
+        assert!(!ed.is_dragging_line_width());
+    }
+
+    #[test]
+    fn line_width_is_one_undo_step_and_takes_the_selected_points_with_it() {
+        let mut ed = stroked_line();
+        ed.tool = Tool::SelectPoints;
+        ed.run(crate::action::Action::SelectAll);
+        ed.tool = Tool::LineWidth;
+        assert_eq!(ed.points.len(), 2);
+        assert!(ed.begin_line_width(Vec2::new(1.0, 1.0), 8.0));
+        ed.drag_line_width(10.0);
+        ed.drag_line_width(30.0);
+        ed.end_line_width();
+        let widths = shapes(&ed)[0].widths.clone().unwrap();
+        assert!(widths.iter().all(|w| *w > 1.0), "{widths:?}");
+        assert_eq!(widths[0], widths[1], "the selected points change together");
+        ed.run(crate::action::Action::Undo);
+        let after = shapes(&ed)[0].widths.clone();
+        assert!(after.is_none() || after.unwrap().iter().all(|w| *w == 1.0));
+    }
+
+    #[test]
+    fn line_width_needs_a_stroke_and_finds_the_layer_under_the_pointer() {
+        let mut ed = stroked_line();
+        // a shape with only a fill has no stroke to widen
+        let id = ed.primary().unwrap();
+        if let LayerKind::Vector { shapes } = &mut ed.doc.find_mut(id).unwrap().kind {
+            shapes[0].style.stroke = None;
+        }
+        assert!(ed.line_width_point(Vec2::new(1.0, 1.0), 8.0).is_none());
+        assert!(!ed.begin_line_width(Vec2::new(1.0, 1.0), 8.0));
     }
 
     #[test]

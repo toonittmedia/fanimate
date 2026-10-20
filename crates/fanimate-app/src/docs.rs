@@ -62,8 +62,10 @@ impl Startup {
 pub struct Parked {
     editor: Editor,
     view: CanvasView,
-    /// Timeline zoom (pixels per frame) and scroll (frames).
+    /// Timeline zoom (pixels per frame) and scroll (frames), and the layers
+    /// whose property rows are open.
     timeline: (f32, f32),
+    expanded: std::collections::HashSet<fanimate_core::LayerId>,
     session: Session,
 }
 
@@ -134,6 +136,7 @@ impl Shell {
             editor: std::mem::replace(&mut self.editor, Editor::untitled()),
             view: self.view.clone(),
             timeline: (self.ui.timeline_frame_width, self.ui.timeline_scroll),
+            expanded: std::mem::take(&mut self.ui.timeline_expanded),
             session: std::mem::take(&mut self.recovery.session),
         }
     }
@@ -145,12 +148,14 @@ impl Shell {
             mut editor,
             view,
             timeline,
+            expanded,
             session,
         } = parked;
         self.adopt(&mut editor, carry);
         self.editor = editor;
         self.view = view;
         (self.ui.timeline_frame_width, self.ui.timeline_scroll) = timeline;
+        self.ui.timeline_expanded = expanded;
         self.recovery.session = session;
         self.reset_gestures();
     }
@@ -175,6 +180,7 @@ impl Shell {
         ui.pen_down = false;
         ui.curvature_down = false;
         ui.magnet_active = false;
+        ui.line_width_press = None;
         ui.points_transform_origin = None;
         ui.active_edit = None;
     }
@@ -191,6 +197,7 @@ impl Shell {
         self.editor = editor;
         self.view.fit();
         self.ui.timeline_scroll = 0.0;
+        self.ui.timeline_expanded.clear();
         self.reset_gestures();
         // a new journal for it; the old document's travelled with its tab
         recovery::start(self);
@@ -303,6 +310,7 @@ impl Shell {
 
     /// Put `path` first in the recent files.
     pub fn remember(&mut self, path: &Path) {
+        self.places.remember_file(path);
         self.recent.retain(|p| p != path);
         self.recent.insert(0, path.to_path_buf());
         self.recent.truncate(MAX_RECENT);

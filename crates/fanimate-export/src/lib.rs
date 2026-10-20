@@ -31,4 +31,4 @@ mod yuv;
 
 pub use job::{Format, Settings, Writer};
 pub use queue::{Entry, Job, Queue, State, Status};
-pub use run::{ExportError, Route, export, route};
+pub use run::{ExportError, Route, existing_output, export, route};

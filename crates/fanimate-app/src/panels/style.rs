@@ -9,6 +9,8 @@ use fanimate_core::Stroke;
 use fanimate_editor::{Action, Tool};
 
 use crate::app::Shell;
+use crate::icons::{self, Icon};
+use crate::menus;
 use crate::panels::properties::{begin_edit, end_edits, from_color32, to_color32};
 
 /// Payload while dragging a shape row: its index in the shapes list.
@@ -111,6 +113,106 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.add_space(4.0);
 }
 
+/// One shape's name in the list: click to select the shape on the canvas
+/// (Ctrl or Shift adds), double-click to rename, the eye to hide it, and a
+/// right-click menu to duplicate or delete it. A hidden shape is not drawn
+/// and cannot be picked on the canvas.
+fn shape_name(
+    ui: &mut egui::Ui,
+    shell: &mut Shell,
+    layer: fanimate_core::LayerId,
+    i: usize,
+    shape: &fanimate_core::Shape,
+    selected: bool,
+) {
+    use fanimate_editor::SelectMode;
+    let p = shell.palette;
+    let visible = shape.visible;
+    let eye = if visible { Icon::Eye } else { Icon::EyeClosed };
+    if icons::button(ui, eye, 18.0, false, !visible)
+        .on_hover_text(if visible {
+            "Hide this shape"
+        } else {
+            "Show this shape"
+        })
+        .clicked()
+    {
+        shell.pending.push(Action::SetShapeVisible(layer, i, !visible));
+    }
+    if shell
+        .ui
+        .shape_rename
+        .as_ref()
+        .is_some_and(|(l, n, _)| *l == layer && *n == i)
+    {
+        let focus = std::mem::take(&mut shell.ui.shape_rename_focus);
+        let Some((_, _, text)) = shell.ui.shape_rename.as_mut() else {
+            return;
+        };
+        let edit = ui.add_sized([80.0, 18.0], egui::TextEdit::singleline(text));
+        if focus {
+            edit.request_focus();
+        }
+        if edit.lost_focus() {
+            let cancelled = ui.input(|inp| inp.key_pressed(egui::Key::Escape));
+            match shell.ui.shape_rename.take() {
+                Some((_, _, text)) if !cancelled => shell.editor.rename_shape(layer, i, &text),
+                _ => {}
+            }
+        }
+        return;
+    }
+    let text = egui::RichText::new(&shape.name)
+        .size(12.0)
+        .color(if visible { p.text } else { p.text_muted });
+    let r = ui.add_sized([80.0, 18.0], egui::Button::selectable(selected, text));
+    if r.clicked() && visible {
+        let m = ui.input(|inp| inp.modifiers);
+        // picking a shape means working on its points
+        if !shell.editor.tool.edits_points() {
+            shell.editor.set_tool(Tool::SelectPoints);
+        }
+        shell.editor.select_shape(
+            layer,
+            i,
+            if m.command {
+                SelectMode::Toggle
+            } else if m.shift {
+                SelectMode::Range
+            } else {
+                SelectMode::Replace
+            },
+        );
+    }
+    if r.double_clicked() {
+        shell.ui.shape_rename = Some((layer, i, shape.name.clone()));
+        shell.ui.shape_rename_focus = true;
+    }
+    if r.secondary_clicked() && visible && !selected {
+        shell.editor.select_shape(layer, i, SelectMode::Replace);
+    }
+    let r = r.on_hover_text("Click to select this shape. Double-click to rename it.");
+    menus::context_menu(&r, |ui| {
+        menus::item(ui, shell, Action::RenameShape(layer, i));
+        menus::item(ui, shell, Action::SetShapeVisible(layer, i, !visible));
+        ui.separator();
+        // colours animate: key one here, then change it on another frame
+        menus::item(
+            ui,
+            shell,
+            Action::AddChannelKey(fanimate_core::ChannelId::FillColor(i)),
+        );
+        menus::item(
+            ui,
+            shell,
+            Action::AddChannelKey(fanimate_core::ChannelId::StrokeColor(i)),
+        );
+        ui.separator();
+        menus::item(ui, shell, Action::DuplicateShapes);
+        menus::item(ui, shell, Action::DeleteShapes);
+    });
+}
+
 fn selected_shapes(ui: &mut egui::Ui, shell: &mut Shell) {
     let muted = shell.palette.text_muted;
     let Some(id) = shell.editor.primary() else {
@@ -160,15 +262,33 @@ fn selected_shapes(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.end_row();
         });
 
+    let frame = shell.editor.frame;
     let mut edited: Option<(usize, fanimate_core::Style, egui::Response)> = None;
     let mut reorder: Option<(usize, usize)> = None;
+    // the shapes picked on the canvas, shown picked here too
+    let selected: std::collections::HashSet<usize> = shell
+        .editor
+        .selected_shapes()
+        .into_iter()
+        .filter(|(l, _)| *l == id)
+        .map(|(_, i)| i)
+        .collect();
+    // the Rename Shape command (F2 in this list, or the right-click menu)
+    if let Some((layer, index)) = shell.editor.shape_rename_request.take()
+        && layer == id
+        && let Some(shape) = shapes.get(index)
+    {
+        shell.ui.shape_rename = Some((layer, index, shape.name.clone()));
+        shell.ui.shape_rename_focus = true;
+    }
 
     egui::ScrollArea::vertical()
         .max_height(200.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for (i, shape) in shapes.iter().enumerate() {
-                let mut style = shape.style;
+                // the colours as they are on this frame, if they are animated
+                let mut style = shape.style_at(frame);
                 let row_id = ui.id().with(("shape-row", i));
 
                 ui.horizontal(|ui| {
@@ -212,12 +332,7 @@ fn selected_shapes(ui: &mut egui::Ui, shell: &mut Shell) {
                         }
                     }
 
-                    // Shape name
-                    ui.add_sized(
-                        [80.0, 18.0],
-                        egui::Label::new(egui::RichText::new(&shape.name).color(p.text).size(12.0))
-                            .selectable(false),
-                    );
+                    shape_name(ui, shell, id, i, shape, selected.contains(&i));
 
                     // Fill colour
                     let mut fill = style.fill.map(to_color32).unwrap_or(egui::Color32::TRANSPARENT);

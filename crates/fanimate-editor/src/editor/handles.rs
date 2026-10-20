@@ -147,7 +147,7 @@ impl Editor {
     /// Each layer's box in its own space (low and high corner), at this
     /// frame, or `None` for a layer with nothing drawn. One evaluation for
     /// all of them.
-    fn layer_bounds(&self, ids: &[LayerId]) -> Vec<Option<(Vec2, Vec2)>> {
+    pub(super) fn layer_bounds(&self, ids: &[LayerId]) -> Vec<Option<(Vec2, Vec2)>> {
         let items = evaluate(&self.doc, self.frame);
         ids.iter()
             .map(|&id| {

@@ -102,6 +102,12 @@ impl Tessellator {
 
     /// The document's canvas rectangle in its background colour.
     pub fn canvas(&mut self, doc: &Document, mesh: &mut Mesh) {
+        self.canvas_through(doc, mesh, Affine2::IDENTITY);
+    }
+
+    /// The canvas rectangle as a camera sees it: carried through `camera`
+    /// (see `fanimate_core::camera_at`), as the artwork is.
+    pub fn canvas_through(&mut self, doc: &Document, mesh: &mut Mesh, camera: Affine2) {
         self.switch(mesh, None);
         let c = doc.background.to_linear_premultiplied();
         let base = mesh.vertices.len() as u32;
@@ -111,6 +117,7 @@ impl Tessellator {
             doc.size(),
             Vec2::new(0.0, doc.height),
         ] {
+            let p = camera.transform_point2(p);
             mesh.vertices.push([p.x, p.y, c[0], c[1], c[2], c[3], 0.0, 0.0]);
         }
         mesh.indices

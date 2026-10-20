@@ -3,10 +3,11 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-use fanimate_core::anim::Animatable;
+use fanimate_core::anim::{Animatable, KeyList};
 use fanimate_core::bones::Skeleton;
 use fanimate_core::{
-    Affine2, Channel, Document, Frame, Interpolation, Label, Layer, LayerId, LayerKind, Transform, samples,
+    Affine2, Channel, ChannelId, Document, Frame, Interpolation, Keying, Label, Layer, LayerId, LayerKind,
+    Transform, samples,
 };
 use fanimate_fnm::{FnmError, HistoryRecord, Report};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use crate::action::{Action, Tool};
 use crate::history::History;
 
 mod actions;
+mod arrange;
 mod bones;
 mod booleans;
 mod construct;
@@ -27,12 +29,13 @@ mod shapesel;
 mod sound;
 mod svg;
 mod tools_e;
+pub use arrange::{AlignTo, ConvertTo, Loss};
 pub use bones::BoneRef;
 pub use draw::DrawStyle;
 pub use handles::{Handle, HandleMods, SelectionFrame};
 pub use points::PointRef;
 pub use shapesel::RadiusTarget;
-pub use sound::{MouthCue, SoundInfo, parse_rhubarb, sound_info};
+pub use sound::{MouthCue, SOUND_EXTENSIONS, SoundInfo, parse_rhubarb, sound_info, sound_to_wav};
 pub use tools_e::ShapeBuilderState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,12 +103,18 @@ pub struct Editor {
     /// Current time; fractional while playing.
     pub frame: f32,
     pub playing: bool,
+    /// How keys made from now on move on to the next key (the timeline's
+    /// dropdown). Keys already there keep theirs.
+    pub key_interp: Interpolation,
     pub tool: Tool,
     pub history: History,
     /// Groups collapsed in the Layers panel.
     pub collapsed: HashSet<LayerId>,
     /// Set when the UI should start renaming a layer in place.
     pub rename_request: Option<LayerId>,
+    /// Set when the UI should start renaming a shape in place: its layer and
+    /// its index in the layer.
+    pub shape_rename_request: Option<(LayerId, usize)>,
     pub status: Option<(StatusKind, String)>,
     /// Colours and brush settings for new artwork.
     pub draw: DrawStyle,
@@ -119,6 +128,8 @@ pub struct Editor {
     pen: Option<construct::PenPath>,
     /// The path being drawn with the Curvature tool.
     curvature: Option<tools_e::CurvaturePath>,
+    /// The Line Width drag in progress.
+    line_width: Option<tools_e::LineWidthDrag>,
     /// Polygon side count (3..=32), Star point count (2..=16), for the drag tools.
     pub poly_sides: u32,
     pub star_points: u32,
@@ -150,6 +161,11 @@ struct KeyDrag {
     to: Frame,
     originals: Vec<Layer>,
     recorded: bool,
+    /// Only this property's keys move (a drag on a property row), rather
+    /// than every key of the layer on that frame.
+    channel: Option<ChannelId>,
+    /// The camera as it was, when the camera's keys are the ones dragged.
+    camera: Option<fanimate_core::Camera>,
 }
 
 impl Editor {
@@ -164,10 +180,12 @@ impl Editor {
             points: BTreeSet::new(),
             frame,
             playing: false,
+            key_interp: Interpolation::Smooth,
             tool: Tool::default(),
             history: History::default(),
             collapsed: HashSet::new(),
             rename_request: None,
+            shape_rename_request: None,
             status: None,
             draw: DrawStyle::default(),
             stroke: None,
@@ -175,6 +193,7 @@ impl Editor {
             add_point: None,
             pen: None,
             curvature: None,
+            line_width: None,
             poly_sides: 6,
             star_points: 5,
             star_inner: 0.4,
@@ -290,6 +309,19 @@ impl Editor {
         self.path = Some(path.to_path_buf());
         self.dirty = false;
         self.set_status(StatusKind::Success, format!("Saved {}", path.display()));
+        Ok(())
+    }
+
+    /// Save the project as a project folder at `path` (see
+    /// [`fanimate_fnm::save_folder`]); the project is then that folder.
+    pub fn save_folder_to(&mut self, path: &Path) -> Result<(), FnmError> {
+        fanimate_fnm::save_folder(&self.doc, path)?;
+        self.path = Some(path.to_path_buf());
+        self.dirty = false;
+        self.set_status(
+            StatusKind::Success,
+            format!("Saved {} as a folder", path.display()),
+        );
         Ok(())
     }
 
@@ -419,6 +451,24 @@ impl Editor {
             AddKey => self.add_key(),
             DeleteKey => self.delete_key(),
             SetInterpolation(interp) => self.set_interpolation(interp),
+            ToggleLock => self.toggle_lock(),
+            Align(to) => self.align_selected(to),
+            SetShapeVisible(layer, index, visible) => self.set_shape_visible(layer, index, visible),
+            DeleteShapes => self.delete_shapes(),
+            DuplicateShapes => self.duplicate_shapes(),
+            RenameShape(layer, index) => self.shape_rename_request = Some((layer, index)),
+            // throwing something away is asked about first, by the app
+            ConvertLayerType(to) => match self.primary().and_then(|id| self.conversion_loss(id, to)) {
+                Some(loss) if !loss.is_none() => return Outcome::App(action),
+                Some(_) => self.convert_layer(to),
+                None => {}
+            },
+            ConfirmConvertLayerType(to) => self.convert_layer(to),
+            AddChannelKey(ch) => self.add_channel_key(ch),
+            DeleteChannelKey(ch) => self.delete_channel_key(ch),
+            SetChannelInterpolation(ch, interp) => self.set_channel_interpolation(ch, interp),
+            ResetCamera => self.reset_camera(),
+            SetKeyInterpolation(interp) => self.key_interp = interp,
             Tool(t) => self.set_tool(t),
             AddPointOrBone => {
                 let bone = self
@@ -430,10 +480,13 @@ impl Editor {
                 self.set_tool(if bone { T::AddBone } else { T::AddPoint });
             }
             New | NewPreset(_) | Open | OpenFolder | OpenOther | OpenSample(_) | CloseDocument
-            | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs | Import
-            | ExportVideo | RenderQueue | LipSync | CheckForUpdates | InstallUpdate | Workspace(_) | Quit
-            | ToggleOnionSkin | ToggleLightTable | Preferences | CommandPalette | LayerProperties
-            | ZoomIn | ZoomOut | FitView | ActualSize => return Outcome::App(action),
+            | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
+            | SaveAsFolder | Import | ExportVideo | RenderQueue | RenderPreviewFrame | LipSync
+            | CheckForUpdates | InstallUpdate | Workspace(_) | Quit | ToggleOnionSkin | ToggleLightTable
+            | LookThroughCamera | Preferences | CommandPalette | LayerProperties | ZoomIn | ZoomOut
+            | FitView | ActualSize => {
+                return Outcome::App(action);
+            }
         }
         Outcome::Done
     }
@@ -472,6 +525,16 @@ impl Editor {
             Union | Subtract | Intersect => self.can_combine(),
             ExpandShape => self.expandable_shapes() > 0,
             SetInterpolation(_) => self.key_interpolation().is_some(),
+            ToggleLock | Align(_) => has_sel,
+            ResetCamera => !self.doc.camera.is_default(),
+            DeleteShapes | DuplicateShapes => !self.selected_shapes().is_empty(),
+            ConvertLayerType(to) | ConfirmConvertLayerType(to) => self
+                .primary()
+                .is_some_and(|id| self.conversion_loss(id, to).is_some()),
+            AddChannelKey(ch) => self.channel_keys_here(ch).is_some(),
+            DeleteChannelKey(ch) | SetChannelInterpolation(ch, _) => self
+                .channel_keys_here(ch)
+                .is_some_and(|keys| keys.interp_at(self.current_frame()).is_some()),
             Ungroup => self.selected_roots().iter().any(|id| {
                 self.doc
                     .find(*id)
@@ -1081,9 +1144,18 @@ impl Editor {
         self.frame.floor() as Frame
     }
 
+    /// How edits are recorded on the timeline: the first frame is where
+    /// things are drawn and set up, and edits on later frames are keyed (see
+    /// [`Keying`]).
+    pub fn keying(&self) -> Keying {
+        Keying::new(self.doc.start, self.key_interp)
+    }
+
     pub fn go_to(&mut self, frame: Frame) {
         self.playing = false;
-        self.frame = frame.clamp(self.doc.start, self.doc.end) as f32;
+        // free to go on past the last frame: that is where keys for later
+        // are placed. Playback still loops over start..end.
+        self.frame = frame.max(self.doc.start) as f32;
     }
 
     fn step(&mut self, by: Frame) {
@@ -1094,6 +1166,10 @@ impl Editor {
     pub fn tick(&mut self, seconds: f32) {
         if !self.playing {
             return;
+        }
+        // played from past the last frame, it starts over from the first
+        if self.frame >= (self.doc.end + 1) as f32 {
+            self.frame = self.doc.start as f32;
         }
         let n = self.doc.frame_count().max(1) as f32;
         let t = self.frame - self.doc.start as f32 + seconds * self.doc.fps;
@@ -1174,6 +1250,7 @@ impl Editor {
         }
         self.checkpoint("Add keyframe");
         let frame = self.current_frame();
+        let interp = self.key_interp;
         for id in roots {
             // on a frame-by-frame layer a key is a drawing: a copy of the
             // one showing, to change (Animate's F6)
@@ -1189,15 +1266,15 @@ impl Editor {
                 continue;
             }
             if let Some(l) = self.doc.find_mut(id) {
-                key_now(&mut l.transform.position, frame);
-                key_now(&mut l.transform.rotation, frame);
-                key_now(&mut l.transform.scale, frame);
-                key_now(&mut l.opacity, frame);
+                key_now(&mut l.transform.position, frame, interp);
+                key_now(&mut l.transform.rotation, frame, interp);
+                key_now(&mut l.transform.scale, frame, interp);
+                key_now(&mut l.opacity, frame, interp);
                 // a vector layer's drawings too, so they can change shape
                 if let LayerKind::Vector { shapes } = &mut l.kind {
                     for shape in shapes {
                         let path = shape.path_at(frame as f32).into_owned();
-                        shape.key_path(frame, path, Interpolation::Smooth);
+                        shape.key_path(frame, path, interp);
                     }
                 }
             }
@@ -1222,6 +1299,194 @@ impl Editor {
                 });
             }
         }
+    }
+
+    /// The keys of one property of the primary selected layer.
+    pub fn channel_keys_here(&self, ch: ChannelId) -> Option<&dyn KeyList> {
+        // the camera belongs to the project, whatever is selected
+        if ch.is_camera() {
+            return self.doc.camera.keys(ch);
+        }
+        self.doc.find(self.primary()?)?.channel_keys(ch)
+    }
+
+    /// The frames of one property's keys on a layer, sorted.
+    pub fn channel_key_frames(&self, id: LayerId, ch: ChannelId) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        let keys = if ch.is_camera() {
+            self.doc.camera.keys(ch)
+        } else {
+            self.doc.find(id).and_then(|l| l.channel_keys(ch))
+        };
+        if let Some(keys) = keys {
+            keys.frames_into(&mut frames);
+        }
+        frames.sort_unstable();
+        frames
+    }
+
+    /// Key one property of the primary selected layer on the current frame,
+    /// holding the value it has there (a bone's angle, a shape's points, the
+    /// drawing a switch layer shows).
+    fn add_channel_key(&mut self, ch: ChannelId) {
+        if ch.is_camera() {
+            self.checkpoint("Add keyframe");
+            let (frame, interp) = (self.current_frame(), self.key_interp);
+            let camera = &mut self.doc.camera;
+            match ch {
+                ChannelId::CameraPosition => key_now(&mut camera.position, frame, interp),
+                ChannelId::CameraZoom => key_now(&mut camera.zoom, frame, interp),
+                _ => key_now(&mut camera.roll, frame, interp),
+            }
+            return;
+        }
+        let Some(id) = self.primary() else { return };
+        if self.channel_keys_here(ch).is_none() {
+            return;
+        }
+        self.checkpoint("Add keyframe");
+        let frame = self.current_frame();
+        let interp = self.key_interp;
+        let Some(l) = self.doc.find_mut(id) else { return };
+        match ch {
+            ChannelId::Position => key_now(&mut l.transform.position, frame, interp),
+            ChannelId::Rotation => key_now(&mut l.transform.rotation, frame, interp),
+            ChannelId::Scale => key_now(&mut l.transform.scale, frame, interp),
+            ChannelId::Opacity => key_now(&mut l.opacity, frame, interp),
+            ChannelId::Bone(i) => {
+                if let LayerKind::Bone { skeleton, .. } = &mut l.kind
+                    && let Some(bone) = skeleton.bones.get_mut(i)
+                {
+                    key_now(&mut bone.angle, frame, interp);
+                }
+            }
+            ChannelId::Shape(i) => {
+                if let LayerKind::Vector { shapes } = &mut l.kind
+                    && let Some(shape) = shapes.get_mut(i)
+                {
+                    let path = shape.path_at(frame as f32).into_owned();
+                    shape.key_path(frame, path, interp);
+                }
+            }
+            ChannelId::FillColor(i) | ChannelId::StrokeColor(i) => {
+                if let LayerKind::Vector { shapes } = &mut l.kind
+                    && let Some(shape) = shapes.get_mut(i)
+                {
+                    let at = frame as f32;
+                    // a key holds the colour as it is now, so only a shape with that colour has one
+                    if matches!(ch, ChannelId::FillColor(_)) {
+                        if let Some(fill) = shape.style.fill {
+                            let now = fanimate_core::anim::sample_in(fill, &shape.fill_keys, at);
+                            fanimate_core::anim::set_key_in(&mut shape.fill_keys, frame, now, interp);
+                        }
+                    } else if let Some(stroke) = shape.style.stroke {
+                        let now = fanimate_core::anim::sample_in(stroke.color, &shape.stroke_keys, at);
+                        fanimate_core::anim::set_key_in(&mut shape.stroke_keys, frame, now, interp);
+                    }
+                }
+            }
+            // the camera's are keyed above, before a layer is looked for
+            ChannelId::CameraPosition | ChannelId::CameraZoom | ChannelId::CameraRoll => {}
+            ChannelId::Switch => {
+                if let LayerKind::Switch { children, switch } = &mut l.kind
+                    && let Some(shown) = fanimate_core::scene::switch_choice(children, switch, frame as f32)
+                {
+                    let key = fanimate_core::Key {
+                        frame,
+                        value: children[shown].name.clone(),
+                        interp,
+                    };
+                    match switch.binary_search_by_key(&frame, |k| k.frame) {
+                        Ok(at) => switch[at] = key,
+                        Err(at) => switch.insert(at, key),
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Remove one property's key on the current frame.
+    fn delete_channel_key(&mut self, ch: ChannelId) {
+        let frame = self.current_frame();
+        if self
+            .channel_keys_here(ch)
+            .and_then(|k| k.interp_at(frame))
+            .is_none()
+        {
+            self.set_status(StatusKind::Info, "No keyframe on this property here");
+            return;
+        }
+        self.checkpoint("Delete keyframe");
+        if let Some(keys) = self.channel_keys_mut_here(ch) {
+            keys.delete_key(frame);
+        }
+    }
+
+    /// The keys of one property to edit: the camera's, or the primary
+    /// selected layer's.
+    fn channel_keys_mut_here(&mut self, ch: ChannelId) -> Option<&mut dyn KeyList> {
+        if ch.is_camera() {
+            return self.doc.camera.keys_mut(ch);
+        }
+        let id = self.primary()?;
+        self.doc.find_mut(id)?.channel_keys_mut(ch)
+    }
+
+    /// Set how one property's key on the current frame moves on.
+    fn set_channel_interpolation(&mut self, ch: ChannelId, interp: Interpolation) {
+        let frame = self.current_frame();
+        match self.channel_keys_here(ch).and_then(|k| k.interp_at(frame)) {
+            None => {
+                self.set_status(StatusKind::Info, "No keyframe on this property here");
+                return;
+            }
+            Some(now) if now == interp => return,
+            Some(_) => {}
+        }
+        self.checkpoint("Change interpolation");
+        if let Some(keys) = self.channel_keys_mut_here(ch) {
+            keys.set_interp(frame, interp);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The camera
+
+    /// Move the camera at the current frame, following the keying rule: on
+    /// the first frame the camera itself changes; on a later frame it is
+    /// keyed. Does not checkpoint; callers checkpoint once per gesture.
+    pub fn set_camera_position(&mut self, position: fanimate_core::Vec2) {
+        let (frame, keying) = (self.current_frame(), self.keying());
+        self.doc.camera.position.write(frame, position, keying);
+        self.dirty = true;
+    }
+
+    /// Zoom the camera (1 sees the whole canvas, 2 half of it, twice as big).
+    pub fn set_camera_zoom(&mut self, zoom: f32) {
+        let (frame, keying) = (self.current_frame(), self.keying());
+        let range = fanimate_core::CAMERA_ZOOM;
+        self.doc
+            .camera
+            .zoom
+            .write(frame, zoom.clamp(*range.start(), *range.end()), keying);
+        self.dirty = true;
+    }
+
+    /// Roll the camera, in radians (positive is clockwise).
+    pub fn set_camera_roll(&mut self, roll: f32) {
+        let (frame, keying) = (self.current_frame(), self.keying());
+        self.doc.camera.roll.write(frame, roll, keying);
+        self.dirty = true;
+    }
+
+    /// Put the camera back over the whole canvas, with no keys. One undo step.
+    fn reset_camera(&mut self) {
+        if self.doc.camera.is_default() {
+            return;
+        }
+        self.checkpoint("Reset camera");
+        self.doc.camera = fanimate_core::Camera::default();
     }
 
     /// The interpolation of the keys on the current frame of the selected
@@ -1284,6 +1549,54 @@ impl Editor {
             to: from,
             originals,
             recorded: false,
+            channel: None,
+            camera: None,
+        });
+        true
+    }
+
+    /// Start dragging the camera's keys on frame `from` (all three of its
+    /// channels, from the Camera row), or only one channel's (a row under it).
+    /// Returns false when there is no key there.
+    pub fn begin_camera_key_drag(&mut self, channel: Option<ChannelId>, from: Frame) -> bool {
+        let camera = &self.doc.camera;
+        let has_key = match channel {
+            Some(ch) => camera.keys(ch).and_then(|k| k.interp_at(from)).is_some(),
+            None => camera.key_frames().contains(&from),
+        };
+        if !has_key {
+            return false;
+        }
+        self.key_drag = Some(KeyDrag {
+            from,
+            to: from,
+            originals: Vec::new(),
+            recorded: false,
+            channel,
+            camera: Some(camera.clone()),
+        });
+        true
+    }
+
+    /// Start dragging one property's key on frame `from` of layer `id`.
+    /// Returns false when the property has no key there.
+    pub fn begin_channel_key_drag(&mut self, id: LayerId, ch: ChannelId, from: Frame) -> bool {
+        if ch.is_camera() {
+            return self.begin_camera_key_drag(Some(ch), from);
+        }
+        let Some(layer) = self.doc.find(id) else {
+            return false;
+        };
+        if layer.channel_keys(ch).and_then(|k| k.interp_at(from)).is_none() {
+            return false;
+        }
+        self.key_drag = Some(KeyDrag {
+            from,
+            to: from,
+            originals: vec![layer.clone()],
+            recorded: false,
+            channel: Some(ch),
+            camera: None,
         });
         true
     }
@@ -1303,13 +1616,40 @@ impl Editor {
         drag.recorded = true;
         drag.to = to;
         let from = drag.from;
+        let channel = drag.channel;
+        if let Some(original) = &drag.camera {
+            self.doc.camera = original.clone();
+            if to != from {
+                match channel {
+                    Some(ch) => {
+                        if let Some(keys) = self.doc.camera.keys_mut(ch) {
+                            keys.move_key(from, to);
+                        }
+                    }
+                    None => {
+                        for ch in ChannelId::CAMERA {
+                            if let Some(keys) = self.doc.camera.keys_mut(ch) {
+                                keys.move_key(from, to);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for original in &drag.originals {
             if let Some(l) = self.doc.find_mut(original.id) {
                 *l = original.clone();
                 if to != from {
-                    l.key_lists_mut(|k| {
-                        k.move_key(from, to);
-                    });
+                    match channel {
+                        Some(ch) => {
+                            if let Some(keys) = l.channel_keys_mut(ch) {
+                                keys.move_key(from, to);
+                            }
+                        }
+                        None => l.key_lists_mut(|k| {
+                            k.move_key(from, to);
+                        }),
+                    }
                 }
             }
         }
@@ -1329,22 +1669,26 @@ impl Editor {
         self.doc.find(id).map(|l| l.transform.sample(self.frame))
     }
 
-    /// Change a layer's transform at the current frame, with auto-keying:
-    /// a channel that is already animated gets a keyframe here; a channel
-    /// that is not animated has its value changed for the whole animation.
-    /// Does not checkpoint; callers checkpoint once per gesture.
+    /// Change a layer's transform at the current frame, with auto-keying
+    /// (see [`Keying`]): on the first frame the value itself changes (for
+    /// the whole animation, if it has no keys); on a later frame it is
+    /// keyed. Does not checkpoint; callers checkpoint once per gesture.
     pub fn set_layer_transform(&mut self, id: LayerId, t: Transform) {
+        if self.is_locked(id) {
+            return;
+        }
         let frame = self.current_frame();
+        let keying = self.keying();
         let Some(l) = self.doc.find_mut(id) else { return };
         let old = l.transform.sample(frame as f32);
         if old.position != t.position {
-            write_channel(&mut l.transform.position, frame, t.position);
+            l.transform.position.write(frame, t.position, keying);
         }
         if old.rotation != t.rotation {
-            write_channel(&mut l.transform.rotation, frame, t.rotation);
+            l.transform.rotation.write(frame, t.rotation, keying);
         }
         if old.scale != t.scale {
-            write_channel(&mut l.transform.scale, frame, t.scale);
+            l.transform.scale.write(frame, t.scale, keying);
         }
         self.dirty = true;
     }
@@ -1356,8 +1700,9 @@ impl Editor {
     /// Like [`set_layer_transform`](Self::set_layer_transform), for opacity.
     pub fn set_layer_opacity(&mut self, id: LayerId, opacity: f32) {
         let frame = self.current_frame();
+        let keying = self.keying();
         if let Some(l) = self.doc.find_mut(id) {
-            write_channel(&mut l.opacity, frame, opacity.clamp(0.0, 1.0));
+            l.opacity.write(frame, opacity.clamp(0.0, 1.0), keying);
             self.dirty = true;
         }
     }
@@ -1382,17 +1727,9 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-fn write_channel<T: Animatable>(ch: &mut Channel<T>, frame: Frame, value: T) {
-    if ch.is_animated() {
-        ch.set_key(frame, value, Interpolation::Smooth);
-    } else {
-        ch.base = value;
-    }
-}
-
-fn key_now<T: Animatable>(ch: &mut Channel<T>, frame: Frame) {
+fn key_now<T: Animatable>(ch: &mut Channel<T>, frame: Frame, interp: Interpolation) {
     let v = ch.sample(frame as f32);
-    ch.set_key(frame, v, Interpolation::Smooth);
+    ch.set_key(frame, v, interp);
 }
 
 #[cfg(test)]
@@ -1553,25 +1890,282 @@ mod tests {
     }
 
     #[test]
-    fn auto_key_only_keys_animated_channels() {
+    fn the_first_frame_is_for_drawing_and_later_frames_are_keyed() {
         let (mut ed, [a, ..]) = three();
-        ed.go_to(10);
+        // on the first frame an unanimated channel changes outright
         let mut t = ed.layer_transform(a).unwrap();
         t.position = Vec2::new(5.0, 0.0);
         ed.set_layer_transform(a, t);
-        // not animated: the base value changes, no key
         let l = ed.doc.find(a).unwrap();
         assert!(!l.transform.position.is_animated());
         assert_eq!(l.transform.position.base, Vec2::new(5.0, 0.0));
 
-        ed.select(a, SelectMode::Replace);
-        ed.run(Action::AddKey);
-        ed.go_to(20);
-        t.position = Vec2::new(50.0, 0.0);
+        // on a later frame the same edit is animation: it keys, and a key
+        // on the first frame holds the position it had, so frame 0 stays put
+        ed.go_to(10);
+        t.position = Vec2::new(25.0, 0.0);
         ed.set_layer_transform(a, t);
-        assert_eq!(ed.key_frames(a), [10, 20]);
-        ed.go_to(15);
-        assert_eq!(ed.layer_transform(a).unwrap().position.x, 27.5);
+        assert_eq!(ed.key_frames(a), [0, 10]);
+        ed.go_to(0);
+        assert_eq!(ed.layer_transform(a).unwrap().position, Vec2::new(5.0, 0.0));
+        ed.go_to(5);
+        assert_eq!(ed.layer_transform(a).unwrap().position.x, 15.0);
+
+        // only what changed was keyed
+        let l = ed.doc.find(a).unwrap();
+        assert!(l.transform.position.is_animated());
+        assert!(!l.transform.rotation.is_animated());
+        assert!(!l.opacity.is_animated());
+
+        // once animated, an edit on the first frame is a key there too
+        ed.go_to(0);
+        t.position = Vec2::new(-5.0, 0.0);
+        ed.set_layer_transform(a, t);
+        assert_eq!(ed.doc.find(a).unwrap().transform.position.keys[0].value.x, -5.0);
+
+        ed.select(a, SelectMode::Replace);
+        ed.go_to(20);
+        ed.run(Action::AddKey);
+        assert_eq!(ed.key_frames(a), [0, 10, 20]);
+    }
+
+    #[test]
+    fn opacity_follows_the_same_rule_and_undo_takes_back_both_keys() {
+        let (mut ed, [a, ..]) = three();
+        ed.go_to(8);
+        ed.checkpoint("Change opacity");
+        ed.set_layer_opacity(a, 0.5);
+        let l = ed.doc.find(a).unwrap();
+        assert_eq!(
+            l.opacity
+                .keys
+                .iter()
+                .map(|k| (k.frame, k.value))
+                .collect::<Vec<_>>(),
+            [(0, 1.0), (8, 0.5)]
+        );
+        ed.run(Action::Undo);
+        assert!(
+            !ed.doc.find(a).unwrap().opacity.is_animated(),
+            "one gesture is one undo step"
+        );
+    }
+
+    #[test]
+    fn new_keys_take_the_chosen_interpolation() {
+        let (mut ed, [a, b, _]) = three();
+        ed.select(a, SelectMode::Replace);
+        ed.key_interp = Interpolation::Linear;
+        ed.go_to(4);
+        ed.run(Action::AddKey);
+        let l = ed.doc.find(a).unwrap();
+        assert!(
+            l.transform
+                .position
+                .keys
+                .iter()
+                .all(|k| k.interp == Interpolation::Linear)
+        );
+        // an edit that keys uses it too, for the key it makes and the one it seeds
+        ed.key_interp = Interpolation::Step;
+        ed.go_to(12);
+        let mut t = ed.layer_transform(b).unwrap();
+        t.rotation = 1.0;
+        ed.set_layer_transform(b, t);
+        let l = ed.doc.find(b).unwrap();
+        assert_eq!(l.transform.rotation.keys.len(), 2);
+        assert!(
+            l.transform
+                .rotation
+                .keys
+                .iter()
+                .all(|k| k.interp == Interpolation::Step)
+        );
+        // keys that were there keep theirs
+        let l = ed.doc.find(a).unwrap();
+        assert!(
+            l.transform
+                .position
+                .keys
+                .iter()
+                .all(|k| k.interp == Interpolation::Linear)
+        );
+    }
+
+    #[test]
+    fn keying_uses_the_documents_first_frame_as_the_base() {
+        let (mut ed, [a, ..]) = three();
+        ed.doc.start = 24;
+        ed.go_to(24);
+        let mut t = ed.layer_transform(a).unwrap();
+        t.rotation = 0.5;
+        ed.set_layer_transform(a, t);
+        assert!(!ed.doc.find(a).unwrap().transform.rotation.is_animated());
+        ed.go_to(30);
+        t.rotation = 1.0;
+        ed.set_layer_transform(a, t);
+        assert_eq!(ed.key_frames(a), [24, 30]);
+    }
+
+    #[test]
+    fn the_camera_follows_the_keying_rule_and_is_edited_like_any_property() {
+        let (mut ed, _) = three();
+        assert!(ed.doc.camera.is_default());
+        assert!(!ed.can_run(Action::ResetCamera));
+        // on the first frame the camera itself changes, with no keys
+        ed.checkpoint("Move camera");
+        ed.set_camera_zoom(1.5);
+        assert_eq!(ed.doc.camera.zoom.base, 1.5);
+        assert!(!ed.doc.camera.is_animated());
+        // later frames are animation: the first frame keeps its zoom
+        ed.go_to(12);
+        ed.checkpoint("Move camera");
+        ed.set_camera_zoom(3.0);
+        ed.set_camera_position(Vec2::new(40.0, -10.0));
+        ed.set_camera_roll(0.5);
+        assert_eq!(ed.doc.camera.key_frames(), [0, 12]);
+        ed.go_to(0);
+        assert_eq!(ed.doc.camera.zoom.sample(0.0), 1.5);
+        // the zoom cannot leave its range
+        ed.go_to(20);
+        ed.set_camera_zoom(1.0e9);
+        assert_eq!(ed.doc.camera.zoom.sample(20.0), *fanimate_core::CAMERA_ZOOM.end());
+        // the commands that work on a layer's properties work on the camera's, with nothing selected
+        ed.go_to(5);
+        assert!(ed.selection.is_empty());
+        let zoom = ChannelId::CameraZoom;
+        assert!(ed.can_run(Action::AddChannelKey(zoom)));
+        assert!(!ed.can_run(Action::DeleteChannelKey(zoom)));
+        ed.run(Action::AddChannelKey(zoom));
+        assert_eq!(ed.channel_key_frames(LayerId(0), zoom), [0, 5, 12, 20]);
+        ed.run(Action::SetChannelInterpolation(zoom, Interpolation::Step));
+        assert_eq!(ed.doc.camera.zoom.keys[1].interp, Interpolation::Step);
+        ed.run(Action::DeleteChannelKey(zoom));
+        assert_eq!(ed.channel_key_frames(LayerId(0), zoom), [0, 12, 20]);
+        // a key of the camera can be dragged along the timeline, in one undo step
+        assert!(ed.begin_channel_key_drag(LayerId(0), zoom, 12));
+        ed.drag_keys_to(15);
+        ed.end_key_drag();
+        assert_eq!(ed.channel_key_frames(LayerId(0), zoom), [0, 15, 20]);
+        assert_eq!(
+            ed.channel_key_frames(LayerId(0), ChannelId::CameraRoll),
+            [0, 12],
+            "only that channel"
+        );
+        ed.run(Action::Undo);
+        assert_eq!(ed.channel_key_frames(LayerId(0), zoom), [0, 12, 20]);
+        // the Camera row drags all three channels together
+        assert!(ed.begin_camera_key_drag(None, 12));
+        ed.drag_keys_to(14);
+        ed.end_key_drag();
+        assert_eq!(ed.doc.camera.key_frames(), [0, 14, 20]);
+        assert!(!ed.begin_camera_key_drag(None, 3), "no key on frame 3");
+        // reset puts it all back, as one undo step
+        ed.run(Action::ResetCamera);
+        assert!(ed.doc.camera.is_default());
+        ed.run(Action::Undo);
+        assert!(ed.doc.camera.is_animated());
+    }
+
+    #[test]
+    fn a_shapes_colours_follow_the_keying_rule() {
+        use fanimate_core::{Color, Shape, Style};
+        let (mut ed, [a, ..]) = three();
+        let shape = Shape::rectangle(
+            "r",
+            Vec2::ZERO,
+            Vec2::splat(10.0),
+            0.0,
+            Style::fill(Color::BLACK).with_stroke(Color::BLACK, 2.0),
+        );
+        if let Some(LayerKind::Vector { shapes }) = ed.doc.find_mut(a).map(|l| &mut l.kind) {
+            shapes.push(shape);
+        }
+        let style_now = |ed: &Editor| ed.layer_shapes(a).unwrap()[0].style_at(ed.frame);
+        // on the first frame a recolour changes the shape itself
+        let mut style = style_now(&ed);
+        style.fill = Some(Color::rgb(1.0, 0.0, 0.0));
+        ed.set_shape_style(a, 0, style);
+        assert!(ed.layer_shapes(a).unwrap()[0].fill_keys.is_empty());
+        assert_eq!(style_now(&ed).fill, Some(Color::rgb(1.0, 0.0, 0.0)));
+        // on a later frame it is animation: the colour keys, frame 0 keeps red
+        ed.go_to(12);
+        let mut style = style_now(&ed);
+        style.fill = Some(Color::rgb(0.0, 0.0, 1.0));
+        style.stroke.as_mut().unwrap().width = 5.0;
+        ed.set_shape_style(a, 0, style);
+        let s = &ed.layer_shapes(a).unwrap()[0];
+        assert_eq!(s.fill_keys.iter().map(|k| k.frame).collect::<Vec<_>>(), [0, 12]);
+        assert!(s.stroke_keys.is_empty(), "the stroke colour was not changed");
+        assert_eq!(s.style.stroke.unwrap().width, 5.0, "a width is not animated");
+        ed.go_to(0);
+        assert_eq!(style_now(&ed).fill, Some(Color::rgb(1.0, 0.0, 0.0)));
+        ed.go_to(6);
+        let mid = style_now(&ed).fill.unwrap();
+        assert!((mid.r - 0.5).abs() < 0.3 && mid.b > 0.1 && mid.b < 0.9, "{mid:?}");
+        // the timeline lists the animated colour as a row, and it can be keyed again
+        ed.select(a, SelectMode::Replace);
+        let channels = ed.doc.find(a).unwrap().channels();
+        assert!(channels.contains(&ChannelId::FillColor(0)));
+        assert!(!channels.contains(&ChannelId::StrokeColor(0)));
+        ed.run(Action::AddChannelKey(ChannelId::StrokeColor(0)));
+        assert_eq!(ed.layer_shapes(a).unwrap()[0].stroke_keys.len(), 1);
+        // turning the fill off ends its animation
+        let mut style = style_now(&ed);
+        style.fill = None;
+        ed.set_shape_style(a, 0, style);
+        assert!(ed.layer_shapes(a).unwrap()[0].fill_keys.is_empty());
+    }
+
+    #[test]
+    fn one_property_can_be_keyed_and_unkeyed_on_its_own() {
+        let (mut ed, [a, ..]) = three();
+        ed.select(a, SelectMode::Replace);
+        ed.go_to(6);
+        let rotation = ChannelId::Rotation;
+        assert!(ed.can_run(Action::AddChannelKey(rotation)));
+        assert!(
+            !ed.can_run(Action::DeleteChannelKey(rotation)),
+            "nothing to delete yet"
+        );
+        ed.run(Action::AddChannelKey(rotation));
+        let l = ed.doc.find(a).unwrap();
+        assert!(l.transform.rotation.is_animated());
+        assert!(!l.transform.position.is_animated(), "only that property");
+        assert_eq!(ed.channel_key_frames(a, rotation), [6]);
+        assert!(ed.can_run(Action::DeleteChannelKey(rotation)));
+        ed.run(Action::SetChannelInterpolation(rotation, Interpolation::Step));
+        assert_eq!(
+            ed.doc.find(a).unwrap().transform.rotation.keys[0].interp,
+            Interpolation::Step
+        );
+        ed.run(Action::DeleteChannelKey(rotation));
+        assert!(!ed.doc.find(a).unwrap().transform.rotation.is_animated());
+        // a property the layer does not have cannot be keyed
+        assert!(!ed.can_run(Action::AddChannelKey(ChannelId::Bone(0))));
+        // each of those was one undo step
+        ed.run(Action::Undo);
+        assert!(ed.doc.find(a).unwrap().transform.rotation.is_animated());
+    }
+
+    #[test]
+    fn dragging_a_property_key_moves_only_that_property() {
+        let (mut ed, [a, ..]) = three();
+        ed.select(a, SelectMode::Replace);
+        ed.go_to(5);
+        ed.run(Action::AddKey);
+        assert!(ed.begin_channel_key_drag(a, ChannelId::Rotation, 5));
+        ed.drag_keys_to(9);
+        ed.end_key_drag();
+        let l = ed.doc.find(a).unwrap();
+        assert_eq!(l.transform.rotation.keys[0].frame, 9);
+        assert_eq!(l.transform.position.keys[0].frame, 5);
+        assert!(
+            !ed.begin_channel_key_drag(a, ChannelId::Rotation, 5),
+            "no key there any more"
+        );
+        ed.run(Action::Undo);
+        assert_eq!(ed.doc.find(a).unwrap().transform.rotation.keys[0].frame, 5);
     }
 
     #[test]
@@ -1667,9 +2261,45 @@ mod tests {
         ed.playing = true;
         ed.tick(1.5); // 36 frames at 24 fps over a 24-frame range
         assert_eq!(ed.current_frame(), 12);
+        // the playhead may go past the last frame (keys for later go there),
+        // but never before the first
         ed.go_to(500);
-        assert_eq!(ed.current_frame(), 23);
+        assert_eq!(ed.current_frame(), 500);
         assert!(!ed.playing);
+        ed.go_to(-4);
+        assert_eq!(ed.current_frame(), 0);
+    }
+
+    #[test]
+    fn playing_from_past_the_end_starts_over() {
+        let (mut ed, _) = three();
+        ed.doc.end = 23;
+        ed.go_to(40);
+        ed.playing = true;
+        ed.tick(0.25); // 6 frames
+        assert_eq!(ed.current_frame(), 6);
+        // the playhead at the very last frame plays on and loops as before
+        ed.go_to(23);
+        ed.playing = true;
+        ed.tick(0.25);
+        assert_eq!(ed.current_frame(), 5);
+    }
+
+    #[test]
+    fn a_key_can_be_added_past_the_end_and_the_range_is_unchanged() {
+        let (mut ed, [a, ..]) = three();
+        ed.doc.end = 23;
+        ed.select(a, SelectMode::Replace);
+        ed.go_to(60);
+        ed.run(Action::AddKey);
+        assert!(ed.key_frames(a).contains(&60));
+        assert_eq!(ed.doc.end, 23, "the playing range does not grow by itself");
+        // stepping and the key jumps reach it
+        ed.go_to(0);
+        ed.run(Action::NextKey);
+        assert_eq!(ed.current_frame(), 60);
+        ed.run(Action::LastFrame);
+        assert_eq!(ed.current_frame(), 23);
     }
 
     #[test]

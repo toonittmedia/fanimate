@@ -17,7 +17,7 @@ const NAV_WIDTH: f32 = 240.0;
 const CARD_WIDTH: f32 = 168.0;
 const CARD_HEIGHT: f32 = 148.0;
 const PREVIEW_HEIGHT: f32 = 96.0;
-const ROW_HEIGHT: f32 = 46.0;
+const ROW_HEIGHT: f32 = 52.0;
 
 /// The part of the Home tab showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,6 +41,7 @@ impl Section {
 }
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
+    shell.ui.thumbs.poll(ui.ctx());
     let p = shell.palette;
     egui::Panel::left("home-nav")
         .exact_size(NAV_WIDTH)
@@ -146,7 +147,7 @@ fn home(ui: &mut egui::Ui, shell: &mut Shell) {
         for preset in Preset::ALL {
             let (width, height) = preset.size();
             let detail = format!("{width:.0} × {height:.0} px · {:.0} fps", preset.fps());
-            if card(ui, shell, preset.name(), &detail, Some(width / height)).clicked() {
+            if card(ui, shell, preset.name(), &detail, Some(width / height), None).clicked() {
                 shell.pending.push(Action::NewPreset(preset));
             }
         }
@@ -168,7 +169,14 @@ fn section_title(ui: &mut egui::Ui, shell: &Shell, text: &str) {
 
 /// A card: a preview on top (a page of the given proportions, or nothing),
 /// then a name and a line of detail. Returns the click.
-fn card(ui: &mut egui::Ui, shell: &Shell, name: &str, detail: &str, page: Option<f32>) -> egui::Response {
+fn card(
+    ui: &mut egui::Ui,
+    shell: &Shell,
+    name: &str,
+    detail: &str,
+    page: Option<f32>,
+    preview_image: Option<&egui::TextureHandle>,
+) -> egui::Response {
     let p = shell.palette;
     let (rect, r) = ui.allocate_exact_size(vec2(CARD_WIDTH, CARD_HEIGHT), Sense::click());
     let painter = ui.painter();
@@ -184,7 +192,14 @@ fn card(ui: &mut egui::Ui, shell: &Shell, name: &str, detail: &str, page: Option
         vec2(rect.width() - 16.0, PREVIEW_HEIGHT),
     );
     painter.rect_filled(preview, 4.0, p.bg);
-    if let Some(aspect) = page {
+    if let Some(texture) = preview_image {
+        // the real first frame, as large as the preview allows
+        let size = texture.size_vec2();
+        let scale = ((preview.width() - 8.0) / size.x).min((preview.height() - 8.0) / size.y);
+        let shown = Rect::from_center_size(preview.center(), size * scale);
+        egui::Image::new((texture.id(), shown.size())).paint_at(ui, shown);
+        painter.rect_stroke(shown, 2.0, Stroke::new(1.0, p.border), egui::StrokeKind::Outside);
+    } else if let Some(aspect) = page {
         // the page, at the file's proportions, as large as the preview allows
         let room = preview.shrink(12.0);
         let (w, h) = if aspect >= room.width() / room.height() {
@@ -201,21 +216,49 @@ fn card(ui: &mut egui::Ui, shell: &Shell, name: &str, detail: &str, page: Option
             egui::StrokeKind::Inside,
         );
     }
-    painter.text(
+    // names and details are cut with an ellipsis at the card's edge; the
+    // tooltip carries the whole text
+    let room = rect.width() - 24.0;
+    let cut_name = one_line(
+        painter,
         pos2(rect.left() + 12.0, preview.bottom() + 10.0),
-        Align2::LEFT_TOP,
         name,
         FontId::proportional(13.0),
         p.text,
+        room,
     );
-    painter.text(
+    let cut_detail = one_line(
+        painter,
         pos2(rect.left() + 12.0, preview.bottom() + 28.0),
-        Align2::LEFT_TOP,
         detail,
         FontId::proportional(11.5),
         p.text_muted,
+        room,
     );
+    if cut_name || cut_detail {
+        return r.on_hover_text(format!("{name}\n{detail}"));
+    }
     r
+}
+
+/// Paint `text` on one line no wider than `width`, ending in an ellipsis when
+/// it does not fit. Returns whether it was cut.
+fn one_line(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    text: &str,
+    font: FontId,
+    color: egui::Color32,
+    width: f32,
+) -> bool {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, width);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = painter.layout_job(job);
+    let cut = galley.elided;
+    painter.galley(pos, galley, color);
+    cut
 }
 
 /// Up to `limit` recent files; click to open, right-click for the menu.
@@ -233,19 +276,31 @@ fn recent(ui: &mut egui::Ui, shell: &mut Shell, limit: usize) {
             ui.painter().rect_filled(rect, 4.0, p.raised);
         }
         let (name, folder) = describe(path);
-        ui.painter().text(
-            pos2(rect.left() + 12.0, rect.top() + 8.0),
-            Align2::LEFT_TOP,
-            name,
+        // the first frame of the project, small, at the left
+        let thumb = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2(64.0, ROW_HEIGHT - 8.0));
+        ui.painter().rect_filled(thumb, 3.0, p.bg);
+        if let Some(texture) = shell.ui.thumbs.file(path) {
+            let size = texture.size_vec2();
+            let scale = ((thumb.width() - 2.0) / size.x).min((thumb.height() - 2.0) / size.y);
+            let shown = Rect::from_center_size(thumb.center(), size * scale);
+            egui::Image::new((texture.id(), shown.size())).paint_at(ui, shown);
+        }
+        let room = rect.width() - 24.0 - 72.0;
+        one_line(
+            ui.painter(),
+            pos2(rect.left() + 84.0, rect.top() + 8.0),
+            &name,
             FontId::proportional(13.5),
             p.text,
+            room,
         );
-        ui.painter().text(
-            pos2(rect.left() + 12.0, rect.top() + 27.0),
-            Align2::LEFT_TOP,
-            folder,
+        one_line(
+            ui.painter(),
+            pos2(rect.left() + 84.0, rect.top() + 27.0),
+            &folder,
             FontId::proportional(11.5),
             p.text_muted,
+            room,
         );
         ui.painter().hline(
             rect.x_range(),
@@ -302,7 +357,8 @@ fn templates(ui: &mut egui::Ui, shell: &mut Shell) {
                 Sample::Benchmark => "40 bones, the speed test",
                 Sample::StressTest => "400 bones, for stress",
             };
-            if card(ui, shell, sample.name(), detail, None).clicked() {
+            let preview = shell.ui.thumbs.sample(sample).cloned();
+            if card(ui, shell, sample.name(), detail, None, preview.as_ref()).clicked() {
                 shell.pending.push(Action::OpenSample(sample));
             }
         }

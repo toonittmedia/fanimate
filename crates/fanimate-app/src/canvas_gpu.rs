@@ -36,6 +36,8 @@ pub struct Overlays {
     /// With the light table on, the layers kept at full strength; others
     /// are faded.
     pub light_table: Option<Vec<LayerId>>,
+    /// Show the canvas as the document's camera sees it.
+    pub camera: bool,
 }
 
 pub struct CanvasGpu {
@@ -85,6 +87,7 @@ impl CanvasGpu {
 
         let started = std::time::Instant::now();
         let mut items = Vec::new();
+        self.evaluator.camera = overlays.camera;
         self.evaluator.evaluate_into(doc, frame, &mut items);
         if let Some(shape) = extra {
             items.push(DrawItem {
@@ -106,7 +109,12 @@ impl CanvasGpu {
         }
         self.tess.clear(&mut self.mesh);
         self.tess.tolerance = 0.25 / view.zoom.max(0.01);
-        self.tess.canvas(doc, &mut self.mesh);
+        let camera = if overlays.camera {
+            fanimate_core::camera_at(doc, frame).unwrap_or(Affine2::IDENTITY)
+        } else {
+            Affine2::IDENTITY
+        };
+        self.tess.canvas_through(doc, &mut self.mesh, camera);
         // onion skins under the current frame, each in its tint
         let mut onion = Evaluator::default();
         for &(at, tint, opacity) in &overlays.onion {

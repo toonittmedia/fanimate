@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 
-use fanimate_core::{Color, Document, Frame, Layer, LayerKind, MediaFile};
+use fanimate_core::{Camera, Color, Document, Frame, Guide, Layer, LayerKind, MediaFile};
 use serde::{Deserialize, Serialize};
 
 use crate::validate::{self, Report};
@@ -27,7 +27,11 @@ pub const FORMAT_NAME: &str = "fnm";
 ///   (`transform.pivot`), and shapes may say they are rectangles (`rect`).
 ///   Older files need no conversion: without a pivot a layer turns about its
 ///   origin, as it always did.
-pub const FORMAT_VERSION: u32 = 4;
+/// - 5: the project may carry guides (`guides` in `document.json`), layers
+///   may be locked (`locked`) and shapes hidden (`visible: false`). Older
+///   files need no conversion: they have no guides, and nothing locked or
+///   hidden.
+pub const FORMAT_VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Manifest {
@@ -48,6 +52,12 @@ pub(crate) struct DocumentFile {
     end: Frame,
     background: Color,
     next_layer_id: u32,
+    /// Version 5: guides placed from the rulers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    guides: Vec<Guide>,
+    /// Version 5: the camera.
+    #[serde(default, skip_serializing_if = "Camera::is_default")]
+    camera: Camera,
     /// Top-level layer files, bottom to top, relative to the project folder.
     layers: Vec<String>,
 }
@@ -162,6 +172,8 @@ fn read_from(base: &Path, files: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> R
         background: file.background,
         layers,
         next_layer_id: file.next_layer_id,
+        guides: file.guides,
+        camera: file.camera,
         action_edit: None,
         media: Default::default(),
     };
@@ -367,6 +379,8 @@ pub(crate) fn document_file(doc: &Document) -> DocumentFile {
         end: doc.end,
         background: doc.background,
         next_layer_id: doc.next_layer_id,
+        guides: doc.guides.clone(),
+        camera: doc.camera.clone(),
         layers: doc.layers.iter().map(layer_file).collect(),
     }
 }
@@ -921,6 +935,87 @@ mod tests {
                 "{text}"
             );
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Version 5 adds guides, locked layers and hidden shapes; they come back
+    /// as they were saved, as a file and as a folder.
+    #[test]
+    fn guides_locked_layers_and_hidden_shapes_round_trip() {
+        use fanimate_core::{Color, Guide, Path, Shape, Style, Vec2};
+        let dir = temp_dir("v5");
+        let mut doc = samples::hello();
+        doc.guides = vec![
+            Guide {
+                vertical: true,
+                position: 320.5,
+                locked: false,
+            },
+            Guide {
+                vertical: false,
+                position: 90.0,
+                locked: true,
+            },
+        ];
+        let mut hidden = Shape::new("hidden", Path::circle(Vec2::ZERO, 5.0), Style::fill(Color::BLACK));
+        hidden.visible = false;
+        // a camera that moves, and a colour that does
+        doc.camera.zoom =
+            fanimate_core::Channel::new(1.0).with_key(12, 2.0, fanimate_core::Interpolation::Linear);
+        doc.camera.position.base = Vec2::new(30.0, -5.0);
+        hidden.fill_keys = vec![fanimate_core::Key {
+            frame: 4,
+            value: Color::WHITE,
+            interp: fanimate_core::Interpolation::Step,
+        }];
+        let mut layer = doc.new_layer("art", LayerKind::vector(vec![hidden]));
+        layer.locked = true;
+        doc.layers.push(layer);
+        for name in ["file.fnm", "folder.fnm"] {
+            let path = dir.join(name);
+            if name == "file.fnm" {
+                save(&doc, &path).unwrap();
+            } else {
+                save_folder(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{report}");
+            assert_eq!(loaded, doc, "{name}");
+        }
+        let (loaded, _) = load(dir.join("file.fnm")).unwrap();
+        assert_eq!(loaded.guides.len(), 2);
+        assert!(loaded.layers.last().unwrap().locked);
+        assert_eq!(loaded.camera, doc.camera);
+        assert!(loaded.camera.is_animated());
+        // the manifest says version 5, so an older reader refuses what it
+        // would misread: it would show the hidden shape and lose the guides
+        let manifest = fs::read_to_string(dir.join("folder.fnm").join("manifest.json")).unwrap();
+        assert!(manifest.contains("\"version\": 5"), "{manifest}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A project without any of the version 5 fields writes none of them, so
+    /// its files are the same as before, and a version 4 project opens as it was.
+    #[test]
+    fn a_version_4_project_opens_unchanged_and_writes_no_new_fields() {
+        let dir = temp_dir("v4");
+        let path = dir.join("old.fnm");
+        let doc = samples::hello();
+        save_folder(&doc, &path).unwrap();
+        let written = fs::read_to_string(path.join("document.json")).unwrap();
+        assert!(
+            !written.contains("guides") && !written.contains("camera"),
+            "{written}"
+        );
+        let layer_text = fs::read_to_string(path.join("layers").join("0002.json"))
+            .or_else(|_| fs::read_to_string(path.join("layers").join("0001.json")))
+            .unwrap();
+        assert!(!layer_text.contains("locked") && !layer_text.contains("\"visible\":false"));
+        fs::write(path.join("manifest.json"), r#"{"format":"fnm","version":4}"#).unwrap();
+        let (loaded, report) = load(&path).unwrap();
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(loaded, doc);
+        assert!(loaded.guides.is_empty() && loaded.layers.iter().all(|l| !l.locked));
         fs::remove_dir_all(dir).unwrap();
     }
 

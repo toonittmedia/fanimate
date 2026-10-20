@@ -15,8 +15,9 @@ mod tabs;
 
 pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search};
 pub use editor::{
-    BoneRef, DrawStyle, Editor, Handle, HandleMods, MouthCue, Outcome, Placement, PointRef, RadiusTarget,
-    SelectMode, SelectionFrame, ShapeBuilderState, SoundInfo, StatusKind, parse_rhubarb, sound_info,
+    AlignTo, BoneRef, ConvertTo, DrawStyle, Editor, Handle, HandleMods, Loss, MouthCue, Outcome, Placement,
+    PointRef, RadiusTarget, SOUND_EXTENSIONS, SelectMode, SelectionFrame, ShapeBuilderState, SoundInfo,
+    StatusKind, parse_rhubarb, sound_info, sound_to_wav,
 };
 pub use history::History;
 pub use keymap::{Chord, Keymap, KeymapKind};

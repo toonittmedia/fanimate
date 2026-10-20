@@ -25,12 +25,17 @@ pub enum Action {
     ShowHome,
     Save,
     SaveAs,
+    /// Save the project as a folder of plain files (one per layer), which
+    /// Git can diff, instead of one file.
+    SaveAsFolder,
     /// Import pictures, Photoshop or SVG files, or sound.
     Import,
     /// Render the animation to a video, GIF or PNG sequence.
     ExportVideo,
     /// Show the render queue window.
     RenderQueue,
+    /// Render the current frame as the export would make it, and show it.
+    RenderPreviewFrame,
     /// Look for a newer version of Fanimate now.
     CheckForUpdates,
     /// Install a downloaded update and restart.
@@ -123,6 +128,39 @@ pub enum Action {
     ZoomOut,
     FitView,
     ActualSize,
+    /// Key one property of the selected layer on the current frame, holding
+    /// its value there (the key buttons in Properties and the timeline's
+    /// property rows).
+    AddChannelKey(fanimate_core::ChannelId),
+    /// Remove one property's key on the current frame.
+    DeleteChannelKey(fanimate_core::ChannelId),
+    /// How one property's key on the current frame moves on to the next.
+    SetChannelInterpolation(fanimate_core::ChannelId, fanimate_core::Interpolation),
+    /// How keys made from now on move on to the next key (the timeline's
+    /// dropdown).
+    SetKeyInterpolation(fanimate_core::Interpolation),
+    /// Lock the selected layers, or unlock them when they all are locked.
+    ToggleLock,
+    /// Line the selected layers up with the canvas (one layer) or each other.
+    Align(crate::editor::AlignTo),
+    /// Show or hide one shape of a layer (the eye in the Properties panel's
+    /// shape list).
+    SetShapeVisible(fanimate_core::LayerId, usize, bool),
+    /// Delete or copy the selected shapes.
+    DeleteShapes,
+    DuplicateShapes,
+    /// Rename a shape in place, in the Properties panel's shape list.
+    RenameShape(fanimate_core::LayerId, usize),
+    /// Put the camera back over the whole canvas and remove its keys.
+    ResetCamera,
+    /// Show the canvas as the camera sees it (editing tools are off while it
+    /// is on).
+    LookThroughCamera,
+    /// Turn the selected group, bone or switch layer into another of those.
+    /// When that throws something away the app asks first.
+    ConvertLayerType(crate::editor::ConvertTo),
+    /// The same, once the question has been answered.
+    ConfirmConvertLayerType(crate::editor::ConvertTo),
     // Tools
     Tool(Tool),
     /// Moho's `A`: Add Point on a vector layer, Add Bone on a bone layer.
@@ -148,9 +186,11 @@ impl Action {
             ShowHome => "Home",
             Save => "Save",
             SaveAs => "Save As…",
+            SaveAsFolder => "Save As Folder…",
             Import => "Import…",
             ExportVideo => "Export Video…",
             RenderQueue => "Render Queue",
+            RenderPreviewFrame => "Render Preview Frame",
             CheckForUpdates => "Check for Updates",
             InstallUpdate => "Install Update and Restart",
             Workspace(w) => w.label(),
@@ -218,6 +258,34 @@ impl Action {
                 fanimate_core::Interpolation::Linear => "Interpolation: Linear",
                 fanimate_core::Interpolation::Step => "Interpolation: Step",
             },
+            ToggleLock => "Lock/Unlock Layer",
+            ResetCamera => "Reset Camera",
+            LookThroughCamera => "Look Through Camera",
+            Align(to) => to.label(),
+            SetShapeVisible(_, _, true) => "Show Shape",
+            SetShapeVisible(_, _, false) => "Hide Shape",
+            DeleteShapes => "Delete Shape",
+            DuplicateShapes => "Duplicate Shape",
+            RenameShape(..) => "Rename Shape",
+            ConvertLayerType(to) | ConfirmConvertLayerType(to) => match to {
+                crate::editor::ConvertTo::Group => "Change to Group",
+                crate::editor::ConvertTo::Bone => "Change to Bone Layer",
+                crate::editor::ConvertTo::Switch => "Change to Switch Layer",
+            },
+            AddChannelKey(fanimate_core::ChannelId::FillColor(_)) => "Key Fill Colour Here",
+            AddChannelKey(fanimate_core::ChannelId::StrokeColor(_)) => "Key Stroke Colour Here",
+            AddChannelKey(_) => "Add Keyframe on This Property",
+            DeleteChannelKey(_) => "Delete Keyframe on This Property",
+            SetChannelInterpolation(_, i) => match i {
+                fanimate_core::Interpolation::Smooth => "Property Key: Smooth",
+                fanimate_core::Interpolation::Linear => "Property Key: Linear",
+                fanimate_core::Interpolation::Step => "Property Key: Step",
+            },
+            SetKeyInterpolation(i) => match i {
+                fanimate_core::Interpolation::Smooth => "New Keys: Smooth",
+                fanimate_core::Interpolation::Linear => "New Keys: Linear",
+                fanimate_core::Interpolation::Step => "New Keys: Step",
+            },
             ToggleOnionSkin => "Onion Skin",
             ToggleLightTable => "Light Table",
             ZoomIn => "Zoom In",
@@ -226,6 +294,72 @@ impl Action {
             ActualSize => "Actual Size (100%)",
             Tool(t) => t.label(),
             AddPointOrBone => "Add Point / Add Bone",
+        }
+    }
+
+    /// The menu an action belongs to, to group the shortcut list. Every
+    /// action is named, so a new one has to choose.
+    pub fn category(self) -> &'static str {
+        use Action::*;
+        match self {
+            New | NewPreset(_) | Open | OpenOther | OpenSample(_) | OpenFolder | CloseDocument
+            | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
+            | SaveAsFolder | Import | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates
+            | InstallUpdate | Quit => "File",
+            Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | Duplicate | Delete
+            | SelectAll | SelectNone | Rename | FinishPath | Union | Subtract | Intersect | ExpandShape
+            | Preferences | CommandPalette => "Edit",
+            NewVectorLayer
+            | NewGroupLayer
+            | NewBoneLayer
+            | NewFramesLayer
+            | NewSwitchLayer
+            | GroupLayers
+            | Ungroup
+            | MoveLayerUp
+            | MoveLayerDown
+            | ToggleVisibility
+            | ToggleLock
+            | Align(_)
+            | LayerProperties
+            | SetLabel(_)
+            | SetShapeVisible(..)
+            | DeleteShapes
+            | DuplicateShapes
+            | RenameShape(..)
+            | ConvertLayerType(_)
+            | ConfirmConvertLayerType(_)
+            | BindToBone
+            | BindSmoothly
+            | Unbind
+            | NewAction
+            | NewSmartBoneAction
+            | EditAction(_)
+            | FinishAction
+            | InsertAction(_)
+            | DeleteAction(_) => "Layer",
+            PlayPause
+            | NextFrame
+            | PrevFrame
+            | FirstFrame
+            | LastFrame
+            | NextKey
+            | PrevKey
+            | AddKey
+            | DeleteKey
+            | NewDrawing
+            | SetSwitch(_)
+            | LipSync
+            | SetPart(_)
+            | SetInterpolation(_)
+            | AddChannelKey(_)
+            | DeleteChannelKey(_)
+            | SetChannelInterpolation(..)
+            | ResetCamera
+            | SetKeyInterpolation(_) => "Animation",
+            ToggleOnionSkin | ToggleLightTable | LookThroughCamera | ZoomIn | ZoomOut | FitView
+            | ActualSize | Workspace(_) => "View",
+            Tool(_) | AddPointOrBone => "Tools",
         }
     }
 
@@ -244,9 +378,11 @@ impl Action {
             ShowHome,
             Save,
             SaveAs,
+            SaveAsFolder,
             Import,
             ExportVideo,
             RenderQueue,
+            RenderPreviewFrame,
             CheckForUpdates,
             InstallUpdate,
             Quit,
@@ -298,12 +434,14 @@ impl Action {
             LipSync,
             ToggleOnionSkin,
             ToggleLightTable,
+            LookThroughCamera,
             ZoomIn,
             ZoomOut,
             FitView,
             ActualSize,
         ];
         v.extend(fanimate_core::Interpolation::ALL.map(SetInterpolation));
+        v.extend(fanimate_core::Interpolation::ALL.map(SetKeyInterpolation));
         v.extend(fanimate_core::Part::ALL.map(SetPart));
         v.extend(Sample::ALL.iter().map(|s| OpenSample(*s)));
         v.extend(Preset::ALL.iter().map(|p| NewPreset(*p)));
@@ -765,10 +903,10 @@ impl Tool {
                 "Drag to rotate the selected points around their centre. Shift snaps to 15-degree steps."
             }
             Self::DrawShape => {
-                "Click to pick the fill and stroke colours from the shape under the pointer and apply them to new artwork."
+                "Drag around an area to sketch a shape; let go to close it and fill it with the current Fill and Line colours."
             }
             Self::LineWidth => {
-                "Drag along a stroke to widen or narrow it. The speed of the drag sets the new width."
+                "Press next to a point on a stroke and drag up to widen it, down to narrow it. Selected points change together."
             }
             Self::StrokeExposure => {
                 "Coming in a later release: trim the start or end of a stroke. It needs a file format change first."
@@ -788,6 +926,19 @@ impl Tool {
             Self::PaintWeights => {
                 "Select a bone, then brush over points of a bound vector layer to make them follow that bone more. Alt brushes them away from it."
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_action_belongs_to_a_menu() {
+        const MENUS: [&str; 6] = ["File", "Edit", "Layer", "Animation", "View", "Tools"];
+        for action in Action::all() {
+            assert!(MENUS.contains(&action.category()), "{action:?}");
         }
     }
 }

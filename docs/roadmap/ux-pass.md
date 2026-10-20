@@ -1,6 +1,6 @@
 # UX pass: tabs, Home, handles, drawing tools, snapping
 
-Companion to [Phase 1](phase-1.md). This is a planned set of changes, agreed with the project owner on 2026-10-18. Phases A to F are built and ship in 0.2.2; the items still marked open below are not. Move finished items into the Phase 1 status when they ship.
+Companion to [Phase 1](phase-1.md). This is a planned set of changes, agreed with the project owner on 2026-10-18. Phases A to F are built and ship in 0.2.2; the items still marked open below are not. A second pass shipped in 0.2.3 and is summarised in [UX pass 2](#ux-pass-2-0-2-3) at the end. Move finished items into the Phase 1 status when they ship.
 
 Reference material: screenshots of Vector Studio (ves.puter.com) kept in `reference/` for layout and interaction only. Clean room rules apply: we follow the interaction model, never code or artwork.
 
@@ -67,9 +67,9 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Keyboard zoom: egui's UI scaling on Ctrl+Plus, Ctrl+Minus and Ctrl+0 is off (`zoom_with_keyboard = false`). Those chords zoom the canvas, or the timeline while the pointer is over it. Checked in the running app: the UI keeps its size, the canvas and timeline zoom.
 - [x] Timeline range: boundary line on the left edge of the start frame; the end line stays visible but no longer sits under the playhead; shade the range; dim the ruler and rows beyond the end (`panels/timeline.rs` currently stops the ruler at `end`, and rows and scrolling are clamped to it)
 - [x] Timeline continues into the future: the ruler and scrolling run past the end frame, dimmed, and the transport shows "Frame 47 of 47" with the total as an editable field that sets `Document::end` (one undo step, never before `start`).
-- [ ] Still open: the playhead is still clamped to the playing range, so keys cannot yet be added past the end by moving the playhead there (dragging an existing key past the end works). Changing that touches playback and `Editor::go_to`; decide with the owner.
+- [x] The playhead goes past the end (0.2.3): scrubbing is free, playback still loops the playing range.
 - [x] Timeline zoom controls: zoom in, zoom out, reset (back to 12 px per frame) and fit-all buttons in the header, with tooltips showing the shortcut; Ctrl+scroll stays; zoom keeps the playhead position fixed on screen; ruler labels thin out at low zoom and show every frame, with sub-ticks, at high zoom (second reference image)
-- [ ] Timeline zoom and scroll are per tab once Phase B lands
+- [x] Timeline zoom and scroll are per tab (Phase B)
 
 ### Phase B: Tabs, Home, startup
 
@@ -80,6 +80,7 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Startup choice (Home, reopen last session, new blank file, most recent file) in Preferences and on the Home tab.
 - [x] Opening files from the command line or the file manager opens tabs in the running Fanimate (`instance.rs`: lock file and inbox; a launch nobody answers carries on by itself after 3 seconds).
 - [x] Timeline zoom and scroll are per tab.
+- [x] Recent and Templates show previews (0.2.3).
 - [ ] Not built: "Your files" on Home (a list of the folders you keep projects in); templates beyond the three built-in samples.
 - [ ] Not checked by hand: middle-click close and Close Other Tabs (the logic is tested without a window).
 
@@ -91,7 +92,8 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Windows installer: `.fnm` association, file icon and open verb (current user, or all users when run as administrator). Not run here: no Inno Setup on this machine.
 - [x] macOS `Info.plist`: document type, the `app.fanimate.project` type and the file icon; `package.sh` copies the icon. Not built here.
 - [x] Linux: MIME type `application/x-fanimate-project` and icon, `MimeType` in the desktop file, `%F` so several files open, the metainfo `provides`; AppImage, `.deb` and Flatpak all install them. Not built here.
-- [ ] Not built: a Save As Folder command (only older folder projects stay folders). On macOS, Finder hands a file to the running app as an Apple event rather than starting a second process; whether this version of winit passes that on has not been checked, so opening a file from Finder into a running Fanimate may need more work there.
+- [x] Save As Folder is in the File menu (0.2.3).
+- [ ] Not checked: on macOS, Finder hands a file to the running app as an Apple event rather than starting a second process; whether this version of winit passes that on has not been checked, so opening a file from Finder into a running Fanimate may need more work there.
 
 ### Phase D: Selection, handles, pivot
 
@@ -101,7 +103,8 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Pivot: a ring on the canvas that can be dragged (it snaps to the box's nine anchors), a 3 x 3 anchor grid and X and Y fields in Properties. It is stored per layer (`transform.pivot`, format version 4) and used by rotate and scale. **Not animated**: moving it keeps the artwork where it is on every frame unless the layer's rotation or scale is animated, when it only holds on the current frame (the status bar says so).
 - [x] Rectangle: the Rectangle tool makes a rectangle that remembers it is one (`rect`, version 4); round dots inside the corners change the radius, Properties has a Corner radius field with Absolute and Relative, and Expand Shape (an action, in menus, the palette and the toolbar) turns it into a plain path. Editing a point by hand does the same quietly. One radius for all four corners.
 - [x] Floating toolbar below the selection (above when there is no room): Edit Points or Transform, Group (several layers), Unite (when points on two shapes are chosen), Expand, fill and stroke colours, Duplicate, Delete, and a menu with the layer commands.
-- [ ] Not built: the toolbar cannot be dragged by a grip; Align, Offset Path and Lock (there are no such commands yet); Alt+click or double-click to "drop into point editing" (Select Points already works on points, and the Transform tool on layers, so there is nothing to drop into); separate radii per corner; the rotate cursor (egui has none, so the crosshair shows); a pivot that is keyed.
+- [x] 0.2.3: the toolbar drags by a grip; Align and Lock exist as Actions.
+- [ ] Not built: Offset Path; Alt+click or double-click to "drop into point editing" (Select Points already works on points, and the Transform tool on layers, so there is nothing to drop into); separate radii per corner; the rotate cursor (egui has none, so the crosshair shows); a pivot that is keyed (these three need format fields and stay open).
 - [ ] Not measured: the frame needs one evaluation per frame with the Transform tool and a selection (the old outline already needed one, and is gone for that tool), and hovering is cached until the pointer, the document or the view changes. No before and after numbers were taken.
 
 ### Phase E: Keys and tools
@@ -112,16 +115,18 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Fill and stroke tools: Draw Shape (click copies style), Freehand with Width (variable pressure via drag-Y), Line Width (drag adjusts widths profile). All bound. Stroke Exposure is bound but shown disabled, and its hint says it comes later.
 - [x] Shape Builder (`Shift+M` Fanimate and Moho): drag across overlapping regions to unite them; Alt+drag to subtract. Uses the existing `combine` / `BoolOp` backend. Tested.
 - [x] Each tool: `Tool` variant, `label`, `group`, `hint`, `is_available`, keymap bindings in both presets, an SVG icon in `icons/fanimate/`, wired in `icons.rs`. 13 new tests in `tools_e.rs` (290 total, all pass).
+- [x] Line Width and Draw Shape were rebuilt in 0.2.3 (drag up or down on a point; freehand closed shape).
 - [ ] Not built: Stroke Exposure. It needs a trim-fraction field per shape (a format bump), so the tool is listed as unavailable until then.
 
 ### Phase F: Rulers, grid, snapping
 
 - [x] Rulers along the top and left edges of the canvas, with px tick marks, sub-ticks, a cursor-position line, and units at every major tick. Shown/hidden from View > Rulers.
-- [x] Draggable guides: drag from the horizontal ruler for a vertical guide, drag from the vertical ruler for a horizontal guide. Right-click a guide on the canvas to delete or lock it (locked guides cannot be accidentally dragged). Guides are stored in `Shell::guides`.
+- [x] Draggable guides: drag from the horizontal ruler for a vertical guide, drag from the vertical ruler for a horizontal guide. Right-click a guide on the canvas to delete or lock it (locked guides cannot be accidentally dragged). Guides are stored in the document (`Document::guides`, format version 5).
 - [x] Grid with configurable spacing and subdivisions, drawn under the artwork in the canvas (View > Grid). Major lines use the border colour; minor lines are dimmed. The grid hides when zoom would make it too dense (< 4 px between minor lines).
 - [x] Snap module (`fanimate-editor/src/snap.rs`): pure functions, 6 unit tests. Targets: pixel grid, document grid, guides, canvas bounds (edges and centre), with `SnapResult` carrying a hint line. Angle snapping helper `snap_angle`. `SnapSettings` and `GridSettings` are serialised and restored between sessions.
 - [x] View > Snapping sub-menu: per-target toggles (pixels, grid, guides, bounds), the angle step used while Shift is held, grid spacing and subdivisions, all live-editable without closing the menu.
-- [ ] Not built: snapping to other shapes' points, edges and centres. The toggle was removed rather than left doing nothing.
+- [x] Snapping to other shapes' points, edges and centres (0.2.3), on both axes at once. Guides are saved in the project and can be dragged.
+- [ ] Not built: snapping for Freehand, Eraser and the selection handles.
 - [x] Snap hint line on the canvas while dragging (drawn in a semi-transparent accent colour after the GPU texture; cleared at the start of each frame so it vanishes when no drag is active).
 - [x] Tool integration: `do_snap()` is called by every tool that drags a position — Move Layer, Select/Translate Points, Add Point, Pen, bone drag (AddBone/SelectBone/Pose), Rectangle, Ellipse, Line, Polygon, Star, Triangle. Shape drag `to` endpoints are snapped on each frame.
 - [x] Pixel snapping: the pixel-snap candidate is produced by the snap module and the canvas tools call it via `do_snap()`.
@@ -142,3 +147,19 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - **Parametric shapes** touch tessellation, point editing, boolean operations and the importers. Expand Shape is the escape hatch; every consumer must handle both forms.
 - **Zip container** must keep the "never lose work" guarantee: write a temp file, verify it reads back, then swap it in.
 - **Phase E is large.** If it slips, ship Curvature, the shape tools and Shape Builder first; mark the rest "coming in a later release" per the polish rule.
+
+## UX pass 2 (0.2.3)
+
+Built: What's New in the app; Preferences, Export, Shortcuts, About and Update as modal dialogs with a shared layout; links that open the browser; non-blocking update with progress; the canvas outside the dock with three fixed regions and History in the Layers area; the tools panel at three per row; interpolation colours and a dropdown for new keys; expandable property rows with their own keys; key buttons in Properties; Moho-style keying; a document-level camera with a timeline row, Properties fields, look-through and a frame overlay; colour animation for fill and stroke; the shapes list in the Style panel; layer lock, Align and the draggable toolbar; layer type conversion; guides in the document; rotated ruler labels; remembered Export and Save As folders; Render Preview Frame (Ctrl+R) and Import on Ctrl+I; audio import for MP3, OGG, FLAC and AAC; taskbar render progress on Windows. Format version 5.
+
+Not built, still open:
+
+- [ ] Recent thumbnails embedded in the `.fnm` (an app-data cache is used instead).
+- [ ] "Your files" on Home; more templates.
+- [ ] Stroke Exposure, per-corner radii and a keyed pivot (format fields).
+- [ ] Offset Path; before and after numbers for the selection frame.
+- [ ] Snapping for Freehand, Eraser and the handles.
+- [ ] Camera drag on the canvas (the camera is edited in Properties and on the timeline).
+- [ ] macOS update install on a worker thread; Moho keymap bindings for the new actions (left unbound on purpose for now).
+- [ ] Real MP3, OGG, FLAC and AAC fixtures in the tests (only generated WAV and damaged input are tested).
+- [ ] Video import: [design note](video-import.md) only.

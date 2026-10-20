@@ -1,23 +1,22 @@
 //! The app: window chrome, docking layout, dialogs and command dispatch.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, CursorIcon, Key, Modifiers};
-use egui_dock::{DockArea, DockState, NodeIndex};
 use fanimate_core::LayerId;
 use fanimate_editor::{Action, Chord, DrawStyle, Editor, Keymap, KeymapKind, Outcome, StatusKind};
 use serde::{Deserialize, Serialize};
 
 use crate::canvas_gpu::CanvasGpu;
 use crate::docs::Startup;
-use crate::panels::{self, Tab, TabViewer};
+use crate::layout::Layout;
+use crate::panels::{self, Tab};
 use crate::recovery::{self, Recovery};
 use crate::theme::{self, Palette, Theme};
 use crate::{dialogs, titlebar};
 
 const SETTINGS_KEY: &str = "fanimate.settings";
-const DOCK_KEY: &str = "fanimate.dock";
 const BENCH_DURATION: Duration = Duration::from_secs(10);
 
 /// Remembered between sessions.
@@ -40,6 +39,12 @@ struct Settings {
     startup: Startup,
     /// Files opened or saved lately, newest first.
     recent: Vec<PathBuf>,
+    /// The version that last ran, so a new one opens What's New once.
+    last_seen_version: String,
+    /// Folders saved or exported into lately, for the folder drop-downs.
+    places: crate::places::Places,
+    /// The folder the last export went to.
+    last_export: Option<PathBuf>,
     /// The saved documents that were open, and the one in front, for
     /// "reopen last session".
     session: Vec<PathBuf>,
@@ -91,6 +96,9 @@ impl Default for Settings {
             updates: Default::default(),
             startup: Startup::default(),
             recent: Vec::new(),
+            last_seen_version: String::new(),
+            places: Default::default(),
+            last_export: None,
             session: Vec::new(),
             session_front: 0,
             grid: Default::default(),
@@ -122,6 +130,10 @@ pub struct Bench {
     cpu: Duration,
 }
 
+/// What a set of snap lines was worked out for: the document's revision, the
+/// selected layers and the frame.
+pub type SnapKey = (u64, Vec<LayerId>, fanimate_core::Frame);
+
 /// Transient UI state, not part of the document.
 #[derive(Default)]
 pub struct UiState {
@@ -135,7 +147,9 @@ pub struct UiState {
     pub bone_rename_focus: bool,
     pub layer_filter: String,
     pub show_preferences: bool,
+    pub prefs_page: dialogs::PrefsPage,
     pub show_shortcuts: bool,
+    pub shortcut_filter: String,
     pub show_about: bool,
     pub show_welcome: bool,
     pub palette: Option<dialogs::PaletteState>,
@@ -153,6 +167,10 @@ pub struct UiState {
     pub hover: Option<crate::panels::handles::HoverCache>,
     /// The floating selection toolbar's size last frame, to place it.
     pub selbar_size: Option<egui::Vec2>,
+    /// How far the toolbar was dragged from where it would sit, and the
+    /// selection that was for (a new selection puts it back).
+    pub selbar_offset: egui::Vec2,
+    pub selbar_for: Vec<LayerId>,
     /// Scroll the tab strip to the front tab on the next frame.
     pub scroll_tab_into_view: bool,
     /// Bring the Properties tab forward on the next frame.
@@ -171,6 +189,8 @@ pub struct UiState {
     pub shape_drag_e: Option<fanimate_core::Vec2>,
     /// Magnet: whether a drag is in progress (checkpoint taken once).
     pub magnet_active: bool,
+    /// Line Width: the screen height the press was at, while dragging.
+    pub line_width_press: Option<f32>,
     /// Scale/Rotate Points: anchor point and last-drag position.
     pub points_transform_origin: Option<(fanimate_core::Vec2, fanimate_core::Vec2)>,
     /// The status message on screen, and when it appeared.
@@ -182,21 +202,54 @@ pub struct UiState {
     pub timeline_view_width: f32,
     /// The pointer is over the timeline, so zoom commands zoom it, not the canvas.
     pub timeline_hovered: bool,
+    /// The playhead's frame when the timeline last drew, to scroll it into
+    /// view when something else moves it (a step, a key jump, the Frame field).
+    pub timeline_seen_frame: fanimate_core::Frame,
+    /// The playhead is being dragged along the timeline, which scrolls at
+    /// the edge instead.
+    pub timeline_scrubbing: bool,
+    /// Layers whose property rows are open in the timeline.
+    pub timeline_expanded: std::collections::HashSet<LayerId>,
     /// The widget being edited in the Properties or Style panel, so one
     /// drag or one typed value makes one undo step.
     pub active_edit: Option<egui::Id>,
     /// Show (or reopen) a panel on the next frame.
     pub open_tab: Option<Tab>,
     pub reset_layout: bool,
+    /// Show or hide the tools column on the next frame, and whether it shows
+    /// (for the Window menu).
+    pub toggle_tools: bool,
+    pub tools_shown: bool,
+    /// The docked panels on screen, for the Window menu.
+    pub panels_shown: Vec<Tab>,
     pub window: titlebar::WindowState,
     /// The Export Video window, while open.
     pub export: Option<crate::export::ExportForm>,
     /// The Update Fanimate window.
     pub show_update: bool,
+    /// The Save As dialog, while open.
+    pub save_as: Option<crate::saveas::SaveForm>,
+    /// The Render Preview dialog, while open.
+    pub preview: Option<crate::preview::Preview>,
+    /// The previews on the Home tab.
+    pub thumbs: crate::thumbs::Thumbs,
+    /// The What's New dialog, while open.
+    pub whats_new: Option<crate::whatsnew::WhatsNew>,
+    /// A layer type change waiting for the answer to "this removes ...".
+    pub confirm_convert: Option<(fanimate_editor::ConvertTo, String)>,
+    /// A shape being renamed in place in the Properties panel, and the text so far.
+    pub shape_rename: Option<(LayerId, usize, String)>,
+    /// Give the shape rename field focus on the next frame.
+    pub shape_rename_focus: bool,
+    /// A guide being dragged: its index.
+    pub guide_drag: Option<usize>,
     /// Arrange the panels this way on the next frame.
     pub workspace: Option<fanimate_editor::Workspace>,
     /// The snap hint line to draw this frame (document space start, end).
-    pub snap_hint: Option<(fanimate_core::Vec2, fanimate_core::Vec2)>,
+    pub snap_hint: Vec<(fanimate_core::Vec2, fanimate_core::Vec2)>,
+    /// The lines other shapes offer to snap to, and what they were worked out
+    /// for (revision, selection, frame).
+    pub snap_lines: Option<(SnapKey, fanimate_editor::snap::ShapeLines)>,
 }
 
 /// Unsaved changes are being asked about, before this happens.
@@ -217,14 +270,16 @@ pub struct Shell {
     pub docs: fanimate_editor::Tabs<crate::docs::Parked>,
     /// Files opened or saved lately, newest first.
     pub recent: Vec<PathBuf>,
+    /// Folders saved or exported into lately.
+    pub places: crate::places::Places,
+    /// The folder the last export went to.
+    pub last_export: Option<PathBuf>,
     /// What opens when Fanimate starts.
     pub startup: Startup,
     /// Grid display and spacing settings.
     pub grid: fanimate_editor::GridSettings,
     /// Snap settings.
     pub snap: fanimate_editor::SnapSettings,
-    /// Guides placed by the user by dragging from the rulers.
-    pub guides: Vec<fanimate_editor::Guide>,
     /// Show rulers along the canvas edges.
     pub show_rulers: bool,
     /// Show the canvas grid.
@@ -252,6 +307,8 @@ pub struct Shell {
     pub onion: OnionSkin,
     /// Fade every layer but the selected ones.
     pub light_table: bool,
+    /// The canvas shows what the camera sees (a view, not saved).
+    pub look_through_camera: bool,
     /// Plays audio layers along with playback.
     pub audio: crate::audio::Audio,
     /// A lip sync waiting on Rhubarb.
@@ -282,8 +339,9 @@ pub struct Shell {
 }
 
 pub struct FanimateApp {
-    dock: DockState<Tab>,
+    layout: Layout,
     shell: Shell,
+    taskbar: crate::taskbar::Taskbar,
 }
 
 pub struct Options {
@@ -299,15 +357,10 @@ impl FanimateApp {
             .storage
             .and_then(|s| eframe::get_value(s, SETTINGS_KEY))
             .unwrap_or_default();
-        let dock = cc
+        let layout = cc
             .storage
-            .and_then(|s| eframe::get_value::<DockState<Tab>>(s, DOCK_KEY))
-            .filter(|d| {
-                // Accept saved layouts that have the old count (9) or the new one (10)
-                let n = d.iter_all_tabs().count();
-                n == Tab::ALL.len() || n + 1 == Tab::ALL.len()
-            })
-            .unwrap_or_else(default_layout);
+            .and_then(|s| eframe::get_value::<Layout>(s, Layout::KEY))
+            .unwrap_or_default();
         let palette = theme::apply(&cc.egui_ctx, settings.theme);
 
         // the blank document the Home tab hides until a document is opened
@@ -344,14 +397,16 @@ impl FanimateApp {
             recovery::root()
         };
         let mut app = Self {
-            dock,
+            layout,
+            taskbar: Default::default(),
             shell: Shell {
                 docs: Default::default(),
                 recent: settings.recent.clone(),
+                places: settings.places.clone(),
+                last_export: settings.last_export.clone(),
                 startup: settings.startup,
                 grid: settings.grid.clone(),
                 snap: settings.snap.clone(),
-                guides: Vec::new(),
                 show_rulers: true,
                 show_grid: false,
                 ruler_unit: settings.ruler_unit,
@@ -360,6 +415,7 @@ impl FanimateApp {
                 recovery: Recovery::new(recovery_root),
                 onion: settings.onion,
                 light_table: false,
+                look_through_camera: false,
                 audio: Default::default(),
                 lipsync: None,
                 export_format: settings.export_format,
@@ -387,6 +443,11 @@ impl FanimateApp {
                 },
                 ui: UiState {
                     show_welcome: !settings.welcome_done && opts.bench_bones.is_none(),
+                    // after an update, once: what changed
+                    whats_new: (opts.bench_bones.is_none()
+                        && crate::whatsnew::show_after_update(&settings.last_seen_version))
+                    .then(|| crate::whatsnew::WhatsNew::open(None))
+                    .flatten(),
                     ..Default::default()
                 },
                 pending: Vec::new(),
@@ -427,78 +488,25 @@ fn load_icon(ctx: &egui::Context) -> egui::TextureHandle {
     ctx.load_texture("fanimate-icon", color, egui::TextureOptions::LINEAR)
 }
 
-pub fn default_layout() -> DockState<Tab> {
-    // Moho Pro's arrangement: tools left of the canvas, timeline along the
-    // bottom, inspector tabs above the Layers panel on the right.
-    let mut dock = DockState::new(vec![Tab::Canvas]);
-    let s = dock.main_surface_mut();
-    let [left, right] = s.split_right(
-        NodeIndex::root(),
-        0.74,
-        vec![Tab::Properties, Tab::Style, Tab::Actions, Tab::History],
-    );
-    s.split_below(right, 0.42, vec![Tab::Layers]);
-    let [canvas, _timeline] = s.split_below(left, 0.70, vec![Tab::Timeline, Tab::XSheet]);
-    s.split_left(canvas, 0.09, vec![Tab::Tools]);
-    dock
-}
-
-/// The panel arrangement for a kind of work.
-pub fn workspace_layout(w: fanimate_editor::Workspace) -> DockState<Tab> {
-    use fanimate_editor::Workspace as W;
-    if w == W::Animate {
-        return default_layout();
-    }
-    let mut dock = DockState::new(vec![Tab::Canvas]);
-    let s = dock.main_surface_mut();
-    match w {
-        W::Animate => {}
-        W::Draw => {
-            let [left, right] = s.split_right(
-                NodeIndex::root(),
-                0.78,
-                vec![Tab::Style, Tab::Properties, Tab::Actions, Tab::History],
-            );
-            s.split_below(right, 0.55, vec![Tab::Layers]);
-            let [canvas, _] = s.split_below(left, 0.84, vec![Tab::Timeline, Tab::XSheet]);
-            s.split_left(canvas, 0.08, vec![Tab::Tools]);
-        }
-        W::Rig => {
-            let [left, right] = s.split_right(
-                NodeIndex::root(),
-                0.72,
-                vec![Tab::Properties, Tab::Actions, Tab::Style],
-            );
-            let [props, _layers] = s.split_below(right, 0.35, vec![Tab::Bones]);
-            s.split_below(props, 0.6, vec![Tab::Layers, Tab::History]);
-            let [canvas, _] = s.split_below(left, 0.72, vec![Tab::Timeline, Tab::XSheet]);
-            s.split_left(canvas, 0.09, vec![Tab::Tools]);
-        }
-        W::FrameByFrame => {
-            let [left, right] = s.split_right(NodeIndex::root(), 0.70, vec![Tab::XSheet]);
-            s.split_below(
-                right,
-                0.6,
-                vec![
-                    Tab::Layers,
-                    Tab::Style,
-                    Tab::Properties,
-                    Tab::Actions,
-                    Tab::History,
-                ],
-            );
-            let [canvas, _] = s.split_below(left, 0.70, vec![Tab::Timeline]);
-            s.split_left(canvas, 0.09, vec![Tab::Tools]);
-        }
-        // only the canvas and timeline: the next start opens in Animate
-        W::Review => {
-            s.split_below(NodeIndex::root(), 0.78, vec![Tab::Timeline]);
-        }
-    }
-    dock
-}
-
 impl eframe::App for FanimateApp {
+    // here, not in `ui`: that is skipped while the window is minimised, which
+    // is when the taskbar button matters most
+    fn logic(&mut self, _ctx: &egui::Context, frame: &mut eframe::Frame) {
+        use fanimate_oscodec::TaskbarProgress;
+        let shell = &self.shell;
+        let wanted = if let Some((_, fraction)) = shell.renders.active {
+            TaskbarProgress::Fraction(fraction)
+        } else if matches!(shell.updater.state(), crate::update::State::Downloading(_)) {
+            shell
+                .updater
+                .progress()
+                .map_or(TaskbarProgress::Busy, TaskbarProgress::Fraction)
+        } else {
+            TaskbarProgress::Off
+        };
+        self.taskbar.show(frame, wanted);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let shell = &mut self.shell;
@@ -516,17 +524,15 @@ impl eframe::App for FanimateApp {
         handle_close_request(&ctx, shell);
         titlebar::track_window(&ctx, &mut shell.ui.window);
         handle_input(&ctx, shell);
+        handle_dropped_files(&ctx, shell);
 
         titlebar::show(ui, shell);
         crate::doctabs::show(ui, shell);
         panels::status_bar(ui, shell);
         poll_instance(&ctx, shell);
 
-        if shell.ui.focus_properties {
-            if let Some(path) = self.dock.find_tab(&Tab::Properties) {
-                let _ = self.dock.set_active_tab(path);
-            }
-            shell.ui.focus_properties = false;
+        if std::mem::take(&mut shell.ui.focus_properties) {
+            self.layout.open(Tab::Properties);
         }
 
         // the timeline sets this while it draws, if the pointer is over it
@@ -535,17 +541,11 @@ impl eframe::App for FanimateApp {
         if shell.docs.home_front() {
             crate::home::show(ui, shell);
         } else {
+            crate::layout::show(ui, shell, &mut self.layout, &style);
+            // what the panels leave is the canvas: no tab, no border
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(shell.palette.bg))
-                .show(ui, |ui| {
-                    DockArea::new(&mut self.dock)
-                        .style(style)
-                        .show_close_buttons(true)
-                        .show_add_buttons(false)
-                        .show_leaf_collapse_buttons(false)
-                        .show_leaf_close_all_buttons(false)
-                        .show_inside(ui, &mut TabViewer { shell });
-                });
+                .show(ui, |ui| panels::canvas_panel(ui, shell));
         }
 
         dialogs::show(&ctx, shell);
@@ -555,6 +555,10 @@ impl eframe::App for FanimateApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         crate::export::window(&ctx, shell);
+        crate::saveas::window(&ctx, shell);
+        crate::preview::window(&ctx, shell);
+        crate::whatsnew::window(&ctx, shell);
+        dialogs::confirm_convert(&ctx, shell);
         {
             let Shell { renders, editor, .. } = shell;
             renders.poll(&ctx, &mut |kind, message| editor.set_status(kind, message));
@@ -569,19 +573,19 @@ impl eframe::App for FanimateApp {
         recovery::tick(&ctx, shell);
         update_tick(&ctx, shell);
         if let Some(tab) = shell.ui.open_tab.take() {
-            match self.dock.find_tab(&tab) {
-                Some(path) => {
-                    let _ = self.dock.set_active_tab(path);
-                }
-                None => self.dock.push_to_focused_leaf(tab),
-            }
+            self.layout.open(tab);
+        }
+        if std::mem::take(&mut shell.ui.toggle_tools) {
+            self.layout.toggle_tools();
         }
         if std::mem::take(&mut shell.ui.reset_layout) {
-            self.dock = default_layout();
+            self.layout.reset(fanimate_editor::Workspace::Animate);
         }
         if let Some(w) = shell.ui.workspace.take() {
-            self.dock = workspace_layout(w);
+            self.layout.reset(w);
         }
+        shell.ui.tools_shown = self.layout.show_tools;
+        shell.ui.panels_shown = Tab::ALL.into_iter().filter(|t| self.layout.is_open(*t)).collect();
 
         if let Some(b) = &mut shell.bench {
             b.frames += 1;
@@ -633,6 +637,9 @@ impl eframe::App for FanimateApp {
                 updates: s.updates.clone(),
                 startup: s.startup,
                 recent: s.recent.clone(),
+                last_seen_version: env!("CARGO_PKG_VERSION").to_owned(),
+                places: s.places.clone(),
+                last_export: s.last_export.clone(),
                 session,
                 session_front,
                 grid: s.grid.clone(),
@@ -640,7 +647,7 @@ impl eframe::App for FanimateApp {
                 ruler_unit: s.ruler_unit,
             },
         );
-        eframe::set_value(storage, DOCK_KEY, &self.dock);
+        eframe::set_value(storage, Layout::KEY, &self.layout);
     }
 
     fn on_exit(&mut self) {
@@ -652,6 +659,9 @@ impl eframe::App for FanimateApp {
 fn dock_style(egui_style: &egui::Style, p: &Palette) -> egui_dock::Style {
     let mut style = egui_dock::Style::from_egui(egui_style);
     style.main_surface_border_stroke = egui::Stroke::NONE;
+    // a panel can be dragged as narrow as its region allows (the tools
+    // column and the region sizes are the layout's to set)
+    style.separator.extra = 60.0;
     style.tab_bar.bg_fill = p.bg;
     style.tab_bar.height = 26.0;
     style.tab_bar.hline_color = p.border;
@@ -733,7 +743,20 @@ fn native_cursors(ctx: &egui::Context) {
 
 fn any_modal_open(shell: &Shell) -> bool {
     let u = &shell.ui;
-    u.palette.is_some() || u.confirm_discard.is_some() || u.show_welcome || !shell.recovery.offered.is_empty()
+    u.palette.is_some()
+        || u.confirm_discard.is_some()
+        || u.show_welcome
+        || u.show_preferences
+        || u.show_shortcuts
+        || u.show_about
+        || u.show_update
+        || u.export.is_some()
+        || u.save_as.is_some()
+        || u.preview.is_some()
+        || u.whats_new.is_some()
+        || u.confirm_convert.is_some()
+        || shell.crash.is_some()
+        || !shell.recovery.offered.is_empty()
 }
 
 /// Keyboard shortcuts and clipboard events.
@@ -818,15 +841,28 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::PreviousDocument => shell.cycle_tab(false),
             Action::ShowHome => shell.show_home(),
             Action::Save => {
-                save(shell, false);
+                // a file that has never been saved needs a place first
+                if shell.editor.path.is_some() {
+                    save(shell, false);
+                } else {
+                    shell.ui.save_as = Some(crate::saveas::SaveForm::new(shell));
+                }
             }
-            Action::SaveAs => {
-                save(shell, true);
-            }
+            Action::SaveAs => shell.ui.save_as = Some(crate::saveas::SaveForm::new(shell)),
+            Action::SaveAsFolder => save_as_folder(shell),
             Action::Import => import_dialog(shell),
             Action::LipSync => crate::lipsync::start(shell),
             Action::ExportVideo => {
                 shell.ui.export = Some(crate::export::ExportForm::new(shell, shell.export_format));
+            }
+            Action::RenderPreviewFrame => shell.ui.preview = Some(crate::preview::Preview::start(shell)),
+            // the editor asks before throwing away a skeleton or a switch's choices
+            Action::ConvertLayerType(to) => {
+                if let Some(id) = shell.editor.primary()
+                    && let Some(loss) = shell.editor.conversion_loss(id, to)
+                {
+                    shell.ui.confirm_convert = Some((to, loss.describe()));
+                }
             }
             Action::RenderQueue => {
                 if let Err(e) = crate::render_queue::open(shell.theme) {
@@ -835,6 +871,7 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             }
             Action::ToggleOnionSkin => shell.onion.on = !shell.onion.on,
             Action::ToggleLightTable => shell.light_table = !shell.light_table,
+            Action::LookThroughCamera => shell.look_through_camera = !shell.look_through_camera,
             Action::Quit => {
                 shell.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -942,40 +979,134 @@ fn zoom_by(shell: &mut Shell, factor: f32) {
 
 /// Pick pictures, Photoshop or SVG files, or sounds, and import them as
 /// layers.
-fn import_dialog(shell: &mut Shell) {
-    let Some(paths) = rfd::FileDialog::new()
-        .set_title("Import pictures, a Photoshop or SVG file, or sound")
-        .add_filter(
-            "Pictures, Photoshop and SVG files, and sound",
-            &["png", "jpg", "jpeg", "psd", "svg", "wav"],
-        )
-        .pick_files()
-    else {
-        return;
-    };
-    for path in paths {
-        let name = path.display().to_string();
-        let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| {
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
-            match ext.as_str() {
-                "psd" => shell.editor.import_psd(&name, &bytes),
-                "svg" => shell.editor.import_svg(&name, &bytes),
-                "wav" => shell.editor.import_audio(&name, bytes),
-                _ => shell.editor.import_picture(&name, bytes),
-            }
-        });
-        if let Err(e) = result {
+/// The kinds of file File > Import (and dropping a file on the window) brings
+/// in as layers: pictures, Photoshop and SVG files, and sound.
+fn importable_extensions() -> Vec<&'static str> {
+    let mut all = vec!["png", "jpg", "jpeg", "psd", "svg"];
+    all.extend(fanimate_editor::SOUND_EXTENSIONS);
+    all
+}
+
+/// Whether `path` is something to import (rather than a project to open).
+fn is_importable(path: &Path) -> bool {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| importable_extensions().contains(&e.as_str()))
+}
+
+/// Import one file as layers of the front document. Errors say what went
+/// wrong, in the status bar.
+fn import_file(shell: &mut Shell, path: &Path) -> bool {
+    let name = path.display().to_string();
+    let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "psd" => shell.editor.import_psd(&name, &bytes),
+            "svg" => shell.editor.import_svg(&name, &bytes),
+            e if fanimate_editor::SOUND_EXTENSIONS.contains(&e) => shell.editor.import_audio(&name, bytes),
+            _ => shell.editor.import_picture(&name, bytes),
+        }
+    });
+    match result {
+        Ok(_) => true,
+        Err(e) => {
             let file = path
                 .file_name()
                 .map_or(name.clone(), |f| f.to_string_lossy().into_owned());
             shell
                 .editor
                 .set_status(StatusKind::Error, format!("Could not import {file}: {e}"));
+            false
+        }
+    }
+}
+
+fn import_dialog(shell: &mut Shell) {
+    let Some(paths) = rfd::FileDialog::new()
+        .set_title("Import pictures, a Photoshop or SVG file, or sound")
+        .add_filter(
+            "Pictures, Photoshop and SVG files, and sound",
+            &importable_extensions(),
+        )
+        .pick_files()
+    else {
+        return;
+    };
+    for path in paths {
+        if !import_file(shell, &path) {
             return;
         }
+    }
+}
+
+/// Files dropped on the window: projects open as tabs, and pictures, Photoshop
+/// and SVG files and sound are imported into the front document.
+fn handle_dropped_files(ctx: &egui::Context, shell: &mut Shell) {
+    let dropped: Vec<PathBuf> = ctx.input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .collect()
+    });
+    for path in dropped {
+        if is_importable(&path) {
+            if shell.docs.home_front() {
+                shell
+                    .editor
+                    .set_status(StatusKind::Info, "Open a project first, then drop the file on it");
+            } else if !import_file(shell, &path) {
+                break;
+            }
+        } else {
+            shell.open_path(&path);
+        }
+    }
+}
+
+/// Save the project as a folder of plain files: choose a name, and a folder
+/// of that name is made.
+fn save_as_folder(shell: &mut Shell) {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Save the project as a folder")
+        .set_file_name(format!("{}.fnm", shell.editor.doc.name));
+    if let Some(dir) = shell
+        .editor
+        .path
+        .as_deref()
+        .and_then(Path::parent)
+        .or_else(|| shell.places.latest())
+    {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(mut path) = dialog.save_file() else {
+        return;
+    };
+    if path.extension().is_none_or(|e| e != "fnm") {
+        path.set_extension("fnm");
+    }
+    // a folder is only ever made fresh: an existing file or folder of that name is left alone
+    if path.exists() {
+        shell.editor.set_status(
+            StatusKind::Error,
+            format!(
+                "{} already exists. Choose a new name for the folder.",
+                path.display()
+            ),
+        );
+        return;
+    }
+    match shell.editor.save_folder_to(&path) {
+        Ok(()) => {
+            shell.remember(&path);
+            recovery::record(shell);
+        }
+        Err(e) => shell
+            .editor
+            .set_status(StatusKind::Error, format!("Could not save: {e}")),
     }
 }
 
@@ -1023,12 +1154,20 @@ pub fn save(shell: &mut Shell, ask: bool) -> bool {
     let path = match (&shell.editor.path, ask) {
         (Some(p), false) => p.clone(),
         _ => {
-            let Some(mut p) = rfd::FileDialog::new()
+            let mut dialog = rfd::FileDialog::new()
                 .set_title("Save Fanimate project")
                 .set_file_name(format!("{}.fnm", shell.editor.doc.name))
-                .add_filter("Fanimate project", &["fnm"])
-                .save_file()
-            else {
+                .add_filter("Fanimate project", &["fnm"]);
+            if let Some(dir) = shell
+                .editor
+                .path
+                .as_deref()
+                .and_then(Path::parent)
+                .or_else(|| shell.places.latest())
+            {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(mut p) = dialog.save_file() else {
                 return false;
             };
             if p.extension().is_none_or(|e| e != "fnm") {

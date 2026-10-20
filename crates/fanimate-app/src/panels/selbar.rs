@@ -52,6 +52,20 @@ fn selection_bounds(shell: &Shell, screen: &Screen) -> Option<Rect> {
     }))
 }
 
+/// `at`, moved the least that keeps a toolbar of `size` inside the canvas.
+fn place_rect(at: Pos2, canvas: Rect, size: egui::Vec2) -> Pos2 {
+    pos2(
+        at.x.clamp(
+            canvas.left() + MARGIN,
+            (canvas.right() - size.x - MARGIN).max(canvas.left() + MARGIN),
+        ),
+        at.y.clamp(
+            canvas.top() + MARGIN,
+            (canvas.bottom() - size.y - MARGIN).max(canvas.top() + MARGIN),
+        ),
+    )
+}
+
 /// Where the toolbar's top left goes: centred below the selection, or above
 /// it when there is no room below, and always inside the canvas.
 fn place(bounds: Rect, canvas: Rect, size: egui::Vec2) -> Pos2 {
@@ -60,16 +74,7 @@ fn place(bounds: Rect, canvas: Rect, size: egui::Vec2) -> Pos2 {
         y = bounds.top() - GAP - size.y + 24.0;
     }
     let x = bounds.center().x - size.x / 2.0;
-    pos2(
-        x.clamp(
-            canvas.left() + MARGIN,
-            (canvas.right() - size.x - MARGIN).max(canvas.left() + MARGIN),
-        ),
-        y.clamp(
-            canvas.top() + MARGIN,
-            (canvas.bottom() - size.y - MARGIN).max(canvas.top() + MARGIN),
-        ),
-    )
+    place_rect(pos2(x, y), canvas, size)
 }
 
 pub fn show(ctx: &egui::Context, shell: &mut Shell, canvas: Rect, screen: &Screen) {
@@ -96,7 +101,14 @@ pub fn show(ctx: &egui::Context, shell: &mut Shell, canvas: Rect, screen: &Scree
         .selbar_size
         .unwrap_or(vec2(320.0, HEIGHT))
         .max(vec2(40.0, HEIGHT));
-    let pos = place(bounds, canvas, size);
+    // dragged by its grip, but only for as long as the same layers are chosen
+    if shell.ui.selbar_for != shell.editor.selection {
+        shell.ui.selbar_for = shell.editor.selection.clone();
+        shell.ui.selbar_offset = egui::Vec2::ZERO;
+    }
+    let base = place(bounds, canvas, size);
+    let pos = place_rect(base + shell.ui.selbar_offset, canvas, size);
+    shell.ui.selbar_offset = pos - base;
     let p = shell.palette;
     let mut push = Vec::new();
     let area = egui::Area::new(Id::new("selection-toolbar"))
@@ -139,7 +151,31 @@ fn button(ui: &mut egui::Ui, shell: &Shell, push: &mut Vec<Action>, icon: Icon, 
     }
 }
 
+/// The grip at the toolbar's left edge: drag it to move the toolbar out of
+/// the way of the artwork.
+fn grip(ui: &mut egui::Ui, shell: &mut Shell) {
+    let (rect, r) = ui.allocate_exact_size(vec2(14.0, 24.0), egui::Sense::drag());
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), vec2(14.0, 14.0)),
+        Icon::Grip,
+        if r.hovered() || r.dragged() {
+            shell.palette.text
+        } else {
+            shell.palette.text_muted
+        },
+    );
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+    }
+    if r.dragged() {
+        shell.ui.selbar_offset += r.drag_delta();
+    }
+    r.on_hover_text("Drag to move this toolbar");
+}
+
 fn buttons(ui: &mut egui::Ui, shell: &mut Shell, push: &mut Vec<Action>) {
+    grip(ui, shell);
     let ed = &shell.editor;
     let layers = ed.selected_roots();
     let single_vector = layers.len() == 1
@@ -192,6 +228,20 @@ fn buttons(ui: &mut egui::Ui, shell: &mut Shell, push: &mut Vec<Action>) {
     ui.separator();
     swatches(ui, shell);
     ui.separator();
+    if shell
+        .editor
+        .can_run(Action::Align(fanimate_editor::AlignTo::Left))
+        && shell.editor.tool == Tool::TransformLayer
+    {
+        let align = egui::Button::image_and_text(
+            icons::image(ui.ctx(), Icon::Align, 14.0, shell.palette.text),
+            egui::RichText::new("Align").color(shell.palette.text),
+        )
+        .frame(false);
+        menus::menu_button(ui, align, |ui| menus::align_items(ui, shell))
+            .on_hover_text("Line the layers up: one with the canvas, several with each other");
+        button(ui, shell, push, Icon::Lock, "", Action::ToggleLock);
+    }
     button(ui, shell, push, Icon::Duplicate, "", Action::Duplicate);
     button(ui, shell, push, Icon::Delete, "", Action::Delete);
     menus::menu_button(
@@ -229,7 +279,7 @@ fn swatches(ui: &mut egui::Ui, shell: &mut Shell) {
         .editor
         .layer_shapes(first_layer)
         .and_then(|s| s.get(first_index))
-        .map(|s| s.style)
+        .map(|s| s.style_at(shell.editor.frame))
     else {
         return;
     };
@@ -259,7 +309,7 @@ fn restyle(shell: &mut Shell, r: &egui::Response, targets: &[(LayerId, usize)], 
             .editor
             .layer_shapes(layer)
             .and_then(|s| s.get(index))
-            .map(|s| s.style)
+            .map(|s| s.style_at(shell.editor.frame))
         else {
             continue;
         };

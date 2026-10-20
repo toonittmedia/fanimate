@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 use glam::Vec2;
 
-use crate::anim::{Frame, Interpolation, Key};
+use crate::anim::{Frame, Interpolation, Key, Keying};
 use crate::path::{Path, PathCmd, Shape};
 
 impl Path {
@@ -434,6 +434,49 @@ impl Shape {
         !self.path_keys.is_empty()
     }
 
+    /// Whether the shape's fill or stroke colour has keyframes.
+    pub fn colors_animated(&self) -> bool {
+        !self.fill_keys.is_empty() || !self.stroke_keys.is_empty()
+    }
+
+    /// The style at `frame`: the colours as their keys make them, the rest
+    /// (stroke width) as it is.
+    pub fn style_at(&self, frame: f32) -> crate::Style {
+        let mut style = self.style;
+        if let Some(fill) = &mut style.fill {
+            *fill = crate::anim::sample_in(*fill, &self.fill_keys, frame);
+        }
+        if let Some(stroke) = &mut style.stroke {
+            stroke.color = crate::anim::sample_in(stroke.color, &self.stroke_keys, frame);
+        }
+        style
+    }
+
+    /// Change the fill's colour at `frame` the way an edit is recorded (see
+    /// [`Keying`]). A shape with no fill has no colour to change.
+    pub fn set_fill_at(&mut self, frame: Frame, color: crate::Color, keying: Keying) {
+        if let Some(fill) = &mut self.style.fill {
+            crate::anim::write_in(fill, &mut self.fill_keys, frame, color, keying);
+        }
+    }
+
+    /// Change the stroke's colour at `frame`, the same way.
+    pub fn set_stroke_color_at(&mut self, frame: Frame, color: crate::Color, keying: Keying) {
+        if let Some(stroke) = &mut self.style.stroke {
+            crate::anim::write_in(&mut stroke.color, &mut self.stroke_keys, frame, color, keying);
+        }
+    }
+
+    /// Without a fill there is nothing for fill keys to colour: drop them.
+    pub fn drop_orphan_color_keys(&mut self) {
+        if self.style.fill.is_none() {
+            self.fill_keys.clear();
+        }
+        if self.style.stroke.is_none() {
+            self.stroke_keys.clear();
+        }
+    }
+
     /// The path at `frame`, which may fall between whole frames: as a
     /// channel samples its keys, holding the first and last key's path
     /// outside them.
@@ -462,16 +505,21 @@ impl Shape {
         }
     }
 
-    /// Change the path at `frame`, following the auto-key rule: a shape
-    /// with point keys gets a key on `frame`; one without has its path
-    /// changed for the whole animation. `path` must have the shape's
-    /// commands; one that does not is ignored.
-    pub fn set_path_at(&mut self, frame: Frame, path: Path) {
+    /// Change the path at `frame` the way an edit is recorded (see
+    /// [`Keying`]): a shape with point keys gets a key on `frame`; one
+    /// without has its path changed outright on the base frame, and on a
+    /// later frame starts animating from a key on the base frame holding
+    /// the drawing as it was. `path` must have the shape's commands; one
+    /// that does not is ignored.
+    pub fn set_path_at(&mut self, frame: Frame, path: Path, keying: Keying) {
         if !path.same_structure(&self.path) {
             return;
         }
         if self.is_animated() {
-            self.key_path(frame, path, Interpolation::Smooth);
+            self.key_path(frame, path, keying.interp);
+        } else if frame > keying.base {
+            self.key_path(keying.base, self.path.clone(), keying.interp);
+            self.key_path(frame, path, keying.interp);
         } else {
             self.path = path;
         }
@@ -601,15 +649,26 @@ mod tests {
         assert_eq!(s.path_at(5.0).on_curve_points()[1], Vec2::new(10.0, 5.0));
         assert_eq!(*s.path_at(-3.0), s.path);
         assert_eq!(*s.path_at(99.0), moved);
-        // the auto-key rule: keyed shapes get a key, others change outright
+        // the keying rule: keyed shapes get a key; others change outright
+        // on the base frame, and start animating on a later one
+        let keying = Keying::default();
         let mut plain = line3();
-        plain.set_path_at(7, moved.clone());
+        plain.set_path_at(0, moved.clone(), keying);
         assert!(!plain.is_animated());
         assert_eq!(plain.path, moved);
-        s.set_path_at(7, moved.clone());
+        let mut later = line3();
+        let original = later.path.clone();
+        later.set_path_at(7, moved.clone(), keying);
+        assert_eq!(
+            later.path_keys.iter().map(|k| k.frame).collect::<Vec<_>>(),
+            [0, 7]
+        );
+        assert_eq!(*later.path_at(0.0), original, "the base frame keeps the drawing");
+        assert_eq!(*later.path_at(7.0), moved);
+        s.set_path_at(7, moved.clone(), keying);
         assert_eq!(s.path_keys.len(), 3);
         // a path with other commands is refused
-        s.set_path_at(8, Path::circle(Vec2::ZERO, 1.0));
+        s.set_path_at(8, Path::circle(Vec2::ZERO, 1.0), keying);
         assert_eq!(s.path_keys.len(), 3);
     }
 

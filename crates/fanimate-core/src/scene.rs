@@ -14,6 +14,87 @@ use crate::transform::AnimTransform;
 #[serde(transparent)]
 pub struct LayerId(pub u32);
 
+/// A guide: a horizontal or vertical line at a fixed position.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    /// A vertical line at `position` on the x axis, or else a horizontal
+    /// line at `position` on the y axis.
+    pub vertical: bool,
+    /// Position in document units.
+    pub position: f32,
+    /// Locked guides cannot be dragged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub locked: bool,
+}
+
+/// The camera: what renders look at the canvas through (Moho's camera).
+///
+/// It is part of the project, not a layer. It starts over the middle of the
+/// canvas, seeing all of it; its `position` moves it, `zoom` brings it closer
+/// (2 shows half the canvas, twice as big; 1 is all of it) and `roll` turns it
+/// (radians, positive is clockwise). Each is animated like any channel.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    pub position: Channel<Vec2>,
+    pub zoom: Channel<f32>,
+    pub roll: Channel<f32>,
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            position: Channel::new(Vec2::ZERO),
+            zoom: Channel::new(1.0),
+            roll: Channel::new(0.0),
+        }
+    }
+}
+
+impl Camera {
+    /// Whether it still sees the whole canvas and has no keys, so a project
+    /// that never used it writes nothing about it.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether any of its channels has keys.
+    pub fn is_animated(&self) -> bool {
+        self.position.is_animated() || self.zoom.is_animated() || self.roll.is_animated()
+    }
+
+    /// The keys of one of the camera's channels (`None` for any other).
+    pub fn keys(&self, ch: ChannelId) -> Option<&dyn KeyList> {
+        match ch {
+            ChannelId::CameraPosition => Some(&self.position.keys),
+            ChannelId::CameraZoom => Some(&self.zoom.keys),
+            ChannelId::CameraRoll => Some(&self.roll.keys),
+            _ => None,
+        }
+    }
+
+    pub fn keys_mut(&mut self, ch: ChannelId) -> Option<&mut dyn KeyList> {
+        match ch {
+            ChannelId::CameraPosition => Some(&mut self.position.keys),
+            ChannelId::CameraZoom => Some(&mut self.zoom.keys),
+            ChannelId::CameraRoll => Some(&mut self.roll.keys),
+            _ => None,
+        }
+    }
+
+    /// Frames with a key in any channel, sorted.
+    pub fn key_frames(&self) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        for ch in ChannelId::CAMERA {
+            if let Some(keys) = self.keys(ch) {
+                keys.frames_into(&mut frames);
+            }
+        }
+        frames.sort_unstable();
+        frames.dedup();
+        frames
+    }
+}
+
 /// A Fanimate project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -30,6 +111,12 @@ pub struct Document {
     pub layers: Vec<Layer>,
     /// Next unused layer id.
     pub next_layer_id: u32,
+    /// Version 5: guides placed from the rulers, saved with the project.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<Guide>,
+    /// Version 5: the camera renders look through.
+    #[serde(default, skip_serializing_if = "Camera::is_default")]
+    pub camera: Camera,
     /// The action being edited, if any (see [`crate::actions`]). Never in
     /// a saved project: saving writes [`Document::mainline`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,6 +139,8 @@ impl Document {
             background: Color::WHITE,
             layers: Vec::new(),
             next_layer_id: 1,
+            guides: Vec::new(),
+            camera: Camera::default(),
             action_edit: None,
             media: Default::default(),
         }
@@ -284,6 +373,10 @@ pub struct Layer {
     pub label: Option<Label>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub visible: bool,
+    /// Version 5: a locked layer cannot be selected on the canvas, moved, drawn
+    /// on or edited by the tools. It still shows, plays and can be unlocked.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub locked: bool,
     pub opacity: Channel<f32>,
     pub transform: AnimTransform,
     #[serde(flatten)]
@@ -298,6 +391,10 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl Layer {
     pub fn new(id: LayerId, name: impl Into<String>, kind: LayerKind) -> Self {
         Self {
@@ -305,6 +402,7 @@ impl Layer {
             name: name.into(),
             label: None,
             visible: true,
+            locked: false,
             opacity: Channel::new(1.0),
             transform: AnimTransform::default(),
             kind,
@@ -330,11 +428,20 @@ impl Layer {
         f(&self.transform.rotation.keys);
         f(&self.transform.scale.keys);
         match &self.kind {
-            LayerKind::Vector { shapes } => shapes.iter().for_each(|s| f(&s.path_keys)),
+            LayerKind::Vector { shapes } => shapes.iter().for_each(|s| {
+                f(&s.path_keys);
+                f(&s.fill_keys);
+                f(&s.stroke_keys);
+            }),
             LayerKind::Frames { cels } => {
                 f(cels);
-                cels.iter()
-                    .for_each(|c| c.shapes().for_each(|(_, _, s)| f(&s.path_keys)));
+                cels.iter().for_each(|c| {
+                    c.shapes().for_each(|(_, _, s)| {
+                        f(&s.path_keys);
+                        f(&s.fill_keys);
+                        f(&s.stroke_keys);
+                    })
+                });
             }
             LayerKind::Bone { skeleton, .. } => skeleton.bones.iter().for_each(|b| f(&b.angle.keys)),
             LayerKind::Switch { switch, .. } => f(switch),
@@ -349,10 +456,18 @@ impl Layer {
         f(&mut self.transform.rotation.keys);
         f(&mut self.transform.scale.keys);
         match &mut self.kind {
-            LayerKind::Vector { shapes } => shapes.iter_mut().for_each(|s| f(&mut s.path_keys)),
+            LayerKind::Vector { shapes } => shapes.iter_mut().for_each(|s| {
+                f(&mut s.path_keys);
+                f(&mut s.fill_keys);
+                f(&mut s.stroke_keys);
+            }),
             LayerKind::Frames { cels } => {
                 for c in cels.iter_mut() {
-                    c.shapes_mut().for_each(|s| f(&mut s.path_keys));
+                    c.shapes_mut().for_each(|s| {
+                        f(&mut s.path_keys);
+                        f(&mut s.fill_keys);
+                        f(&mut s.stroke_keys);
+                    });
                 }
                 f(cels);
             }
@@ -369,6 +484,151 @@ impl Layer {
         frames.sort_unstable();
         frames.dedup();
         frames
+    }
+
+    /// The properties the timeline can show a row of keys for: the transform
+    /// and opacity of every layer, a bone layer's bones, a switch layer's
+    /// choice, and the shapes of a vector layer that have point keys.
+    pub fn channels(&self) -> Vec<ChannelId> {
+        let mut v = vec![
+            ChannelId::Position,
+            ChannelId::Rotation,
+            ChannelId::Scale,
+            ChannelId::Opacity,
+        ];
+        match &self.kind {
+            LayerKind::Vector { shapes } => {
+                for (i, s) in shapes.iter().enumerate() {
+                    if s.is_animated() {
+                        v.push(ChannelId::Shape(i));
+                    }
+                    if !s.fill_keys.is_empty() {
+                        v.push(ChannelId::FillColor(i));
+                    }
+                    if !s.stroke_keys.is_empty() {
+                        v.push(ChannelId::StrokeColor(i));
+                    }
+                }
+            }
+            LayerKind::Bone { skeleton, .. } => v.extend((0..skeleton.bones.len()).map(ChannelId::Bone)),
+            LayerKind::Switch { .. } => v.push(ChannelId::Switch),
+            LayerKind::Group { .. }
+            | LayerKind::Frames { .. }
+            | LayerKind::Image(_)
+            | LayerKind::Audio(_) => {}
+        }
+        v
+    }
+
+    /// What a property row is called.
+    pub fn channel_label(&self, ch: ChannelId) -> String {
+        match (ch, &self.kind) {
+            (ChannelId::Position, _) => "Position".into(),
+            (ChannelId::Rotation, _) => "Rotation".into(),
+            (ChannelId::Scale, _) => "Scale".into(),
+            (ChannelId::Opacity, _) => "Opacity".into(),
+            (ChannelId::Switch, _) => "Shows".into(),
+            (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => skeleton
+                .bones
+                .get(i)
+                .map_or_else(|| format!("Bone {}", i + 1), |b| b.name.clone()),
+            (ChannelId::Shape(i), LayerKind::Vector { shapes }) => match shapes.get(i) {
+                Some(s) if !s.name.is_empty() => format!("Points: {}", s.name),
+                _ => format!("Points: shape {}", i + 1),
+            },
+            (ChannelId::FillColor(i), LayerKind::Vector { shapes }) => match shapes.get(i) {
+                Some(s) if !s.name.is_empty() => format!("Fill: {}", s.name),
+                _ => format!("Fill: shape {}", i + 1),
+            },
+            (ChannelId::StrokeColor(i), LayerKind::Vector { shapes }) => match shapes.get(i) {
+                Some(s) if !s.name.is_empty() => format!("Stroke: {}", s.name),
+                _ => format!("Stroke: shape {}", i + 1),
+            },
+            (ChannelId::CameraPosition | ChannelId::CameraZoom | ChannelId::CameraRoll, _) => {
+                ch.camera_label().to_owned()
+            }
+            (ChannelId::FillColor(i), _) => format!("Fill: shape {}", i + 1),
+            (ChannelId::StrokeColor(i), _) => format!("Stroke: shape {}", i + 1),
+            (ChannelId::Bone(i), _) => format!("Bone {}", i + 1),
+            (ChannelId::Shape(i), _) => format!("Points: shape {}", i + 1),
+        }
+    }
+
+    /// The keys of one property, if the layer has it.
+    pub fn channel_keys(&self, ch: ChannelId) -> Option<&dyn KeyList> {
+        Some(match (ch, &self.kind) {
+            (ChannelId::Position, _) => &self.transform.position.keys,
+            (ChannelId::Rotation, _) => &self.transform.rotation.keys,
+            (ChannelId::Scale, _) => &self.transform.scale.keys,
+            (ChannelId::Opacity, _) => &self.opacity.keys,
+            (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => &skeleton.bones.get(i)?.angle.keys,
+            (ChannelId::Shape(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.path_keys,
+            (ChannelId::FillColor(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.fill_keys,
+            (ChannelId::StrokeColor(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.stroke_keys,
+            (ChannelId::Switch, LayerKind::Switch { switch, .. }) => switch,
+            _ => return None,
+        })
+    }
+
+    /// Mutable version of [`channel_keys`](Self::channel_keys).
+    pub fn channel_keys_mut(&mut self, ch: ChannelId) -> Option<&mut dyn KeyList> {
+        Some(match (ch, &mut self.kind) {
+            (ChannelId::Position, _) => &mut self.transform.position.keys,
+            (ChannelId::Rotation, _) => &mut self.transform.rotation.keys,
+            (ChannelId::Scale, _) => &mut self.transform.scale.keys,
+            (ChannelId::Opacity, _) => &mut self.opacity.keys,
+            (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => {
+                &mut skeleton.bones.get_mut(i)?.angle.keys
+            }
+            (ChannelId::Shape(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.path_keys,
+            (ChannelId::FillColor(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.fill_keys,
+            (ChannelId::StrokeColor(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.stroke_keys,
+            (ChannelId::Switch, LayerKind::Switch { switch, .. }) => switch,
+            _ => return None,
+        })
+    }
+}
+
+/// One animatable property of a layer: a row on the timeline, and a key
+/// button in the Properties panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChannelId {
+    Opacity,
+    Position,
+    Rotation,
+    Scale,
+    /// A bone's angle, by its index in the skeleton.
+    Bone(usize),
+    /// A vector shape's point keys, by its index.
+    Shape(usize),
+    /// A vector shape's fill colour, and its stroke colour, by its index.
+    FillColor(usize),
+    StrokeColor(usize),
+    /// A switch layer's choice of child.
+    Switch,
+    /// The camera's position, zoom and roll (see [`Camera`]). They belong to
+    /// the project, not to a layer.
+    CameraPosition,
+    CameraZoom,
+    CameraRoll,
+}
+
+impl ChannelId {
+    /// The camera's channels, in the order the timeline lists them.
+    pub const CAMERA: [ChannelId; 3] = [Self::CameraPosition, Self::CameraZoom, Self::CameraRoll];
+
+    /// Whether this is one of the camera's channels.
+    pub fn is_camera(self) -> bool {
+        Self::CAMERA.contains(&self)
+    }
+
+    /// What the camera's channel is called on the timeline.
+    pub fn camera_label(self) -> &'static str {
+        match self {
+            Self::CameraPosition => "Position",
+            Self::CameraZoom => "Zoom",
+            _ => "Roll",
+        }
     }
 }
 
@@ -464,6 +724,63 @@ mod tests {
         assert!(doc.is_within(b, g));
         assert!(!doc.is_within(a, g));
         assert!(doc.find(LayerId(999)).is_none());
+    }
+
+    #[test]
+    fn layers_name_their_animatable_properties() {
+        let mut layer = Layer::new(LayerId(1), "a", LayerKind::vector(vec![]));
+        assert_eq!(
+            layer.channels(),
+            [
+                ChannelId::Position,
+                ChannelId::Rotation,
+                ChannelId::Scale,
+                ChannelId::Opacity
+            ]
+        );
+        assert_eq!(layer.channel_label(ChannelId::Rotation), "Rotation");
+        // a key on a property is found, edited and removed through its id
+        layer
+            .transform
+            .rotation
+            .set_key(6, 1.0, crate::Interpolation::Linear);
+        let keys = layer.channel_keys(ChannelId::Rotation).unwrap();
+        assert_eq!(keys.interp_at(6), Some(crate::Interpolation::Linear));
+        assert_eq!(
+            layer.channel_keys(ChannelId::Position).unwrap().interp_at(6),
+            None
+        );
+        assert!(layer.channel_keys_mut(ChannelId::Rotation).unwrap().delete_key(6));
+        assert!(!layer.transform.rotation.is_animated());
+        // a property the layer does not have has no keys
+        assert!(layer.channel_keys(ChannelId::Bone(0)).is_none());
+        assert!(layer.channel_keys(ChannelId::Switch).is_none());
+
+        // a switch layer adds its choice; the bones of a bone layer are rows
+        let switch = Layer::new(
+            LayerId(2),
+            "mouth",
+            LayerKind::Switch {
+                children: vec![],
+                switch: vec![],
+            },
+        );
+        assert_eq!(switch.channels().last(), Some(&ChannelId::Switch));
+        assert!(switch.channel_keys(ChannelId::Switch).is_some());
+        let doc = crate::samples::hello();
+        let rig = doc
+            .layers
+            .iter()
+            .find(|l| matches!(l.kind, LayerKind::Bone { .. }))
+            .expect("the sample has a bone layer");
+        let bones = rig
+            .channels()
+            .iter()
+            .filter(|c| matches!(c, ChannelId::Bone(_)))
+            .count();
+        assert!(bones > 0);
+        assert!(rig.channel_keys(ChannelId::Bone(0)).is_some());
+        assert!(!rig.channel_label(ChannelId::Bone(0)).is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # The `.fnm` project format
 
-**Current version: 4. Status: draft.** The format may still change before Fanimate 1.0, but every change that older readers would misread bumps the version, and Fanimate always opens files written by earlier versions. See [Version history](#version-history).
+**Current version: 5. Status: draft.** The format may still change before Fanimate 1.0, but every change that older readers would misread bumps the version, and Fanimate always opens files written by earlier versions. See [Version history](#version-history).
 
 The reference implementation is the [`fanimate-fnm`](../../crates/fanimate-fnm/) crate.
 
@@ -49,7 +49,7 @@ Identifies the project. A folder or archive without it is not a project.
 ```json
 {
   "format": "fnm",
-  "version": 4,
+  "version": 5,
   "generator": "fanimate 0.0.6"
 }
 ```
@@ -74,6 +74,8 @@ Canvas, timing, and the order of top-level layers.
   "end": 47,
   "background": "#1C0B3D",
   "next_layer_id": 3,
+  "guides": [{ "vertical": true, "position": 640.0 }],
+  "camera": { "position": { "base": [0, 0] }, "zoom": { "base": 1.0, "keys": [{ "frame": 0, "value": 1.0 }, { "frame": 24, "value": 2.0 }] }, "roll": { "base": 0.0 } },
   "layers": ["layers/0002.json"]
 }
 ```
@@ -86,6 +88,8 @@ Canvas, timing, and the order of top-level layers.
 | `start`, `end` | integer | Inclusive frame range that plays and renders. `0 <= start <= end`. |
 | `background` | [colour](#colours) | Canvas colour |
 | `next_layer_id` | integer | Next unused layer id. Greater than every id in the project. |
+| `guides` | array | Optional (version 5). Guides placed from the rulers: `vertical` (true for a vertical line at `position` on the x axis, false for a horizontal one on the y axis), `position` (document units) and optionally `locked` (true when it cannot be dragged). At most 1000. |
+| `camera` | object | Optional (version 5). The [camera](#the-camera). Left out when it looks at the whole canvas and has no keys. |
 | `layers` | array of strings | Top-level layer files relative to the project folder, **bottom to top** (the last is drawn on top). |
 
 ## Layer files
@@ -101,6 +105,7 @@ Each file in `layers/` holds one top-level layer. Child layers of groups and bon
 | `label` | string | Optional (version 3). Label colour: `"red"`, `"orange"`, `"yellow"`, `"lime"`, `"green"`, `"teal"`, `"cyan"`, `"blue"`, `"violet"` or `"pink"`. Without it, Fanimate shows the colour at position `id` mod 10 in that list. Readers ignore names they do not know. |
 | `visible` | boolean | Optional, default `true` |
 | `opacity` | [channel](#channels) of number | 0 to 1. Multiplies with ancestors' opacity. |
+| `locked` | boolean | Optional (version 5), default `false`. A locked layer cannot be selected on the canvas, moved, drawn on or edited by the tools. It still draws and plays. |
 | `transform` | object | `position` (channel of [vector](#vectors)), `rotation` (channel of number, radians), `scale` (channel of vector), and optionally (version 4) `pivot` |
 | `type` | string | `"vector"`, `"group"`, `"bone"`, `"image"`, `"frames"`, `"switch"` or `"audio"` (the last four version 3); decides the remaining fields |
 
@@ -214,6 +219,9 @@ A skeleton. Shapes on vector layers anywhere inside `children` can bind to its b
 | `widths` | array of numbers | Optional (version 1). The stroke's [width profile](#width-profiles). |
 | `path_keys` | array of keys | Optional (version 2). [Point keyframes](#point-keyframes): the path at chosen frames. |
 | `skin` | array | Optional (version 3). [Smooth binding](#smooth-binding): per on-curve point, the bones it follows. Takes the place of `bone`. |
+| `visible` | boolean | Optional (version 5), default `true`. A hidden shape is not drawn, hit or edited, and keeps its place in the layer. |
+| `fill_keys` | array of keys | Optional (version 5). [Colour keys](#colour-keys) for `style.fill`. |
+| `stroke_keys` | array of keys | Optional (version 5). Colour keys for `style.stroke.color`. |
 | `rect` | object | Optional (version 4). Says the shape is a rectangle: `x`, `y`, `width`, `height` and `radius` (the corner radius, 0 to half the shorter side), in the layer's space. See [Rectangles](#rectangles). |
 
 A bound shape's points are stored in the **rest pose**. At each frame the shape moves rigidly with its bone: from the bone's rest transform to its current transform. Weighted deformation (one point following several bones) will be added in a later version.
@@ -366,6 +374,14 @@ Any animatable value is a channel:
 
 Sampling: before the first key, the first key's value; after the last key, the last key's value; between keys, interpolated as set by the earlier key. Frames can be sampled fractionally.
 
+### Colour keys
+
+A shape's fill and stroke colour are animated with `fill_keys` and `stroke_keys`: keys like a channel's (`frame`, `value` as a [colour](#colours), optional `interp`), sorted, one per frame, none on negative frames. The colour in `style` is the value when there are no keys. Between keys the colour is interpolated in sRGB, each of red, green, blue and alpha as set by the earlier key. Keys without a fill (or stroke) to colour are removed on load.
+
+### The camera
+
+`camera` in `document.json` is the project's camera, not a layer. It has three channels: `position` (a vector, where the camera looks, in document units from the middle of the canvas, 0, 0 sees the canvas as it is), `zoom` (a number, 1 sees all of the canvas, 2 half of it twice as big; held within 0.05 to 50) and `roll` (radians, positive is clockwise). Renders and exports see the canvas through the camera; the editor's canvas shows everything unless it is set to look through the camera. A project with no `camera` has a camera that sees all of the canvas.
+
 ## Values
 
 ### Vectors
@@ -421,6 +437,11 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | `skin` weight naming a missing bone, or not a finite non-negative number | Error | Remove that weight |
 | `skin` outside any bone layer | Warning | Remove the skin |
 | `transform.pivot` not finite, or over 10 000 000 units from the origin | Error | Remove the pivot |
+| `guides` entry whose position is not finite, or more than 1000 guides | Warning | Remove it, and the extra ones |
+| `camera` channel with bad keys (negative, out of order, duplicated or not finite) | Error | As for channel keys |
+| `camera.zoom` outside 0.05 to 50 | Warning | Held within the range when evaluated |
+| `fill_keys` or `stroke_keys` with bad keys or a colour that is not finite | Error | As for channel keys |
+| `fill_keys` on a shape with no fill, `stroke_keys` on one with no stroke | Warning | Remove the keys |
 | `rect` that is not finite, or has no size, or a radius outside its range | Warning | Remove `rect` |
 | Bone `limits` not a finite range with min ≤ max | Error | Remove the limits |
 | Bone `strength` not a positive number | Warning | Use the default |
@@ -457,6 +478,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | 2 | Fanimate 0.0.6 | Shapes may have point keyframes (`path_keys`) | Older files need no conversion. An older reader would ignore `path_keys` and draw animated drawings without their animation, so the version was bumped. |
 | 3 | Fanimate 0.0.7 | Layers may have a label colour (`label`); bones may have `limits`, `pinned` and `strength`; shapes may have a smooth binding (`skin`); bone layers may have actions and Smart Bone actions; image layers and the `media` folder; frame-by-frame, switch and audio layers | Older files need no conversion. An older reader would drop labels and draw smoothly bound artwork unbound, so the version was bumped. |
 | 4 | Development builds after Fanimate 0.2.1 | Layers may have a pivot (`transform.pivot`); shapes may say they are rectangles (`rect`) | Older files need no conversion: without a pivot a layer turns about its origin, as it always did, and without `rect` a shape is a path. An older reader would turn a layer with a pivot about its origin and show it in the wrong place, so the version was bumped. |
+| 5 | Fanimate 0.2.3 | The project may have guides (`guides` in `document.json`); layers may be locked (`locked`); shapes may be hidden (`visible: false`); the project may have a camera (`camera`); shapes may have colour keys (`fill_keys`, `stroke_keys`) | Older files need no conversion: they have no guides, camera or colour keys and nothing locked or hidden. An older reader would show a hidden shape, ignore a lock, draw the colour keys' shapes in one colour and lose the guides and camera when it saved, so the version was bumped. |
 
 ### The single-file container
 

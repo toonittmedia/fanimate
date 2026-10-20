@@ -47,6 +47,31 @@ impl Interpolation {
     }
 }
 
+/// How an edit is recorded on the timeline.
+///
+/// The **base frame** (frame 0, the first frame) is where a thing is drawn
+/// and set up: editing there changes the thing itself. On any later frame an
+/// edit is animation, so it makes a keyframe, and a key holding the value it
+/// had is placed on the base frame first so the base frame does not change.
+/// `interp` is how the keys made move on to the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keying {
+    pub base: Frame,
+    pub interp: Interpolation,
+}
+
+impl Keying {
+    pub fn new(base: Frame, interp: Interpolation) -> Self {
+        Self { base, interp }
+    }
+}
+
+impl Default for Keying {
+    fn default() -> Self {
+        Self::new(0, Interpolation::Smooth)
+    }
+}
+
 /// A value that can be interpolated between keyframes.
 pub trait Animatable: Copy + PartialEq {
     fn lerp(a: Self, b: Self, t: f32) -> Self;
@@ -117,11 +142,16 @@ impl<T: Animatable> Channel<T> {
 
     /// Insert a key, replacing any existing key on the same frame.
     pub fn set_key(&mut self, frame: Frame, value: T, interp: Interpolation) {
-        let key = Key { frame, value, interp };
-        match self.keys.binary_search_by_key(&frame, |k| k.frame) {
-            Ok(i) => self.keys[i] = key,
-            Err(i) => self.keys.insert(i, key),
-        }
+        set_key_in(&mut self.keys, frame, value, interp);
+    }
+
+    /// Change the value at `frame` the way an edit is recorded (see
+    /// [`Keying`]): a channel that already has keys gets a key here; one
+    /// that has none changes outright on the base frame, and on a later
+    /// frame starts animating, from a key on the base frame holding the
+    /// value it had.
+    pub fn write(&mut self, frame: Frame, value: T, keying: Keying) {
+        write_in(&mut self.base, &mut self.keys, frame, value, keying);
     }
 
     /// Builder form of [`set_key`](Self::set_key).
@@ -137,21 +167,54 @@ impl<T: Animatable> Channel<T> {
 
     /// The value at `frame`, which may fall between whole frames.
     pub fn sample(&self, frame: f32) -> T {
-        let keys = &self.keys;
-        let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
-            return self.base;
-        };
-        if frame <= first.frame as f32 {
-            return first.value;
-        }
-        if frame >= last.frame as f32 {
-            return last.value;
-        }
-        // index of the first key after `frame`; always 1..len here
-        let next = keys.partition_point(|k| k.frame as f32 <= frame);
-        let (a, b) = (&keys[next - 1], &keys[next]);
-        let t = (frame - a.frame as f32) / (b.frame - a.frame) as f32;
-        T::lerp(a.value, b.value, a.interp.apply(t))
+        sample_in(self.base, &self.keys, frame)
+    }
+}
+
+/// Insert a key into a list kept sorted by frame, replacing any key on the
+/// same frame.
+pub fn set_key_in<T>(keys: &mut Vec<Key<T>>, frame: Frame, value: T, interp: Interpolation) {
+    let key = Key { frame, value, interp };
+    match keys.binary_search_by_key(&frame, |k| k.frame) {
+        Ok(i) => keys[i] = key,
+        Err(i) => keys.insert(i, key),
+    }
+}
+
+/// The value at `frame` (which may fall between whole frames) of a value
+/// and the keys that animate it: `base` with no keys, and the first and last
+/// key's value outside them.
+pub fn sample_in<T: Animatable>(base: T, keys: &[Key<T>], frame: f32) -> T {
+    let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+        return base;
+    };
+    if frame <= first.frame as f32 {
+        return first.value;
+    }
+    if frame >= last.frame as f32 {
+        return last.value;
+    }
+    // index of the first key after `frame`; always 1..len here
+    let next = keys.partition_point(|k| k.frame as f32 <= frame);
+    let (a, b) = (&keys[next - 1], &keys[next]);
+    let t = (frame - a.frame as f32) / (b.frame - a.frame) as f32;
+    T::lerp(a.value, b.value, a.interp.apply(t))
+}
+
+/// Change a value at `frame` the way an edit is recorded (see [`Keying`]),
+/// for a value and its keys held apart: with keys, a key goes on `frame`;
+/// without, the value changes outright on the base frame, and on a later
+/// frame the value starts animating from a key on the base frame holding
+/// what it was.
+pub fn write_in<T: Animatable>(base: &mut T, keys: &mut Vec<Key<T>>, frame: Frame, value: T, keying: Keying) {
+    if !keys.is_empty() {
+        set_key_in(keys, frame, value, keying.interp);
+    } else if frame > keying.base {
+        let before = *base;
+        set_key_in(keys, keying.base, before, keying.interp);
+        set_key_in(keys, frame, value, keying.interp);
+    } else {
+        *base = value;
     }
 }
 
@@ -240,6 +303,62 @@ mod tests {
     #[test]
     fn unkeyed_channel_returns_base() {
         assert_eq!(Channel::new(5.0_f32).sample(42.0), 5.0);
+    }
+
+    #[test]
+    fn an_edit_on_the_base_frame_changes_the_value_itself() {
+        let keying = Keying::default();
+        let mut ch = Channel::new(5.0_f32);
+        ch.write(0, 9.0, keying);
+        assert!(!ch.is_animated());
+        assert_eq!(ch.base, 9.0);
+        assert_eq!(ch.sample(30.0), 9.0);
+    }
+
+    #[test]
+    fn an_edit_on_a_later_frame_starts_animating_from_the_base_value() {
+        let keying = Keying::new(0, Interpolation::Linear);
+        let mut ch = Channel::new(5.0_f32);
+        ch.write(10, 25.0, keying);
+        // a key on the base frame holds what the value was, so frame 0
+        // does not change, and the motion eases to the new key
+        let frames: Vec<_> = ch.keys.iter().map(|k| (k.frame, k.value, k.interp)).collect();
+        assert_eq!(
+            frames,
+            [(0, 5.0, Interpolation::Linear), (10, 25.0, Interpolation::Linear)]
+        );
+        assert_eq!(ch.sample(0.0), 5.0);
+        assert_eq!(ch.sample(5.0), 15.0);
+        assert_eq!(ch.sample(99.0), 25.0);
+    }
+
+    #[test]
+    fn a_channel_with_keys_gets_a_key_wherever_it_is_edited() {
+        let keying = Keying::default();
+        let mut ch = ramp();
+        ch.write(15, 7.0, keying);
+        assert_eq!(ch.keys.iter().map(|k| k.frame).collect::<Vec<_>>(), [10, 15, 20]);
+        // an edit on the base frame of an animated channel keys it too
+        ch.write(0, 3.0, keying);
+        assert_eq!(ch.keys.first().map(|k| (k.frame, k.value)), Some((0, 3.0)));
+        // editing on a frame that has a key replaces it
+        ch.write(15, 8.0, keying);
+        assert_eq!(ch.keys.len(), 4);
+        assert_eq!(ch.sample(15.0), 8.0);
+    }
+
+    #[test]
+    fn the_base_frame_need_not_be_zero() {
+        // a project that starts on frame 24: frame 24 is where things are set up
+        let keying = Keying::new(24, Interpolation::Smooth);
+        let mut ch = Channel::new(1.0_f32);
+        ch.write(24, 2.0, keying);
+        assert!(!ch.is_animated());
+        ch.write(30, 4.0, keying);
+        assert_eq!(
+            ch.keys.iter().map(|k| (k.frame, k.value)).collect::<Vec<_>>(),
+            [(24, 2.0), (30, 4.0)]
+        );
     }
 
     #[test]

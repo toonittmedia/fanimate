@@ -31,6 +31,8 @@ pub enum ExportError {
     FfmpegLacks { format: Format, version: String },
     #[error("the export was cancelled")]
     Cancelled,
+    #[error("{} already exists; choose another name or tick Overwrite existing file", .0.display())]
+    Exists(PathBuf),
     #[error("the frames could not be rendered: {0}")]
     Render(String),
     #[error("{}: {source}", path.display())]
@@ -107,6 +109,11 @@ pub fn export(
             "{} needs pictures at least {min_w} x {min_h} pixels",
             s.format.label()
         )));
+    }
+    if !s.overwrite
+        && let Some(existing) = existing_output(out, s.format)
+    {
+        return Err(ExportError::Exists(existing));
     }
     // decided before anything is rendered, so a missing writer says so at once
     let system = s.format.writers().contains(&Writer::System) && fanimate_oscodec::h264_available();
@@ -219,6 +226,21 @@ impl Drop for Temps {
             let _ = std::fs::remove_file(p);
         }
     }
+}
+
+/// The file (or, for a picture sequence, the first picture) an export to
+/// `out` would replace, if there is one.
+pub fn existing_output(out: &Path, format: Format) -> Option<PathBuf> {
+    if !format.is_sequence() {
+        return out.exists().then(|| out.to_path_buf());
+    }
+    let (dir, stem) = (out.parent()?, out.file_stem()?);
+    let prefix = format!("{}_", stem.to_string_lossy());
+    let suffix = format!(".{}", format.extension());
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+        let name = e.file_name().to_string_lossy().into_owned();
+        (name.starts_with(&prefix) && name.ends_with(&suffix)).then(|| e.path())
+    })
 }
 
 pub(crate) fn part(out: &Path) -> PathBuf {
@@ -410,6 +432,44 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn an_export_that_would_replace_a_file_stops_unless_overwrite_is_on() {
+        let dir = temp_dir("overwrite");
+        let doc = samples::hello();
+        let out = dir.join("walk.gif");
+        std::fs::write(&out, b"precious").unwrap();
+        let mut settings = Settings::for_doc(&doc, Format::Gif);
+        settings.overwrite = false;
+        let err = export(&doc, &settings, &out, &mut |_, _| true).unwrap_err();
+        assert!(matches!(&err, ExportError::Exists(p) if *p == out), "{err}");
+        assert_eq!(std::fs::read(&out).unwrap(), b"precious", "the file is untouched");
+        // before this setting existed an export replaced the file, and a
+        // queued job without the setting still does
+        let queued: Settings =
+            serde_json::from_str(r#"{"format":"gif","width":8,"height":8,"start":0,"end":1}"#).unwrap();
+        assert!(queued.overwrite);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn existing_output_finds_a_file_or_a_picture_of_a_sequence() {
+        let dir = temp_dir("existing");
+        let one = dir.join("scene.mp4");
+        assert_eq!(existing_output(&one, Format::Mp4), None);
+        std::fs::write(&one, b"x").unwrap();
+        assert_eq!(existing_output(&one, Format::Mp4), Some(one));
+        let seq = dir.join("scene.png");
+        assert_eq!(existing_output(&seq, Format::Png), None);
+        std::fs::write(dir.join("scene_0003.png"), b"x").unwrap();
+        // an unfinished `.part` picture is not an existing one
+        std::fs::write(dir.join("other_0001.png"), b"x").unwrap();
+        assert_eq!(
+            existing_output(&seq, Format::Png),
+            Some(dir.join("scene_0003.png"))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Held by each GPU test, so they take turns: creating devices on
     /// several threads at once has crashed Windows' software renderer (the
     /// one CI runners use) with an access violation.
@@ -434,6 +494,7 @@ mod tests {
             start: 0,
             end: frames - 1,
             ffmpeg: None,
+            overwrite: true,
         }
     }
 

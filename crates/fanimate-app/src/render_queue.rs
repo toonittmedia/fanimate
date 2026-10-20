@@ -236,6 +236,7 @@ struct QueueApp {
     allow_close: bool,
     /// The job being dragged to a new place.
     dragging: Option<String>,
+    taskbar: crate::taskbar::Taskbar,
     _lock: RunnerLock,
 }
 
@@ -253,8 +254,27 @@ impl QueueApp {
             confirm_close: false,
             allow_close: false,
             dragging: None,
+            taskbar: Default::default(),
             _lock: lock,
         }
+    }
+
+    /// The taskbar button: how far the render in progress is; a bar that
+    /// waits (jobs queued, none running yet) moves without a position; red
+    /// when the last thing that ended failed.
+    fn show_taskbar_progress(&mut self, frame: &eframe::Frame) {
+        use fanimate_export::State;
+        use fanimate_oscodec::TaskbarProgress;
+        let wanted = if let Some(e) = self.entries.iter().find(|e| e.status.state == State::Rendering) {
+            TaskbarProgress::Fraction(e.status.fraction())
+        } else if self.entries.iter().any(|e| e.status.state == State::Waiting) {
+            TaskbarProgress::Busy
+        } else if self.entries.iter().any(|e| e.status.state == State::Failed) {
+            TaskbarProgress::Failed(1.0)
+        } else {
+            TaskbarProgress::Off
+        };
+        self.taskbar.show(frame, wanted);
     }
 
     fn refresh(&mut self) {
@@ -325,7 +345,8 @@ impl QueueApp {
 impl eframe::App for QueueApp {
     // here, not in `ui`: eframe skips `ui` while the window is minimised or
     // hidden, and closing it from the taskbar then must still ask
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.show_taskbar_progress(frame);
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.unfinished() > 0 {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // bring the window back so the question is seen
@@ -759,6 +780,7 @@ mod tests {
             start: 0,
             end: 100_000,
             ffmpeg: None,
+            overwrite: true,
         };
         let id = queue
             .add(&fanimate_core::samples::hello(), &out, &settings)

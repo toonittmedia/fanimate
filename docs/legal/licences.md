@@ -12,16 +12,18 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | Lucide icons | ISC | `crates/fanimate-app/icons/lucide` |
 | Rhubarb Lip Sync 1.14.0 (separate program) | MIT | `scripts/fetch-rhubarb.sh` |
 
-## Rust crates (501)
+## Rust crates (518)
 
 | Licence used | Crates |
 |---|---|
-| MIT | 463 |
+| MIT | 467 |
 | Apache-2.0 | 18 |
+| MPL-2.0 | 12 |
 | BSD-3-Clause | 6 |
 | BSD-2-Clause | 4 |
 | Zlib | 3 |
 | BSL-1.0 | 2 |
+| Apache-2.0 AND BSD-3-Clause | 1 |
 | Apache-2.0 AND MIT | 1 |
 | ISC | 1 |
 | MIT AND NCSA | 1 |
@@ -118,6 +120,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 | MIT |
 | core-graphics | 0.23.2 | MIT OR Apache-2.0 | MIT |
 | core-graphics-types | 0.1.3 | MIT OR Apache-2.0 | MIT |
+| core_detect | 1.0.0 | MIT/Apache-2.0 | MIT |
 | coreaudio-rs | 0.14.2 | MIT/Apache-2.0 | MIT |
 | cpal | 0.18.2 | Apache-2.0 | Apache-2.0 |
 | crc32fast | 1.5.2 | MIT OR Apache-2.0 | MIT |
@@ -149,6 +152,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | either | 1.19.0 | MIT OR Apache-2.0 | MIT |
 | emath | 0.36.2 | MIT OR Apache-2.0 | MIT |
 | encode_unicode | 1.0.0 | Apache-2.0 OR MIT | MIT |
+| encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Apache-2.0 AND BSD-3-Clause |
 | endi | 1.1.1 | MIT | MIT |
 | enumflags2 | 0.7.12 | MIT OR Apache-2.0 | MIT |
 | enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 | MIT |
@@ -166,6 +170,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | event-listener | 5.4.2 | Apache-2.0 OR MIT | MIT |
 | event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT | MIT |
 | exr | 1.74.2 | BSD-3-Clause | BSD-3-Clause |
+| extended | 0.1.0 | MIT | MIT |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | MIT |
 | fax | 0.2.7 | MIT | MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | MIT |
@@ -231,6 +236,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | js-sys | 0.3.106 | MIT OR Apache-2.0 | MIT |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 | MIT |
 | kurbo | 0.13.1 | Apache-2.0 OR MIT | MIT |
+| lazy_static | 1.5.1 | MIT OR Apache-2.0 | MIT |
 | lebe | 0.5.3 | BSD-3-Clause | BSD-3-Clause |
 | libc | 0.2.190 | MIT OR Apache-2.0 | MIT |
 | libfuzzer-sys | 0.4.13 | (MIT OR Apache-2.0) AND NCSA | MIT AND NCSA |
@@ -256,6 +262,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | MIT |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | Apache-2.0 |
+| multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT | MIT |
 | muxide | 0.2.5 | MIT OR Apache-2.0 | MIT |
 | naga | 30.0.1 | MIT OR Apache-2.0 | MIT |
 | naga-types | 30.0.1 | MIT OR Apache-2.0 | MIT |
@@ -417,6 +424,18 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | strict-num | 0.1.1 | MIT | MIT |
 | strsim | 0.11.1 | MIT | MIT |
 | svgtypes | 0.16.1 | Apache-2.0 OR MIT | MIT |
+| symphonia | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-bundle-flac | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-bundle-mp3 | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-codec-aac | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-codec-pcm | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-codec-vorbis | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-core | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-format-isomp4 | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-format-ogg | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-format-riff | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-metadata | 0.5.5 | MPL-2.0 | MPL-2.0 |
+| symphonia-utils-xiph | 0.5.5 | MPL-2.0 | MPL-2.0 |
 | syn | 2.0.119 | MIT OR Apache-2.0 | MIT |
 | syn | 3.0.7 | MIT OR Apache-2.0 | MIT |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 | MIT |

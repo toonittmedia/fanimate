@@ -391,6 +391,25 @@ pub struct Shape {
     /// ordinary one without anything having to remember to clear this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rect: Option<RectParams>,
+    /// Version 5: a hidden shape is not drawn, hit or edited, and keeps its
+    /// place in the layer. Shown by default.
+    #[serde(default = "shown", skip_serializing_if = "is_shown")]
+    pub visible: bool,
+    /// Version 5: colour keyframes. The fill's colour and the stroke's
+    /// colour over time, with `style` holding the colour when there are no
+    /// keys. Only a shape that has a fill (or a stroke) can animate it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_keys: Vec<Key<Color>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stroke_keys: Vec<Key<Color>>,
+}
+
+fn shown() -> bool {
+    true
+}
+
+fn is_shown(v: &bool) -> bool {
+    *v
 }
 
 impl Shape {
@@ -404,6 +423,9 @@ impl Shape {
             path_keys: Vec::new(),
             skin: None,
             rect: None,
+            visible: true,
+            fill_keys: Vec::new(),
+            stroke_keys: Vec::new(),
         }
     }
 

@@ -106,11 +106,19 @@ pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
         }
     });
     ui.separator();
-    items(ui, shell, &[Action::Save, Action::SaveAs]);
+    items(ui, shell, &[Action::Save, Action::SaveAs, Action::SaveAsFolder]);
     items(ui, shell, &[Action::CloseDocument, Action::ShowHome]);
     ui.separator();
     item(ui, shell, Action::Import);
-    items(ui, shell, &[Action::ExportVideo, Action::RenderQueue]);
+    items(
+        ui,
+        shell,
+        &[
+            Action::ExportVideo,
+            Action::RenderPreviewFrame,
+            Action::RenderQueue,
+        ],
+    );
     ui.separator();
     item(ui, shell, Action::Quit);
 }
@@ -194,6 +202,7 @@ pub fn layer(ui: &mut egui::Ui, shell: &mut Shell) {
         &[
             Action::Rename,
             Action::ToggleVisibility,
+            Action::ToggleLock,
             Action::GroupLayers,
             Action::Ungroup,
             Action::MoveLayerUp,
@@ -201,6 +210,8 @@ pub fn layer(ui: &mut egui::Ui, shell: &mut Shell) {
         ],
     );
     label_menu(ui, shell);
+    ui.menu_button("Align", |ui| align_items(ui, shell));
+    convert_menu(ui, shell);
     switch_items(ui, shell);
     ui.separator();
     items(
@@ -305,6 +316,8 @@ pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
     item_checked(ui, shell, Action::ToggleOnionSkin, onion);
     let light = shell.light_table;
     item_checked(ui, shell, Action::ToggleLightTable, light);
+    let looking = shell.look_through_camera;
+    item_checked(ui, shell, Action::LookThroughCamera, looking);
     ui.separator();
     // Phase F: rulers, grid and snapping
     let rulers = shell.show_rulers;
@@ -330,6 +343,7 @@ pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
         ui.checkbox(&mut s.grid, "Snap to grid");
         ui.checkbox(&mut s.guides, "Snap to guides");
         ui.checkbox(&mut s.bounds, "Snap to canvas bounds");
+        ui.checkbox(&mut s.shapes, "Snap to other shapes");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Angle step (Shift)");
@@ -371,8 +385,13 @@ pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
 }
 
 pub fn window(ui: &mut egui::Ui, shell: &mut Shell) {
+    if ui.selectable_label(shell.ui.tools_shown, "Tools").clicked() {
+        shell.ui.toggle_tools = true;
+        ui.close();
+    }
     for tab in Tab::ALL {
-        if ui.button(tab.title()).clicked() {
+        let shown = shell.ui.panels_shown.contains(&tab);
+        if ui.selectable_label(shown, tab.title()).clicked() {
             shell.ui.open_tab = Some(tab);
             ui.close();
         }
@@ -396,16 +415,16 @@ pub fn help(ui: &mut egui::Ui, shell: &mut Shell) {
         ui.close();
     }
     if ui.button("Product Vision").clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(
-            "https://github.com/toonittmedia/fanimate/blob/main/docs/product-vision.md",
-        ));
+        crate::links::open("https://github.com/toonittmedia/fanimate/blob/main/docs/product-vision.md");
+        ui.close();
+    }
+    if ui.button("What's New…").clicked() {
+        shell.ui.whats_new = crate::whatsnew::WhatsNew::open(None);
         ui.close();
     }
     item(ui, shell, Action::CheckForUpdates);
     if ui.button("Report a Bug").clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(
-            "https://github.com/toonittmedia/fanimate/issues/new/choose",
-        ));
+        crate::links::open("https://github.com/toonittmedia/fanimate/issues/new/choose");
         ui.close();
     }
     ui.separator();
@@ -479,6 +498,7 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
         &[
             Action::Rename,
             Action::ToggleVisibility,
+            Action::ToggleLock,
             Action::GroupLayers,
             Action::Ungroup,
             Action::MoveLayerUp,
@@ -486,6 +506,8 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
         ],
     );
     label_menu(ui, shell);
+    ui.menu_button("Align", |ui| align_items(ui, shell));
+    convert_menu(ui, shell);
     switch_items(ui, shell);
     ui.menu_button("Bones", |ui| {
         ui.set_min_width(MENU_MIN_WIDTH);
@@ -499,6 +521,35 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
     items(ui, shell, &[Action::AddKey, Action::DeleteKey]);
     ui.separator();
     item(ui, shell, Action::LayerProperties);
+}
+
+/// The six Align commands.
+pub fn align_items(ui: &mut egui::Ui, shell: &mut Shell) {
+    ui.set_min_width(MENU_MIN_WIDTH);
+    for to in fanimate_editor::AlignTo::ALL {
+        item(ui, shell, Action::Align(to));
+    }
+}
+
+/// "Change to": the other kinds a group, bone or switch layer can become.
+/// What that throws away is asked about before it happens.
+fn convert_menu(ui: &mut egui::Ui, shell: &mut Shell) {
+    let Some(id) = shell.editor.primary() else {
+        return;
+    };
+    let kinds: Vec<fanimate_editor::ConvertTo> = fanimate_editor::ConvertTo::ALL
+        .into_iter()
+        .filter(|to| shell.editor.conversion_loss(id, *to).is_some())
+        .collect();
+    if kinds.is_empty() {
+        return;
+    }
+    ui.menu_button("Change to", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        for to in kinds {
+            item(ui, shell, Action::ConvertLayerType(to));
+        }
+    });
 }
 
 /// Tool shortcut for tooltips, e.g. " (V)".

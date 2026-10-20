@@ -73,6 +73,9 @@ pub(super) struct StrokeInProgress {
     stabiliser: Stabiliser,
     /// Screen pixels per document unit when the stroke started.
     zoom: f32,
+    /// A sketched outline (Draw Shape): it closes into a filled shape when
+    /// the pen lifts, instead of staying an open brush stroke.
+    closed: bool,
 }
 
 impl Editor {
@@ -83,6 +86,11 @@ impl Editor {
         match self.primary().and_then(|id| self.doc.find(id)) {
             Some(layer) if !self.shown(layer.id) => {
                 let msg = format!("\"{}\" is hidden. Show it to draw on it.", layer.name);
+                self.set_status(StatusKind::Warning, msg);
+                Err(())
+            }
+            Some(layer) if self.is_locked(layer.id) => {
+                let msg = format!("\"{}\" is locked. Unlock it to draw on it.", layer.name);
                 self.set_status(StatusKind::Warning, msg);
                 Err(())
             }
@@ -114,8 +122,52 @@ impl Editor {
             target,
             stabiliser,
             zoom,
+            closed: false,
         });
         true
+    }
+
+    /// Start sketching an outline with Draw Shape at `at` (document space).
+    /// Letting go closes it into a filled shape in the current style. The
+    /// line is only lightly smoothed, so the shape follows the hand. Returns
+    /// false, with a status message, when the selection cannot be drawn on.
+    pub fn begin_outline(&mut self, at: Vec2, zoom: f32) -> bool {
+        let Ok(target) = self.drawing_target() else {
+            return false;
+        };
+        let zoom = sane_zoom(zoom);
+        let mut stabiliser = Stabiliser::new(self.draw.smoothing * 0.5, BRUSH_SPACING_PX / zoom);
+        stabiliser.push(BrushSample::new(at, 1.0));
+        self.stroke = Some(StrokeInProgress {
+            target,
+            stabiliser,
+            zoom,
+            closed: true,
+        });
+        true
+    }
+
+    /// The style a new closed shape gets: the fill, and an outline when the
+    /// Style panel asks for one (a shape with no fill always has one).
+    fn new_shape_style(&self) -> Style {
+        let d = &self.draw;
+        Style {
+            fill: d.fill,
+            stroke: (d.outline || d.fill.is_none()).then_some(Stroke {
+                color: d.line,
+                width: d.width,
+            }),
+        }
+    }
+
+    /// The shape a sketch makes, if it has an inside, or the brush stroke.
+    fn stroke_shape(&self, stroke: &StrokeInProgress) -> Option<Shape> {
+        let samples = stroke.stabiliser.samples();
+        if stroke.closed {
+            brush::build_outline(&samples, BRUSH_TOLERANCE_PX / stroke.zoom, self.new_shape_style())
+        } else {
+            brush::build_stroke(&samples, &self.brush_options(stroke.zoom))
+        }
     }
 
     pub fn continue_stroke(&mut self, at: Vec2, pressure: f32) {
@@ -131,8 +183,7 @@ impl Editor {
     /// The stroke being drawn, in document space, as it would be if the
     /// pen lifted now.
     pub fn stroke_preview(&self) -> Option<Shape> {
-        let stroke = self.stroke.as_ref()?;
-        brush::build_stroke(&stroke.stabiliser.samples(), &self.brush_options(stroke.zoom))
+        self.stroke_shape(self.stroke.as_ref()?)
     }
 
     pub fn cancel_stroke(&mut self) {
@@ -144,12 +195,15 @@ impl Editor {
         let Some(stroke) = self.stroke.take() else {
             return;
         };
-        if let Some(shape) =
-            brush::build_stroke(&stroke.stabiliser.samples(), &self.brush_options(stroke.zoom))
-        {
+        if let Some(shape) = self.stroke_shape(&stroke) {
             // the layer may have gone (undo while drawing): draw on a new one
             let target = stroke.target.filter(|id| self.doc.find(*id).is_some());
             self.add_shape(target, shape);
+        } else if stroke.closed {
+            self.set_status(
+                StatusKind::Info,
+                "Sketch a loop to make a shape: drag around the area, then let go",
+            );
         }
     }
 
@@ -259,15 +313,7 @@ impl Editor {
         if !radii.is_finite() || radii.min_element() * sane_zoom(zoom) < 0.5 {
             return None;
         }
-        let d = &self.draw;
-        let outline = (d.outline || d.fill.is_none()).then_some(Stroke {
-            color: d.line,
-            width: d.width,
-        });
-        let style = Style {
-            fill: d.fill,
-            stroke: outline,
-        };
+        let style = self.new_shape_style();
         Some(match tool {
             // a rectangle remembers it is one, so its corners can be rounded
             Tool::Rectangle => Shape::rectangle("Rectangle", center - radii, radii * 2.0, 0.0, style),
@@ -333,6 +379,50 @@ impl Editor {
         id
     }
 
+    /// The lines the artwork offers to snap to: the x and y of every point
+    /// of every shape that is not being moved (the selected layers are), and
+    /// the edges and centre of each shape's box. Document space.
+    pub fn snap_lines(&self) -> crate::snap::ShapeLines {
+        // a lot of shapes make a lot of lines; past this they would only
+        // make snapping jumpy
+        const MAX_LINES: usize = 2000;
+        let moving: std::collections::HashSet<LayerId> = self.selected_with_children().into_iter().collect();
+        let mut lines = crate::snap::ShapeLines::default();
+        for item in evaluate(&self.doc, self.frame) {
+            if moving.contains(&item.layer) {
+                continue;
+            }
+            let points: Vec<Vec2> = item
+                .shape
+                .path
+                .on_curve_points()
+                .into_iter()
+                .map(|p| item.transform.transform_point2(p))
+                .filter(|p| p.is_finite())
+                .collect();
+            if points.is_empty() {
+                continue;
+            }
+            for p in &points {
+                lines.add(p.x, p.y);
+            }
+            let (lo, hi) = points
+                .iter()
+                .fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(lo, hi), p| {
+                    (lo.min(*p), hi.max(*p))
+                });
+            lines.add(lo.x, lo.y);
+            lines.add(hi.x, hi.y);
+            lines.add((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
+            if lines.xs.len() >= MAX_LINES && lines.ys.len() >= MAX_LINES {
+                break;
+            }
+        }
+        lines.xs.truncate(MAX_LINES);
+        lines.ys.truncate(MAX_LINES);
+        lines
+    }
+
     /// The topmost visible shape under `p` (document space), within
     /// `tolerance` document units: its layer and index in that layer.
     pub fn shape_at(&self, p: Vec2, tolerance: f32) -> Option<(LayerId, usize)> {
@@ -353,6 +443,8 @@ impl Editor {
         items
             .iter()
             .rev()
+            // a locked layer is not there as far as the canvas is concerned
+            .filter(|i| !self.is_locked(i.layer))
             .filter(|i| !editable || self.editable(i))
             .find_map(|item| {
                 let inv = item.transform.inverse();
@@ -390,7 +482,9 @@ impl Editor {
             return false;
         };
         let brush_stroke = shape.widths.is_some() && shape.style.fill.is_none();
-        let mut style = shape.style;
+        // the colours as they are now, which a colour animation changes
+        let now = shape.style_at(self.frame);
+        let mut style = now;
         if brush_stroke {
             if let Some(stroke) = &mut style.stroke {
                 stroke.color = self.draw.line;
@@ -402,7 +496,7 @@ impl Editor {
             };
             style.fill = Some(fill);
         }
-        if style == shape.style {
+        if style == now {
             return false;
         }
         self.checkpoint(if brush_stroke {
@@ -410,9 +504,7 @@ impl Editor {
         } else {
             "Fill shape"
         });
-        if let Some(shape) = self.shape_mut(id, index) {
-            shape.style = style;
-        }
+        self.set_shape_style(id, index, style);
         true
     }
 
@@ -426,8 +518,11 @@ impl Editor {
             return false;
         };
         let (style, name) = (shape.style, shape.name.clone());
+        // a brush stroke's own width varies along it; its full width is the
+        // one to pick up
         if let Some(stroke) = style.stroke {
             self.draw.line = stroke.color;
+            self.draw.width = stroke.width;
         }
         if style.fill.is_some() {
             self.draw.fill = style.fill;
@@ -557,6 +652,108 @@ mod tests {
         assert!(matches!(ed.status, Some((StatusKind::Warning, _))));
         // nothing was recorded
         assert!(ed.history.undo_label().is_none());
+    }
+
+    /// Sketch a loop of `radius` around `centre` with Draw Shape.
+    fn sketch_loop(ed: &mut Editor, centre: Vec2, radius: f32) {
+        assert!(ed.begin_outline(centre + Vec2::new(radius, 0.0), 1.0));
+        for i in 1..=60 {
+            let a = i as f32 / 60.0 * std::f32::consts::TAU;
+            ed.continue_stroke(centre + Vec2::new(a.cos(), a.sin()) * radius, 1.0);
+        }
+        ed.finish_stroke();
+    }
+
+    #[test]
+    fn draw_shape_closes_a_sketched_loop_into_a_filled_shape() {
+        let (mut ed, id) = editor();
+        ed.draw.fill = Some(Color::rgb(0.2, 0.4, 0.6));
+        ed.draw.outline = false;
+        ed.tool = Tool::DrawShape;
+        sketch_loop(&mut ed, Vec2::new(100.0, 100.0), 60.0);
+        let s = shapes(&ed, id);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "Shape 1");
+        assert_eq!(s[0].style.fill, ed.draw.fill, "filled with the current fill");
+        assert!(
+            s[0].style.stroke.is_none(),
+            "no outline when the Style panel has it off"
+        );
+        assert!(s[0].path.cmds.iter().any(|c| matches!(c, PathCmd::Close)));
+        assert!(s[0].widths.is_none());
+        // the shape is the loop that was drawn
+        let (min, max) = s[0]
+            .path
+            .on_curve_points()
+            .iter()
+            .fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(lo, hi), p| {
+                (lo.min(*p), hi.max(*p))
+            });
+        assert!(
+            (min.x - 40.0).abs() < 2.0 && (max.x - 160.0).abs() < 2.0,
+            "{min} {max}"
+        );
+        // one undo step
+        ed.run(crate::Action::Undo);
+        assert!(shapes(&ed, id).is_empty());
+    }
+
+    #[test]
+    fn draw_shape_with_the_outline_on_gets_the_line_colour_and_width() {
+        let (mut ed, id) = editor();
+        ed.draw.outline = true;
+        ed.draw.line = Color::rgb(1.0, 0.0, 0.0);
+        ed.draw.width = 4.0;
+        sketch_loop(&mut ed, Vec2::ZERO, 40.0);
+        let stroke = shapes(&ed, id)[0].style.stroke.expect("an outline");
+        assert_eq!((stroke.color, stroke.width), (Color::rgb(1.0, 0.0, 0.0), 4.0));
+    }
+
+    #[test]
+    fn a_sketch_that_encloses_nothing_adds_nothing_and_says_so() {
+        let (mut ed, id) = editor();
+        // a straight drag has no inside
+        assert!(ed.begin_outline(Vec2::ZERO, 1.0));
+        for i in 1..=40 {
+            ed.continue_stroke(Vec2::new(i as f32 * 3.0, 0.0), 1.0);
+        }
+        ed.finish_stroke();
+        assert!(shapes(&ed, id).is_empty());
+        assert!(matches!(ed.status, Some((StatusKind::Info, _))));
+        assert!(ed.history.undo_label().is_none(), "no undo step for nothing");
+        // the preview of a brush stroke is still the brush
+        assert!(ed.begin_stroke(Vec2::ZERO, 1.0, 1.0));
+        ed.continue_stroke(Vec2::new(50.0, 0.0), 1.0);
+        assert!(ed.stroke_preview().is_some_and(|s| s.widths.is_some()));
+        ed.cancel_stroke();
+    }
+
+    #[test]
+    fn the_eyedropper_takes_the_line_width_too() {
+        let (mut ed, _) = editor();
+        draw_line(&mut ed, Vec2::new(10.0, 10.0), Vec2::new(200.0, 10.0));
+        ed.draw.width = 1.0;
+        assert!(ed.pick_style_at(Vec2::new(100.0, 10.0), 8.0));
+        assert_eq!(ed.draw.width, 6.0, "the stroke was drawn 6 wide");
+    }
+
+    #[test]
+    fn other_layers_offer_snap_lines_and_the_selected_one_does_not() {
+        let (mut ed, id) = editor();
+        draw_line(&mut ed, Vec2::new(100.0, 40.0), Vec2::new(300.0, 40.0));
+        // the layer being worked on is a new one: the line is something to snap to
+        ed.run(crate::Action::NewVectorLayer);
+        let lines = ed.snap_lines();
+        assert!(lines.xs.iter().any(|x| (x - 100.0).abs() < 1.0), "{:?}", lines.xs);
+        assert!(lines.xs.iter().any(|x| (x - 300.0).abs() < 1.0));
+        assert!(
+            lines.xs.iter().any(|x| (x - 200.0).abs() < 1.0),
+            "the centre of the box"
+        );
+        assert!(lines.ys.iter().any(|y| (y - 40.0).abs() < 1.0));
+        // a shape never snaps to itself
+        ed.selection = vec![id];
+        assert!(ed.snap_lines().xs.is_empty());
     }
 
     #[test]

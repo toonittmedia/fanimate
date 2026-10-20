@@ -6,7 +6,7 @@ Companion to the [product vision](../product-vision.md). The brand assets propos
 
 ## Status
 
-*Updated with 0.2.2 (the [UX pass](ux-pass.md): tabs, Home, single-file projects, handles, new drawing tools, rulers and snapping) and the first Gate 1 measurements. Estimated durations for the remaining work are in [section 4](#4-milestones).*
+*Updated with 0.2.3 (the second [UX pass](ux-pass.md#ux-pass-2-0-2-3): camera, colour animation, Moho-style keying, per-property keys, modal dialogs, audio import, format version 5), after 0.2.2 (tabs, Home, single-file projects, handles, new drawing tools, rulers and snapping) and the first Gate 1 measurements. Estimated durations for the remaining work are in [section 4](#4-milestones).*
 
 | Milestone | Status |
 |---|---|
@@ -103,7 +103,7 @@ Exit check: a character from a PSD is rigged and animated; 40-bone rig at 60 fps
 - [x] Binding: Bind to Selected Bone (Ctrl+B, rigid, keeps artwork in place on screen), Bind Smoothly (Ctrl+Shift+B, per-point weights from bone distance), Release from Bones, and Paint Weights (W) to brush weights for the selected bone
 - [x] Smart Bones and the Actions panel: regular actions inserted into the timeline, Smart Bone actions that reshape artwork and turn other bones as their driver turns, several adding up; actions edited in place with a banner over the timeline ([spec](../spec/fnm.md#actions))
 - [x] Mesh deformation: image layers bend with bones on a mesh (8×8 by default) with automatic weights
-- [x] Image layers and PSD import: File › Import (Ctrl+R) brings in PNG and JPEG pictures, and Photoshop files as a group of image layers with their groups, positions, visibility and opacity; pictures live in the project's `media` folder, stored once, and render on the GPU like everything else
+- [x] Image layers and PSD import: File › Import (Ctrl+I) brings in PNG and JPEG pictures, and Photoshop files as a group of image layers with their groups, positions, visibility and opacity; pictures live in the project's `media` folder, stored once, and render on the GPU like everything else
 - [x] Rig health check in Properties: bones that move nothing or have no length, Smart Bones that do nothing yet, no longer fit their artwork, or clash with another on the same driver, and keyframes on hidden layers
 - [x] The benchmark rig now has 10 Smart Bones, as the Gate 1 budget specifies
 - [ ] Exit check with a tester and a real PSD character
@@ -287,7 +287,6 @@ Phase 1 ships **three built-in themes** plus an accessibility option. Themes are
 | **Fanimate Night** (default) | Deep purple-tinted dark. Violet-400 accent. | The default, because most animators work in dim rooms and dark panels stop the UI competing with artwork. |
 | **Fanimate Day** | Light lavender-white. Violet-600 accent. | For bright studios and classrooms; also the theme of the website and docs. |
 | **Fanimate Studio Grey** | Mid-dark neutral with a purple accent. | A grey UI for colour-critical work, where a tinted surround can bias how the artist judges colour. Offer this for the canvas surround at minimum. |
-| **High contrast** | Black or white with a saturated violet accent. | Accessibility option. Ships in Phase 1 with the rest of the UI work (P15). |
 
 **Theme rules:**
 
@@ -517,14 +516,14 @@ Eight workstreams run in parallel. Each lists its main tasks, its dependencies a
 |---|---|
 | UI shell | GPU-drawn docking system, tabbed and floating panels, saved workspaces |
 | Default layout | Tools left, canvas centre, Layers, Style and Actions right, timeline bottom |
-| Themes | Token-based theming (Night, Day, Studio Grey, High contrast) from section 1 |
+| Themes | Token-based theming (Night, Day, Studio Grey) from section 1 |
 | HiDPI | Correct at 100% to 300% scaling, per-monitor |
 | Command palette | Search every command and setting |
 | Keymaps | Two presets: Fanimate (standard editing shortcuts, the default) and Moho; chosen on first launch, switchable any time. Full remapping and Harmony-style keys can follow in Phase 2 |
 | Title-bar menus | Menus share the window title bar; custom caption buttons and resizing on Windows and Linux, native controls on macOS |
 | Right-click menus | Context menus on every panel, reusing the main menu commands and showing their shortcuts (P23) |
 | Properties panel | Layer and project settings edited live in a docked panel, never in modal dialogs (P23) |
-| Accessibility | Keyboard navigation, screen-reader labels where the platform allows, high-contrast theme, scalable fonts |
+| Accessibility | Keyboard navigation, screen-reader labels where the platform allows, scalable fonts |
 | First-run experience | Short interactive tutorial, "Coming from Moho / Animate" guide |
 
 **Done when:** a Moho user, given no instructions, finds the bone tool, makes a bone and keys a pose in under five minutes in a usability session.

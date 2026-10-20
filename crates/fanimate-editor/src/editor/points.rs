@@ -118,6 +118,7 @@ impl Editor {
     pub fn drag_points(&mut self, delta: Vec2) {
         let transforms: BTreeMap<(LayerId, usize), Affine2> = self.shape_transforms().into_iter().collect();
         let frame = self.current_frame();
+        let keying = self.keying();
         for (shape, points) in self.points_by_shape() {
             // the drag in the shape's own space
             let Some(t) = transforms.get(&shape) else { continue };
@@ -134,11 +135,11 @@ impl Editor {
                 if in_action {
                     if s.path_keys.is_empty() {
                         // the action starts from the drawing as it is
-                        s.key_path(0, s.path.clone(), fanimate_core::Interpolation::Smooth);
+                        s.key_path(0, s.path.clone(), keying.interp);
                     }
-                    s.key_path(frame, path, fanimate_core::Interpolation::Smooth);
+                    s.key_path(frame, path, keying.interp);
                 } else {
-                    s.set_path_at(frame, path);
+                    s.set_path_at(frame, path, keying);
                 }
             }
         }

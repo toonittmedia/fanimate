@@ -333,6 +333,7 @@ fn export(args: &[String]) -> CmdResult {
         start: a.get("--start")?.unwrap_or(doc.start),
         end: a.get("--end")?.unwrap_or(doc.end),
         ffmpeg: a.get::<String>("--ffmpeg")?.map(PathBuf::from),
+        overwrite: true,
     };
     let started = Instant::now();
     let mut last = Instant::now();

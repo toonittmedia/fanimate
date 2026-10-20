@@ -75,6 +75,9 @@ impl fmt::Display for Report {
 /// layers, and the room above keeps new ids from overflowing.
 pub const MAX_LAYER_ID: u32 = 1 << 30;
 
+/// The most guides a project may hold. Nobody places this many.
+pub const MAX_GUIDES: usize = 1000;
+
 /// The farthest a layer's pivot may be from its origin, in layer units.
 const PIVOT_LIMIT: f32 = 1.0e7;
 
@@ -174,6 +177,49 @@ impl Checker {
             if self.repair {
                 doc.end = doc.start;
             }
+        }
+        // the camera's channels are checked like a layer's
+        let end = doc.end;
+        self.channel(&mut doc.camera.position, loc, "camera.position", end);
+        self.channel(&mut doc.camera.zoom, loc, "camera.zoom", end);
+        self.channel(&mut doc.camera.roll, loc, "camera.roll", end);
+        let range = fanimate_core::CAMERA_ZOOM;
+        let outside = std::iter::once(doc.camera.zoom.base)
+            .chain(doc.camera.zoom.keys.iter().map(|k| k.value))
+            .any(|z| z.is_finite() && !range.contains(&z));
+        if outside {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!(
+                    "the camera's zoom is outside {} to {}; it is held within",
+                    range.start(),
+                    range.end()
+                ),
+                false,
+            );
+        }
+        // a guide that is not a place on the canvas, or one too many
+        let bad = doc.guides.iter().filter(|g| !g.position.is_finite()).count();
+        if bad > 0 {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!("{bad} guide(s) have no position; they are removed"),
+                true,
+            );
+        }
+        if doc.guides.len() - bad > MAX_GUIDES {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!("more than {MAX_GUIDES} guides; the extra ones are removed"),
+                true,
+            );
+        }
+        if self.repair {
+            doc.guides.retain(|g| g.position.is_finite());
+            doc.guides.truncate(MAX_GUIDES);
         }
     }
 
@@ -478,7 +524,43 @@ impl Checker {
         }
         self.widths(shape, sloc);
         self.path_keys(shape, sloc, end);
+        self.color_keys(shape, sloc, end);
         self.skin(shape, sloc, bones);
+    }
+
+    /// Colour keys: ordered, on frames that are not negative, finite, and
+    /// only where there is a fill or a stroke to colour.
+    fn color_keys(&mut self, shape: &mut fanimate_core::Shape, loc: &str, end: i32) {
+        if shape.fill_keys.is_empty() && shape.stroke_keys.is_empty() {
+            return;
+        }
+        let colour = |c: &fanimate_core::Color| [c.r, c.g, c.b, c.a].iter().all(|v| v.is_finite());
+        self.keys(&mut shape.fill_keys, colour, &format!("{loc} > fill_keys"), end);
+        self.keys(
+            &mut shape.stroke_keys,
+            colour,
+            &format!("{loc} > stroke_keys"),
+            end,
+        );
+        if shape.style.fill.is_none() && !shape.fill_keys.is_empty() {
+            self.issue(
+                Severity::Warning,
+                loc,
+                "has fill colour keys but no fill; the keys are removed".into(),
+                true,
+            );
+        }
+        if shape.style.stroke.is_none() && !shape.stroke_keys.is_empty() {
+            self.issue(
+                Severity::Warning,
+                loc,
+                "has stroke colour keys but no stroke; the keys are removed".into(),
+                true,
+            );
+        }
+        if self.repair {
+            shape.drop_orphan_color_keys();
+        }
     }
 
     /// Drawings: on frames that are not negative, in order, one per frame.
@@ -1127,6 +1209,110 @@ mod tests {
         };
         assert!(shapes[0].rect.is_none());
         assert!(validate(&doc).is_clean());
+    }
+
+    #[test]
+    fn colour_keys_are_checked_like_other_keys() {
+        use fanimate_core::{Color, Interpolation, Key, Shape, Style, Vec2};
+        let mut doc = Document::new("c", 100.0, 100.0, 24.0);
+        let mut shape = Shape::rectangle("r", Vec2::ZERO, Vec2::splat(10.0), 0.0, Style::fill(Color::BLACK));
+        shape.fill_keys = vec![
+            Key {
+                frame: 0,
+                value: Color::BLACK,
+                interp: Interpolation::Smooth,
+            },
+            Key {
+                frame: 10,
+                value: Color::WHITE,
+                interp: Interpolation::Linear,
+            },
+        ];
+        let layer = doc.new_layer("l", LayerKind::vector(vec![shape.clone()]));
+        doc.layers.push(layer);
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        // keys out of order, a colour that is not a number, and keys with nothing to colour
+        shape.fill_keys.push(Key {
+            frame: 5,
+            value: Color::rgba(f32::NAN, 0.0, 0.0, 1.0),
+            interp: Interpolation::Smooth,
+        });
+        shape.stroke_keys = vec![Key {
+            frame: 3,
+            value: Color::BLACK,
+            interp: Interpolation::Smooth,
+        }];
+        doc.layers[0].kind = LayerKind::vector(vec![shape]);
+        let report = repair(&mut doc);
+        assert!(report.repaired_count() >= 2, "{report}");
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        let LayerKind::Vector { shapes } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        assert!(shapes[0].stroke_keys.is_empty(), "no stroke, no stroke keys");
+        assert!(shapes[0].fill_keys.windows(2).all(|w| w[0].frame < w[1].frame));
+    }
+
+    #[test]
+    fn the_cameras_channels_are_checked() {
+        use fanimate_core::{Interpolation, Key, Vec2};
+        let mut doc = Document::new("c", 100.0, 100.0, 24.0);
+        doc.camera.zoom.keys = vec![Key {
+            frame: 2,
+            value: 2.0,
+            interp: Interpolation::Linear,
+        }];
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        // keys out of order, and a position that is not a number
+        doc.camera.zoom.keys.push(Key {
+            frame: 1,
+            value: 3.0,
+            interp: Interpolation::Linear,
+        });
+        doc.camera.position.keys.push(Key {
+            frame: 0,
+            value: Vec2::new(f32::NAN, 0.0),
+            interp: Interpolation::Smooth,
+        });
+        let report = repair(&mut doc);
+        assert!(report.repaired_count() >= 2, "{report}");
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        // a zoom far outside what a camera can do is a warning: it is held within range
+        doc.camera.zoom.base = 1.0e6;
+        assert_eq!(validate(&doc).issues.len(), 1);
+    }
+
+    #[test]
+    fn guides_without_a_position_are_removed() {
+        use fanimate_core::Guide;
+        let mut doc = Document::new("g", 100.0, 100.0, 24.0);
+        doc.guides = vec![
+            Guide {
+                vertical: true,
+                position: 20.0,
+                locked: false,
+            },
+            Guide {
+                vertical: false,
+                position: f32::NAN,
+                locked: false,
+            },
+        ];
+        let report = validate(&doc);
+        assert_eq!(report.issues.len(), 1, "{report}");
+        assert_eq!(repair(&mut doc).repaired_count(), 1);
+        assert_eq!(doc.guides.len(), 1);
+        assert!(validate(&doc).is_clean());
+        doc.guides = vec![
+            Guide {
+                vertical: true,
+                position: 1.0,
+                locked: false
+            };
+            MAX_GUIDES + 5
+        ];
+        assert_eq!(repair(&mut doc).repaired_count(), 1);
+        assert_eq!(doc.guides.len(), MAX_GUIDES);
     }
 
     #[test]

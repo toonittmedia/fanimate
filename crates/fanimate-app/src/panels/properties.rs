@@ -6,10 +6,11 @@
 //! animated, editing it sets a keyframe on the current frame.
 
 use eframe::egui::{self, RichText};
-use fanimate_core::{Color, LayerKind};
+use fanimate_core::{ChannelId, Color, LayerKind};
 use fanimate_editor::Action;
 
 use crate::app::Shell;
+use crate::menus;
 
 /// Call before applying a change from `r`: one undo step per drag or edit.
 pub fn begin_edit(shell: &mut Shell, r: &egui::Response, label: &'static str) {
@@ -53,22 +54,68 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     end_edits(ui, shell);
 }
 
-/// The keyframe diamond beside an animated value (drawn, not a font glyph).
-fn key_mark(ui: &mut egui::Ui, on: bool, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-    if on {
-        let (c, r) = (rect.center(), 4.0);
-        ui.painter().add(egui::Shape::convex_polygon(
-            vec![
-                c + egui::vec2(0.0, -r),
-                c + egui::vec2(r, 0.0),
-                c + egui::vec2(0.0, r),
-                c + egui::vec2(-r, 0.0),
-            ],
-            color,
-            egui::Stroke::NONE,
-        ));
+/// The keyframe diamond beside a value, as a button (drawn, not a font
+/// glyph). Filled, in the colour of how the key moves on, when the property
+/// has a key on this frame (click removes it); outlined when it is animated
+/// but has none here (click adds one, holding the value); faint when it has
+/// no keys at all (click starts animating it). Right-click for the menu.
+fn key_button(ui: &mut egui::Ui, shell: &mut Shell, ch: ChannelId) {
+    let frame = shell.editor.current_frame();
+    let (animated, key_here) = match shell.editor.channel_keys_here(ch) {
+        Some(keys) => {
+            let mut frames = Vec::new();
+            keys.frames_into(&mut frames);
+            (!frames.is_empty(), keys.interp_at(frame))
+        }
+        None => (false, None),
+    };
+    let p = shell.palette;
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    let (c, d) = (rect.center(), 5.0);
+    let diamond = vec![
+        c + egui::vec2(0.0, -d),
+        c + egui::vec2(d, 0.0),
+        c + egui::vec2(0.0, d),
+        c + egui::vec2(-d, 0.0),
+    ];
+    let (fill, stroke) = match key_here {
+        Some(interp) => (p.key_color(Some(interp)), egui::Stroke::new(1.0, p.bg)),
+        None if animated => (egui::Color32::TRANSPARENT, egui::Stroke::new(1.5, p.keyframe)),
+        None => (
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::new(
+                1.0,
+                if r.hovered() {
+                    p.text
+                } else {
+                    p.text_muted.gamma_multiply(0.6)
+                },
+            ),
+        ),
+    };
+    ui.painter()
+        .add(egui::Shape::convex_polygon(diamond, fill, stroke));
+    let tip = match (key_here, animated) {
+        (Some(_), _) => format!("Keyframe on frame {frame}. Click to remove it. Right-click for more."),
+        (None, true) => format!("Add a keyframe on frame {frame}, holding this value."),
+        (None, false) => format!("Start animating this value: add a keyframe on frame {frame}."),
+    };
+    let r = r.on_hover_text(tip);
+    if r.clicked() {
+        shell.pending.push(if key_here.is_some() {
+            Action::DeleteChannelKey(ch)
+        } else {
+            Action::AddChannelKey(ch)
+        });
     }
+    menus::context_menu(&r, |ui| {
+        menus::item(ui, shell, Action::AddChannelKey(ch));
+        menus::item(ui, shell, Action::DeleteChannelKey(ch));
+        ui.separator();
+        for interp in fanimate_core::Interpolation::ALL {
+            menus::item(ui, shell, Action::SetChannelInterpolation(ch, interp));
+        }
+    });
 }
 
 pub fn heading(ui: &mut egui::Ui, shell: &Shell, text: &str) {
@@ -93,14 +140,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
     let mut visible = l.visible;
     // sound has no picture to place or fade
     let drawn = !matches!(l.kind, LayerKind::Audio(_));
-    let animated = (
-        l.transform.position.is_animated(),
-        l.transform.rotation.is_animated(),
-        l.transform.scale.is_animated(),
-        l.opacity.is_animated(),
-    );
     let muted = shell.palette.text_muted;
-    let key_color = shell.palette.keyframe;
 
     heading(ui, shell, kind);
     egui::Grid::new("layer-props")
@@ -148,7 +188,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                 begin_edit(shell, &r, "Change opacity");
                 shell.editor.set_layer_opacity(id, opacity / 100.0);
             }
-            key_mark(ui, animated.3, key_color);
+            key_button(ui, shell, ChannelId::Opacity);
             ui.end_row();
 
             ui.label("Position");
@@ -161,7 +201,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                     }
                 }
             });
-            key_mark(ui, animated.0, key_color);
+            key_button(ui, shell, ChannelId::Position);
             ui.end_row();
 
             ui.label("Rotation");
@@ -176,7 +216,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                 t.rotation = deg.to_radians();
                 changed = Some(r);
             }
-            key_mark(ui, animated.1, key_color);
+            key_button(ui, shell, ChannelId::Rotation);
             ui.end_row();
 
             ui.label("Scale");
@@ -190,7 +230,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                 }
                 t.scale = pct / 100.0;
             });
-            key_mark(ui, animated.2, key_color);
+            key_button(ui, shell, ChannelId::Scale);
             ui.end_row();
 
             if let Some(r) = changed {
@@ -238,16 +278,20 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
             return;
         }
         ui.spacing_mut().item_spacing.x = 4.0;
-        key_mark(ui, true, key_color);
-        ui.label(
-            RichText::new(format!(
-                "marks animated values: editing them sets a keyframe on frame {}. \
-                 Other values change for the whole animation.",
-                shell.editor.current_frame()
-            ))
-            .size(11.0)
-            .color(muted),
-        );
+        let frame = shell.editor.current_frame();
+        let first = shell.editor.doc.start;
+        let text = if frame <= first {
+            format!(
+                "Frame {frame} is for drawing and setting up: edits here change the layer itself. \
+                 Click a diamond to key a value."
+            )
+        } else {
+            format!(
+                "Edits on frame {frame} are animation: they make keyframes, and frame {first} keeps \
+                 what it had. Click a diamond to key a value without changing it."
+            )
+        };
+        ui.label(RichText::new(text).size(11.0).color(muted));
     });
     if let Some(l) = shell.editor.doc.find(id)
         && let LayerKind::Frames { cels } = &l.kind
@@ -595,10 +639,101 @@ fn project(ui: &mut egui::Ui, shell: &mut Shell) {
             shell.view.fit();
         }
     }
+    camera_section(ui, shell);
     ui.add_space(8.0);
     ui.label(
         RichText::new("Select a layer to edit its properties.")
             .size(11.0)
             .color(shell.palette.text_muted),
     );
+}
+
+/// The camera: where renders look at the canvas from. Position moves it,
+/// Zoom brings it closer (100% sees all of the canvas, 200% half of it) and
+/// Roll turns it. Like layers, the first frame sets it up and later frames
+/// are keyed; the diamonds key a value on their own.
+fn camera_section(ui: &mut egui::Ui, shell: &mut Shell) {
+    ui.add_space(10.0);
+    heading(ui, shell, "Camera");
+    let frame = shell.editor.frame;
+    let cam = &shell.editor.doc.camera;
+    let (mut position, mut zoom, mut roll) = (
+        cam.position.sample(frame),
+        cam.zoom.sample(frame) * 100.0,
+        cam.roll.sample(frame).to_degrees(),
+    );
+    let (mut moved, mut zoomed, mut rolled) = (None, None, None);
+    egui::Grid::new("camera-props")
+        .num_columns(3)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Position");
+            ui.horizontal(|ui| {
+                for v in [&mut position.x, &mut position.y] {
+                    let r = ui.add(egui::DragValue::new(v).speed(1.0).max_decimals(1));
+                    if r.changed() {
+                        moved = Some(r);
+                    }
+                }
+            });
+            key_button(ui, shell, ChannelId::CameraPosition);
+            ui.end_row();
+            ui.label("Zoom");
+            let r = ui.add(
+                egui::DragValue::new(&mut zoom)
+                    .range(5.0..=5000.0)
+                    .speed(1.0)
+                    .suffix("%")
+                    .max_decimals(1),
+            );
+            if r.changed() {
+                zoomed = Some(r);
+            }
+            key_button(ui, shell, ChannelId::CameraZoom);
+            ui.end_row();
+            ui.label("Roll");
+            let r = ui.add(
+                egui::DragValue::new(&mut roll)
+                    .speed(0.5)
+                    .suffix("°")
+                    .max_decimals(1),
+            );
+            if r.changed() {
+                rolled = Some(r);
+            }
+            key_button(ui, shell, ChannelId::CameraRoll);
+            ui.end_row();
+        });
+    if let Some(r) = moved {
+        begin_edit(shell, &r, "Move camera");
+        shell.editor.set_camera_position(position);
+    }
+    if let Some(r) = zoomed {
+        begin_edit(shell, &r, "Zoom camera");
+        shell.editor.set_camera_zoom(zoom / 100.0);
+    }
+    if let Some(r) = rolled {
+        begin_edit(shell, &r, "Roll camera");
+        shell.editor.set_camera_roll(roll.to_radians());
+    }
+    ui.horizontal(|ui| {
+        let looking = shell.look_through_camera;
+        if ui
+            .selectable_label(looking, "Look through camera")
+            .on_hover_text("Show the canvas as the camera sees it. Editing is off while this is on.")
+            .clicked()
+        {
+            shell.pending.push(Action::LookThroughCamera);
+        }
+        if ui
+            .add_enabled(
+                shell.editor.can_run(Action::ResetCamera),
+                egui::Button::new("Reset"),
+            )
+            .on_hover_text("Put the camera back over the whole canvas and remove its keys")
+            .clicked()
+        {
+            shell.pending.push(Action::ResetCamera);
+        }
+    });
 }

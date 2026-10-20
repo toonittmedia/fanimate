@@ -38,6 +38,118 @@ pub fn sound_info(bytes: &[u8]) -> Result<SoundInfo, String> {
     })
 }
 
+/// The most sound a file may hold once decoded: ten minutes of stereo at
+/// 48 kHz. A bigger one would only fill the project with data nobody plays.
+const MAX_SAMPLES: usize = 48_000 * 2 * 600;
+
+/// The sound files Fanimate reads, by extension. WAV is kept as it is;
+/// the others are turned into WAV on import, so playback, scrubbing and
+/// the export mixer only ever deal with one format, and a project does not
+/// depend on a decoder being there to be played.
+pub const SOUND_EXTENSIONS: [&str; 7] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", "mp4"];
+
+/// Decode an MP3, Ogg Vorbis, FLAC or AAC (M4A) file into a 16-bit WAV file
+/// with the same sample rate and (up to two) channels. More than two channels
+/// are mixed down to one. `ext` (without the dot) helps tell the formats
+/// apart. Never panics on a damaged file: it is an error to show, or the
+/// sound up to where the damage starts.
+pub fn sound_to_wav(bytes: &[u8], ext: &str) -> Result<Vec<u8>, String> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+    use symphonia::core::errors::Error;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let unreadable = || "this is not a sound file Fanimate can read (WAV, MP3, Ogg, FLAC or AAC)".to_owned();
+    let stream = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.to_vec())), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension(ext);
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|_| unreadable())?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or("there is no sound in this file")?;
+    let id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|_| unreadable())?;
+
+    let (mut samples, mut rate, mut channels) = (Vec::<i16>::new(), 0u32, 0usize);
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            // the end of the file, or damage we cannot read past: keep what there is
+            Err(Error::IoError(_) | Error::ResetRequired | Error::DecodeError(_)) => break,
+            Err(_) => break,
+        };
+        if packet.track_id() != id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(decoded) => {
+                let spec = *decoded.spec();
+                if rate == 0 {
+                    (rate, channels) = (spec.rate, spec.channels.count());
+                } else if (rate, channels) != (spec.rate, spec.channels.count()) {
+                    // a change of layout part way through is not one sound
+                    break;
+                }
+                let mut buffer = SampleBuffer::<i16>::new(decoded.capacity() as u64, spec);
+                buffer.copy_interleaved_ref(decoded);
+                samples.extend_from_slice(buffer.samples());
+                if samples.len() > MAX_SAMPLES {
+                    return Err(
+                        "this sound is longer than ten minutes; Fanimate keeps shorter sounds".into(),
+                    );
+                }
+            }
+            // a bad packet is a click, not the end of the sound
+            Err(Error::DecodeError(_)) => continue,
+            Err(_) => break,
+        }
+    }
+    if samples.is_empty() || rate == 0 || channels == 0 {
+        return Err("there is no sound in this file".into());
+    }
+    // a damaged header can claim any rate; the WAV writer needs a believable one
+    if !(1_000..=768_000).contains(&rate) {
+        return Err(format!("the sample rate {rate} Hz is not one Fanimate can use"));
+    }
+    let out_channels = if channels <= 2 { channels } else { 1 };
+    if channels > 2 {
+        samples = samples
+            .chunks_exact(channels)
+            .map(|frame| (frame.iter().map(|s| i32::from(*s)).sum::<i32>() / channels as i32) as i16)
+            .collect();
+    }
+    let spec = hound::WavSpec {
+        channels: out_channels as u16,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut out, spec).map_err(|e| e.to_string())?;
+        for s in &samples {
+            writer.write_sample(*s).map_err(|e| e.to_string())?;
+        }
+        writer.finalize().map_err(|e| e.to_string())?;
+    }
+    Ok(out.into_inner())
+}
+
 /// One mouth shape from Rhubarb, starting `start` seconds into the sound.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct MouthCue {
@@ -75,9 +187,19 @@ fn mouth_names(shape: &str) -> &'static [&'static str] {
 }
 
 impl Editor {
-    /// Import a WAV file as an audio layer starting on the current frame.
-    /// One undo step.
+    /// Import a sound file as an audio layer starting on the current frame:
+    /// a WAV as it is, an MP3, Ogg, FLAC or AAC file turned into WAV first
+    /// (see [`sound_to_wav`]). One undo step.
     pub fn import_audio(&mut self, name: &str, bytes: Vec<u8>) -> Result<LayerId, String> {
+        let ext = std::path::Path::new(name)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let bytes = if ext == "wav" || bytes.starts_with(b"RIFF") {
+            bytes
+        } else {
+            sound_to_wav(&bytes, &ext)?
+        };
         let info = sound_info(&bytes)?;
         self.checkpoint("Import sound");
         let media = MediaFile::name_for(&bytes, "wav");
@@ -229,6 +351,92 @@ mod tests {
             w.finalize().unwrap();
         }
         bytes
+    }
+
+    fn stereo_wav(frames: usize, rate: u32) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut bytes = Vec::new();
+        {
+            let mut w = hound::WavWriter::new(std::io::Cursor::new(&mut bytes), spec).unwrap();
+            for i in 0..frames as i32 {
+                w.write_sample((i % 1000) as i16).unwrap();
+                w.write_sample(-((i % 1000) as i16)).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_decoded_sound_keeps_its_rate_channels_and_length() {
+        // WAV goes through the same decoder as MP3, Ogg, FLAC and AAC
+        let src = stereo_wav(4410, 44_100);
+        let out = sound_to_wav(&src, "wav").expect("a wav decodes");
+        let info = sound_info(&out).unwrap();
+        assert_eq!((info.channels, info.sample_rate), (2, 44_100));
+        assert!((info.seconds - 0.1).abs() < 0.002, "{}", info.seconds);
+        let samples: Vec<i16> = hound::WavReader::new(std::io::Cursor::new(&out))
+            .unwrap()
+            .samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            &samples[..6],
+            &[0, 0, 1, -1, 2, -2],
+            "the samples are the ones in the file"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_sound_is_an_error_and_never_a_panic() {
+        for junk in [
+            &b""[..],
+            b"hello",
+            &[0u8; 4096],
+            b"ID3\x04\x00\x00\x00\x00\x00\x00garbage",
+        ] {
+            for ext in ["mp3", "ogg", "flac", "m4a", "wav", ""] {
+                assert!(sound_to_wav(junk, ext).is_err(), "{ext}: {junk:?}");
+            }
+        }
+        // a file cut short keeps the sound up to the cut, or is refused, but cannot crash
+        let src = stereo_wav(4410, 44_100);
+        for cut in [44, 100, src.len() / 2, src.len() - 1] {
+            let _ = sound_to_wav(&src[..cut], "wav");
+        }
+        // every byte changed one at a time in the header: still no panic
+        for i in 0..44 {
+            let mut bad = src.clone();
+            bad[i] ^= 0xFF;
+            let _ = sound_to_wav(&bad, "wav");
+        }
+    }
+
+    #[test]
+    fn importing_a_sound_that_cannot_be_read_adds_nothing() {
+        let mut ed = Editor::untitled();
+        let layers = ed.doc.layer_count();
+        let err = ed
+            .import_audio("voice.mp3", b"this is not an mp3".to_vec())
+            .unwrap_err();
+        assert!(err.contains("not a sound file"), "{err}");
+        assert_eq!(ed.doc.layer_count(), layers);
+        assert!(ed.history.undo_label().is_none(), "no undo step for nothing");
+        // a WAV named as something else is still a WAV
+        let id = ed
+            .import_audio("voice.flac", wav(0.5))
+            .expect("it is a wav inside");
+        assert!(ed.doc.find(id).is_some());
+        for ext in SOUND_EXTENSIONS {
+            assert!(
+                !ext.starts_with('.') && ext.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            );
+        }
     }
 
     fn mouths() -> (Editor, LayerId) {

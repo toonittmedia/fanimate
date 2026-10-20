@@ -59,11 +59,48 @@ impl Editor {
 
     /// Set the style of shape `index` of the shapes the tools edit on layer
     /// `id`. Does not checkpoint; callers checkpoint once per gesture.
+    ///
+    /// Colours follow the keying rule (see [`Keying`]): on the first frame
+    /// they change outright; on a later frame the change is a colour
+    /// keyframe, and the first frame keeps the colour it had. The stroke's
+    /// width is not animated, and turning a fill or stroke on or off ends
+    /// that colour's animation.
     pub fn set_shape_style(&mut self, id: LayerId, index: usize, style: fanimate_core::Style) {
-        if let Some(s) = self.layer_shapes_mut(id).and_then(|s| s.get_mut(index)) {
-            s.style = style;
-            self.dirty = true;
+        let frame = self.current_frame();
+        let keying = self.keying();
+        let Some(s) = self.layer_shapes_mut(id).and_then(|s| s.get_mut(index)) else {
+            return;
+        };
+        // what the person changing it was looking at: the colours as they are now
+        let now = s.style_at(frame as f32);
+        match (now.fill, style.fill) {
+            (Some(a), Some(b)) => {
+                if a != b {
+                    s.set_fill_at(frame, b, keying);
+                }
+            }
+            (_, fill) => {
+                s.style.fill = fill;
+                s.fill_keys.clear();
+            }
         }
+        match (now.stroke, style.stroke) {
+            (Some(a), Some(b)) => {
+                if a.color != b.color {
+                    s.set_stroke_color_at(frame, b.color, keying);
+                }
+                if a.width != b.width
+                    && let Some(stroke) = &mut s.style.stroke
+                {
+                    stroke.width = b.width;
+                }
+            }
+            (_, stroke) => {
+                s.style.stroke = stroke;
+                s.stroke_keys.clear();
+            }
+        }
+        self.dirty = true;
     }
 
     /// Move shape `from` to position `to` (both indices in the current
@@ -90,7 +127,7 @@ impl Editor {
     /// Whether a drawn item is one the tools edit: any shape of a vector
     /// layer, or a shape in the active sub-layer of a drawing.
     pub(super) fn editable(&self, item: &DrawItem<'_>) -> bool {
-        item.image.is_none() && item.part.is_none_or(|p| p == self.part)
+        item.image.is_none() && item.part.is_none_or(|p| p == self.part) && !self.is_locked(item.layer)
     }
 
     /// Start a new, empty drawing on the current frame of the selected

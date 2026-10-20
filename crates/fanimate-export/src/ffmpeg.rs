@@ -294,6 +294,7 @@ mod tests {
             start: 0,
             end: 47,
             ffmpeg: None,
+            overwrite: true,
         }
     }
 

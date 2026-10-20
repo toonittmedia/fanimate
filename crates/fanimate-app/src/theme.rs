@@ -13,13 +13,15 @@ const INTER: &[u8] = include_bytes!("../../../brand/fonts/Inter-Variable.ttf");
 pub enum Theme {
     Night,
     Day,
+    // last, so a theme this version no longer has (High Contrast was
+    // removed) reads back from saved settings as the default
     #[default]
+    #[serde(other)]
     StudioGrey,
-    HighContrast,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 4] = [Self::Night, Self::Day, Self::StudioGrey, Self::HighContrast];
+    pub const ALL: [Theme; 3] = [Self::Night, Self::Day, Self::StudioGrey];
 
     /// A stable name, for the command line.
     pub fn id(self) -> &'static str {
@@ -35,7 +37,6 @@ impl Theme {
             Self::Night => "night",
             Self::Day => "day",
             Self::StudioGrey => "studio-grey",
-            Self::HighContrast => "high-contrast",
         }
     }
 
@@ -44,7 +45,6 @@ impl Theme {
             Self::Night => "Fanimate Night",
             Self::Day => "Fanimate Day",
             Self::StudioGrey => "Studio Grey",
-            Self::HighContrast => "High Contrast",
         }
     }
 }
@@ -64,6 +64,9 @@ pub struct Palette {
     pub button: Color32,
     pub on_button: Color32,
     pub keyframe: Color32,
+    /// Keys that ease in linearly (blue) and that hold then jump (red).
+    pub keyframe_linear: Color32,
+    pub keyframe_step: Color32,
     pub bone: Color32,
     pub success: Color32,
     pub error: Color32,
@@ -98,6 +101,17 @@ fn hex(s: &str) -> Color32 {
 }
 
 impl Palette {
+    /// The colour of a key by how it moves on: smooth keeps the keyframe
+    /// amber, linear is blue and step is red. Mixed keys stay amber.
+    pub fn key_color(&self, interp: Option<fanimate_core::Interpolation>) -> Color32 {
+        use fanimate_core::Interpolation;
+        match interp {
+            Some(Interpolation::Linear) => self.keyframe_linear,
+            Some(Interpolation::Step) => self.keyframe_step,
+            _ => self.keyframe,
+        }
+    }
+
     pub fn of(theme: Theme) -> Self {
         let tokens: serde_json::Value = serde_json::from_str(TOKENS).expect("tokens.json is valid JSON");
         let t = &tokens["themes"][theme.token_key()];
@@ -115,6 +129,8 @@ impl Palette {
             button: c("button"),
             on_button: c("on-button"),
             keyframe: c("keyframe"),
+            keyframe_linear: c("keyframe-linear"),
+            keyframe_step: c("keyframe-step"),
             bone: c("bone"),
             success: c("success"),
             error: c("error"),
@@ -246,6 +262,24 @@ pub fn menu_style(style: &mut egui::Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_high_contrast_theme_reads_back_as_the_default() {
+        let t: Theme = serde_json::from_str("\"HighContrast\"").unwrap();
+        assert_eq!(t, Theme::StudioGrey);
+        assert_eq!(serde_json::from_str::<Theme>("\"Night\"").unwrap(), Theme::Night);
+        assert_eq!(Theme::from_id("high-contrast"), None);
+    }
+
+    #[test]
+    fn every_theme_has_every_colour() {
+        for theme in Theme::ALL {
+            let p = Palette::of(theme);
+            for c in [p.keyframe, p.keyframe_linear, p.keyframe_step] {
+                assert_ne!(c, Color32::from_rgb(0xFF, 0, 0xFF), "{theme:?}");
+            }
+        }
+    }
 
     #[test]
     fn every_label_has_a_colour() {

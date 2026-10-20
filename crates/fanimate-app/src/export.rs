@@ -1,17 +1,18 @@
-//! Export Video: a small floating window (not modal: the animator can keep
-//! working) that adds a render to the queue, and the render progress shown
-//! in the status bar.
+//! Export Video: a dialog that adds a render to the queue, and the render
+//! progress shown in the status bar. The render itself runs in the render
+//! queue's own window, so the animator keeps working once it is queued.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, RichText, vec2};
 use fanimate_core::Frame;
 use fanimate_editor::StatusKind;
 use fanimate_export::{Format, Queue, Settings, State};
 
 use crate::app::Shell;
 use crate::formats::{self, VideoTools};
+use crate::kit::{self, Backdrop};
 use crate::render_queue;
 
 /// The Export Video window's choices.
@@ -23,8 +24,12 @@ pub struct ExportForm {
     keep_aspect: bool,
     start: Frame,
     end: Frame,
-    /// Without its extension; the format adds it.
-    output: PathBuf,
+    /// The folder to write into, and the file's name without its extension
+    /// (the format adds that).
+    dir: PathBuf,
+    name: String,
+    /// Replace a file that is already there.
+    overwrite: bool,
 }
 
 /// Why a render cannot be queued yet.
@@ -47,13 +52,13 @@ impl ExportForm {
     pub fn new(shell: &Shell, format: Format) -> Self {
         let doc = &shell.editor.doc;
         let s = Settings::for_doc(doc, format);
-        // next to the project, or in the Videos folder
+        let project = shell.editor.path.as_deref().and_then(Path::parent);
+        // where the last render went, else next to the project, else Videos
         let dir = shell
-            .editor
-            .path
-            .as_deref()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
+            .last_export
+            .clone()
+            .filter(|d| d.is_dir())
+            .or_else(|| project.map(Path::to_path_buf))
             .or_else(videos_folder)
             .unwrap_or_default();
         let name = shell
@@ -69,7 +74,9 @@ impl ExportForm {
             keep_aspect: true,
             start: s.start,
             end: s.end,
-            output: dir.join(safe_name(&name)),
+            dir,
+            name: safe_name(&name),
+            overwrite: false,
         }
     }
 
@@ -82,11 +89,23 @@ impl ExportForm {
             start: self.start,
             end: self.end,
             ffmpeg: ffmpeg.map(Path::to_path_buf),
+            overwrite: self.overwrite,
         }
     }
 
+    /// The file this would write. The format's extension is added to the
+    /// name as typed, so a name with a dot in it ("take 2.5") keeps it.
     fn output(&self) -> PathBuf {
-        self.format.output(&self.output)
+        let ext = self.format.extension();
+        let name = self.name.trim();
+        let typed = Path::new(name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext));
+        self.dir.join(if typed {
+            name.to_owned()
+        } else {
+            format!("{name}.{ext}")
+        })
     }
 
     /// Why the render cannot be queued yet.
@@ -107,15 +126,24 @@ impl ExportForm {
                 self.format.label()
             )));
         }
-        let out = self.output();
-        match out.parent() {
-            Some(dir) if dir.as_os_str().is_empty() || !dir.is_dir() => {
-                Some(Problem::new("Choose a folder that exists to save into."))
-            }
-            None => Some(Problem::new("Choose where to save.")),
-            _ if out.file_stem().is_none_or(|s| s.is_empty()) => Some(Problem::new("Give the file a name.")),
-            _ => None,
+        if self.dir.as_os_str().is_empty() || !self.dir.is_dir() {
+            return Some(Problem::new("Choose a folder that exists to save into."));
         }
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Some(Problem::new("Give the file a name."));
+        }
+        if safe_name(name) != name {
+            return Some(Problem::new(
+                "The name cannot hold any of these characters: < > : \" / \\ | ? *",
+            ));
+        }
+        if !self.overwrite && fanimate_export::existing_output(&self.output(), self.format).is_some() {
+            return Some(Problem::new(
+                "A file with this name is already there. Tick Overwrite existing file to replace it.",
+            ));
+        }
+        None
     }
 }
 
@@ -152,31 +180,30 @@ fn safe_name(name: &str) -> String {
     }
 }
 
-/// The Export Video window, while open.
+/// The Export Video dialog, while open.
 pub fn window(ctx: &egui::Context, shell: &mut Shell) {
     let Some(mut form) = shell.ui.export.take() else {
         return;
     };
     let p = shell.palette;
-    let mut open = true;
     let mut queue_it = false;
     let doc_aspect = shell.editor.doc.width / shell.editor.doc.height.max(1.0);
-    egui::Window::new("Export Video")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(380.0)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
-        .show(ctx, |ui| {
-            egui::Grid::new("export-form")
-                .num_columns(2)
-                .spacing([10.0, 8.0])
-                .show(ui, |ui| {
+    let (doc_start, doc_end) = (shell.editor.doc.start, shell.editor.doc.end);
+    let closed = kit::modal(
+        ctx,
+        &p,
+        "export",
+        "Export Video",
+        vec2(500.0, 600.0),
+        // a click beside the dialog must not throw away a typed name
+        Backdrop::Ignored,
+        |ui| {
+            kit::section(ui, &p, "Format", |ui| {
+                kit::form(ui, "export-format-form", |ui| {
                     ui.label("Format");
                     egui::ComboBox::from_id_salt("export-format")
                         .selected_text(form.format.label())
-                        .width(240.0)
+                        .width(260.0)
                         // every format at once, without scrolling
                         .height(560.0)
                         .show_ui(ui, |ui| {
@@ -200,24 +227,23 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
                             }
                         });
                     ui.end_row();
+                });
+                ui.add_space(4.0);
+                kit::note(ui, &p, form.format.hint());
+                if let Ok(maker) = shell.video.maker(form.format) {
+                    kit::note(ui, &p, maker);
+                }
+            });
 
-                    ui.label("");
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(form.format.hint()).size(11.0).color(p.text_muted));
-                        if let Ok(maker) = shell.video.maker(form.format) {
-                            ui.label(RichText::new(maker).size(11.0).color(p.text_muted));
-                        }
-                    });
-                    ui.end_row();
-
-                    ui.label("Size");
-                    ui.horizontal(|ui| {
+            kit::section(ui, &p, "Size", |ui| {
+                kit::form(ui, "export-size-form", |ui| {
+                    kit::row(ui, "Picture size", |ui| {
                         let w = ui.add(
                             egui::DragValue::new(&mut form.width)
                                 .range(2..=16384)
                                 .suffix(" px"),
                         );
-                        ui.label("x");
+                        ui.label("×");
                         let h = ui.add(
                             egui::DragValue::new(&mut form.height)
                                 .range(2..=16384)
@@ -230,10 +256,7 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
                             form.width = (form.height as f32 * doc_aspect).round().max(2.0) as u32;
                         }
                     });
-                    ui.end_row();
-
-                    ui.label("");
-                    ui.horizontal(|ui| {
+                    kit::row(ui, "", |ui| {
                         ui.checkbox(&mut form.keep_aspect, "Keep shape");
                         for (label, scale) in [("100%", 1.0), ("50%", 0.5)] {
                             if ui.small_button(label).clicked() {
@@ -242,37 +265,52 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
                             }
                         }
                     });
-                    ui.end_row();
+                });
+            });
 
-                    ui.label("Frames");
-                    ui.horizontal(|ui| {
+            kit::section(ui, &p, "Frames", |ui| {
+                kit::form(ui, "export-frames-form", |ui| {
+                    kit::row(ui, "Frames", |ui| {
                         let last = form.end;
                         ui.add(egui::DragValue::new(&mut form.start).range(0..=last));
                         ui.label("to");
                         let first = form.start;
                         ui.add(egui::DragValue::new(&mut form.end).range(first..=Frame::MAX));
+                        let whole = (form.start, form.end) == (doc_start, doc_end);
+                        if ui
+                            .add_enabled(!whole, egui::Button::new("Entire animation"))
+                            .on_hover_text("The first to the last frame of the project")
+                            .clicked()
+                        {
+                            form.start = doc_start;
+                            form.end = doc_end;
+                        }
                     });
-                    ui.end_row();
-
-                    ui.label("Save as");
-                    ui.horizontal(|ui| {
-                        let shown = form.output().display().to_string();
-                        ui.add(
-                            egui::Label::new(RichText::new(shown.clone()).color(p.text_muted))
-                                .truncate()
-                                .selectable(false),
-                        )
-                        .on_hover_text(shown);
-                    });
-                    ui.end_row();
-
-                    ui.label("");
-                    if ui.button("Browse…").clicked() {
-                        browse(&mut form);
-                    }
-                    ui.end_row();
                 });
-            ui.add_space(4.0);
+            });
+
+            kit::section(ui, &p, "Output", |ui| {
+                kit::form(ui, "export-output-form", |ui| {
+                    kit::row(ui, "Folder", |ui| {
+                        crate::places::folder_picker(
+                            ui,
+                            "export-folder",
+                            &mut form.dir,
+                            &shell.places,
+                            shell.editor.path.as_deref().and_then(Path::parent),
+                            "Export into",
+                        );
+                    });
+                    kit::row(ui, "File name", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(240.0));
+                        ui.label(RichText::new(format!(".{}", form.format.extension())).color(p.text_muted));
+                    });
+                    kit::row(ui, "", |ui| {
+                        ui.checkbox(&mut form.overwrite, "Overwrite existing file");
+                    });
+                });
+            });
+
             let s = form.settings(None).sanitized();
             let seconds = s.frame_count() as f32 / shell.editor.doc.fps.max(1.0);
             let mut notes = vec![format!("{} frames, {seconds:.1} seconds", s.frame_count())];
@@ -284,64 +322,37 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
             if (s.width, s.height) != (form.width, form.height) {
                 notes.push(format!("made {}x{} for video", s.width, s.height));
             }
-            ui.label(RichText::new(notes.join(", ")).size(11.0).color(p.text_muted));
+            kit::note(ui, &p, notes.join(", "));
             let problem = form.problem(&shell.video);
             if let Some(problem) = &problem {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(&problem.text).size(11.0).color(p.error));
+                    ui.label(RichText::new(&problem.text).size(11.5).color(p.error));
                     if problem.needs_ffmpeg && ui.small_button("Set up FFmpeg…").clicked() {
                         shell.ui.show_preferences = true;
+                        shell.ui.prefs_page = crate::dialogs::PrefsPage::Video;
                     }
                 });
+            } else if fanimate_export::existing_output(&form.output(), form.format).is_some() {
+                kit::note(ui, &p, "The file already there will be replaced.");
             }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let add =
-                    egui::Button::new(RichText::new("Add to Render Queue").color(p.on_button)).fill(p.button);
-                if ui.add_enabled(problem.is_none(), add).clicked() {
+            kit::footer(ui, |ui| {
+                let add = ui.add_enabled(problem.is_none(), kit::primary(&p, "Add to Render Queue"));
+                if add.clicked() {
                     queue_it = true;
                 }
                 ui.label(
                     RichText::new("Renders in its own window; you can keep working.")
-                        .size(11.0)
+                        .size(11.5)
                         .color(p.text_muted),
                 );
             });
-        });
+        },
+    );
     shell.export_format = form.format;
     if queue_it {
         add_to_queue(shell, &form);
-        open = false;
-    }
-    if open {
+    } else if !closed {
         shell.ui.export = Some(form);
-    }
-}
-
-fn browse(form: &mut ExportForm) {
-    let ext = form.format.extension();
-    let mut dialog = rfd::FileDialog::new()
-        .set_title("Export Video")
-        .add_filter(form.format.label(), &[ext])
-        .set_file_name(format!(
-            "{}.{ext}",
-            form.output.file_name().unwrap_or_default().to_string_lossy()
-        ));
-    if let Some(dir) = form.output.parent().filter(|d| d.is_dir()) {
-        dialog = dialog.set_directory(dir);
-    }
-    if let Some(path) = dialog.save_file() {
-        // a typed extension names the format, unless the chosen one
-        // already writes it (.mp4 is H.264, H.265 or AV1)
-        if let Some(e) = path.extension()
-            && !e.eq_ignore_ascii_case(form.format.extension())
-            && let Some(f) = Format::ALL
-                .into_iter()
-                .find(|f| e.eq_ignore_ascii_case(f.extension()))
-        {
-            form.format = f;
-        }
-        form.output = path.with_extension("");
     }
 }
 
@@ -354,6 +365,8 @@ fn add_to_queue(shell: &mut Shell, form: &ExportForm) {
         return;
     };
     let output = form.output();
+    shell.last_export = Some(form.dir.clone());
+    shell.places.remember(&form.dir);
     let doc = shell.editor.doc.mainline();
     match queue.add(&doc, &output, &form.settings(shell.video.chosen.as_deref())) {
         Ok(id) => {
@@ -452,6 +465,56 @@ mod tests {
         assert_eq!(safe_name("Walk: take 2?"), "Walk_ take 2_");
         assert_eq!(safe_name("  "), "Animation");
         assert_eq!(safe_name("end."), "end");
+    }
+
+    fn form(dir: &Path, name: &str) -> ExportForm {
+        ExportForm {
+            format: Format::Gif,
+            width: 64,
+            height: 36,
+            keep_aspect: true,
+            start: 0,
+            end: 9,
+            dir: dir.to_path_buf(),
+            name: name.into(),
+            overwrite: false,
+        }
+    }
+
+    #[test]
+    fn the_extension_is_added_to_the_name_as_typed() {
+        let d = Path::new("/out");
+        assert_eq!(form(d, "walk").output(), d.join("walk.gif"));
+        // a dot in the name is part of it
+        assert_eq!(form(d, "take 2.5").output(), d.join("take 2.5.gif"));
+        // typing the extension does not double it
+        assert_eq!(form(d, "walk.GIF").output(), d.join("walk.GIF"));
+        assert_eq!(form(d, "  walk ").output(), d.join("walk.gif"));
+    }
+
+    #[test]
+    fn a_file_already_there_stops_the_export_unless_it_may_be_replaced() {
+        let dir = std::env::temp_dir().join(format!("fanimate-export-form-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // not looking for encoders, so GIF (made by Fanimate) is simply fine
+        let tools = VideoTools::default();
+        let mut f = form(&dir, "walk");
+        let problem = |f: &ExportForm| f.problem(&tools).map(|p| p.text);
+        assert_eq!(problem(&f), None);
+        std::fs::write(dir.join("walk.gif"), b"old").unwrap();
+        let blocked = problem(&f).expect("the file is there");
+        assert!(blocked.contains("Overwrite existing file"), "{blocked}");
+        f.overwrite = true;
+        assert_eq!(problem(&f), None);
+        f.name = "a/b".into();
+        assert!(problem(&f).unwrap().contains("cannot hold"));
+        f.name = "".into();
+        assert!(problem(&f).unwrap().contains("name"));
+        f.dir = dir.join("missing");
+        f.name = "walk".into();
+        assert!(problem(&f).unwrap().contains("folder"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

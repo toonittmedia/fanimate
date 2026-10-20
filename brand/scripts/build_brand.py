@@ -399,7 +399,7 @@ def themes_css():
     lines += ["", "@media (prefers-color-scheme: light) {"]
     lines += ["  " + l if l else l for l in block(':root:not([data-theme])', "day")]
     lines += ["}"]
-    for theme in ("day", "studio-grey", "high-contrast"):
+    for theme in ("day", "studio-grey"):
         lines += block(f'[data-theme="{theme}"]', theme)
     return "\n".join(lines) + "\n"
 

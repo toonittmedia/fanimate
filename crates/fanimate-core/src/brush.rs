@@ -217,6 +217,67 @@ pub fn build_stroke(samples: &[BrushSample], opts: &BrushOptions) -> Option<Shap
     Some(shape)
 }
 
+/// Build a closed shape from a sketched outline: the outline simplified to
+/// within `tolerance`, joined with smooth curves that pass through every kept
+/// point, and closed from the last point back to the first.
+///
+/// Returns `None` when the sketch has no inside: fewer than three distinct
+/// points are left, or the points lie along one line. The pen need not return
+/// to where it started.
+pub fn build_outline(samples: &[BrushSample], tolerance: f32, style: Style) -> Option<Shape> {
+    let mut positions: Vec<Vec2> = Vec::with_capacity(samples.len());
+    for s in samples.iter().filter(|s| s.pos.is_finite()) {
+        if positions.last().is_none_or(|p| p.distance(s.pos) > 1e-4) {
+            positions.push(s.pos);
+        }
+    }
+    // a pen that ended on its start does not repeat it
+    while positions.len() > 1
+        && positions
+            .first()
+            .zip(positions.last())
+            .is_some_and(|(a, b)| a.distance(*b) <= tolerance)
+    {
+        positions.pop();
+    }
+    if positions.len() < 3 {
+        return None;
+    }
+    let widths = vec![1.0; positions.len()];
+    let kept: Vec<Vec2> = simplify(&positions, &widths, 0.0, tolerance.max(0.0))
+        .into_iter()
+        .map(|i| positions[i])
+        .collect();
+    if kept.len() < 3 {
+        return None;
+    }
+    // all on one line: nothing inside
+    let (a, b) = (kept[0], kept[kept.len() / 2]);
+    let wide = kept
+        .iter()
+        .any(|p| ((*p - a).perp_dot(b - a)).abs() > tolerance.max(1e-3) * a.distance(b).max(1e-3));
+    if !wide {
+        return None;
+    }
+    Some(Shape::new("Shape", smooth_closed_path(&kept), style))
+}
+
+/// A closed path through `points` with smooth (Catmull-Rom) curves, going
+/// round from the last point to the first.
+fn smooth_closed_path(points: &[Vec2]) -> Path {
+    let n = points.len() as isize;
+    let at = |i: isize| points[i.rem_euclid(n) as usize];
+    let mut path = Path::new().move_to(points[0]);
+    for i in 0..n {
+        let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+        let limit = p1.distance(p2) / 2.0;
+        let c1 = p1 + ((p2 - p0) / 6.0).clamp_length_max(limit);
+        let c2 = p2 - ((p3 - p1) / 6.0).clamp_length_max(limit);
+        path = path.cubic_to(c1, c2, p2);
+    }
+    path.close()
+}
+
 fn pressure_width(pressure: f32) -> f32 {
     MIN_PRESSURE_WIDTH + (1.0 - MIN_PRESSURE_WIDTH) * pressure.clamp(0.0, 1.0)
 }
@@ -430,6 +491,60 @@ mod tests {
         (0..n)
             .map(|i| BrushSample::new(from.lerp(to, i as f32 / (n - 1) as f32), 1.0))
             .collect()
+    }
+
+    fn circle_samples(n: usize, radius: f32) -> Vec<BrushSample> {
+        (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                BrushSample::new(Vec2::new(a.cos(), a.sin()) * radius, 1.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_sketched_loop_becomes_a_closed_smooth_shape() {
+        let style = Style::fill(Color::WHITE);
+        let shape = build_outline(&circle_samples(120, 100.0), 0.5, style).expect("a loop has an inside");
+        assert_eq!(shape.style, style);
+        assert!(
+            shape.path.cmds.iter().any(|c| matches!(c, PathCmd::Close)),
+            "closed"
+        );
+        // smooth: curves, and far fewer points than were sketched
+        assert!(shape.path.cmds.iter().any(|c| matches!(c, PathCmd::CubicTo(..))));
+        assert!(
+            shape.path.on_curve_count() < 60,
+            "{}",
+            shape.path.on_curve_count()
+        );
+        // and it still is the loop that was drawn: every kept point on the circle
+        for p in shape.path.on_curve_points() {
+            assert!((p.length() - 100.0).abs() < 1.0, "{p}");
+        }
+        assert!(shape.widths.is_none(), "an outline has an even stroke");
+    }
+
+    #[test]
+    fn a_pen_that_stops_short_of_its_start_still_closes() {
+        // three quarters of a circle: the shape closes across the gap
+        let mut samples = circle_samples(120, 50.0);
+        samples.truncate(90);
+        let shape =
+            build_outline(&samples, 0.5, Style::fill(Color::BLACK)).expect("three quarters has an inside");
+        assert!(shape.path.cmds.iter().any(|c| matches!(c, PathCmd::Close)));
+    }
+
+    #[test]
+    fn a_sketch_with_no_inside_makes_no_shape() {
+        let style = Style::fill(Color::BLACK);
+        // a dab, a short line and a straight line all enclose nothing
+        assert!(build_outline(&[BrushSample::new(Vec2::ZERO, 1.0)], 0.5, style).is_none());
+        assert!(build_outline(&line(Vec2::ZERO, Vec2::new(100.0, 0.0), 30), 0.5, style).is_none());
+        assert!(build_outline(&[], 0.5, style).is_none());
+        // a sketch that goes nowhere finite is not a shape either
+        let bad = [BrushSample::new(Vec2::new(f32::NAN, 0.0), 1.0); 5];
+        assert!(build_outline(&bad, 0.5, style).is_none());
     }
 
     fn end_points(shape: &Shape) -> (Vec2, Vec2) {

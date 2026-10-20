@@ -20,6 +20,7 @@ use std::path::Path;
 mod colour;
 #[cfg(target_os = "macos")]
 mod mac;
+mod taskbar;
 #[cfg(windows)]
 mod win;
 
@@ -27,6 +28,8 @@ mod win;
 use mac as imp;
 #[cfg(windows)]
 use win as imp;
+
+pub use taskbar::{TaskbarProgress, set_taskbar_progress};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

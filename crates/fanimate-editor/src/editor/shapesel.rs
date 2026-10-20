@@ -289,7 +289,7 @@ impl Editor {
     }
 
     /// The selected layers and everything inside them.
-    fn selected_with_children(&self) -> Vec<LayerId> {
+    pub(super) fn selected_with_children(&self) -> Vec<LayerId> {
         let roots = self.selected_roots();
         let mut ids = Vec::new();
         self.doc.walk(|l| {

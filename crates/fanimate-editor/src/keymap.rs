@@ -183,8 +183,8 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Ctrl+Shift+Tab", PreviousDocument),
     ("Ctrl+S", Save),
     ("Ctrl+Shift+S", SaveAs),
-    // Adobe Animate's Import to Stage
-    ("Ctrl+R", Import),
+    ("Ctrl+I", Import),
+    ("Ctrl+R", RenderPreviewFrame),
     ("Ctrl+Shift+R", ExportVideo),
     ("Ctrl+Q", Quit),
     // Edit
@@ -214,6 +214,7 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Ctrl+CloseBracket", MoveLayerUp),
     ("Ctrl+OpenBracket", MoveLayerDown),
     ("Ctrl+Shift+H", ToggleVisibility),
+    ("Ctrl+L", ToggleLock),
     ("Ctrl+Shift+I", LayerProperties),
     ("Ctrl+B", BindToBone),
     ("Ctrl+Shift+B", BindSmoothly),

@@ -249,6 +249,19 @@ pub struct Settings {
     /// `None` looks for one (see [`crate::ffmpeg::find`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ffmpeg: Option<PathBuf>,
+    /// Replace a file that is already there. Off, an export that would
+    /// replace one stops before rendering. Jobs queued before this setting
+    /// existed replaced files, so a missing value means yes.
+    #[serde(default = "replace_by_default", skip_serializing_if = "is_replace")]
+    pub overwrite: bool,
+}
+
+fn replace_by_default() -> bool {
+    true
+}
+
+fn is_replace(overwrite: &bool) -> bool {
+    *overwrite
 }
 
 impl Settings {
@@ -261,6 +274,7 @@ impl Settings {
             start: doc.start,
             end: doc.end,
             ffmpeg: None,
+            overwrite: true,
         }
     }
 
@@ -286,6 +300,7 @@ impl Settings {
             start: self.start.max(0),
             end: self.end.max(self.start.max(0)),
             ffmpeg: self.ffmpeg.clone(),
+            overwrite: self.overwrite,
         }
     }
 }
@@ -303,6 +318,7 @@ mod tests {
             start: 5,
             end: 2,
             ffmpeg: None,
+            overwrite: true,
         }
         .sanitized();
         assert_eq!((s.width, s.height, s.start, s.end), (642, 2, 5, 5));

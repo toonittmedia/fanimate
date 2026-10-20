@@ -79,7 +79,6 @@ Four themes are defined in [`tokens/tokens.json`](tokens/tokens.json):
 | **Fanimate Night** | Default. Purple-tinted dark. |
 | **Fanimate Day** | Light. Also the website and docs theme. |
 | **Fanimate Studio Grey** | Neutral greys with a purple accent, for colour-critical work. |
-| **High contrast** | Accessibility. |
 
 `tokens/themes.css` exposes them as CSS custom properties. Night is the default; Day applies when the system prefers light; any theme can be forced with `data-theme`:
 

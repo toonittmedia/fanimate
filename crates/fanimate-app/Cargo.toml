@@ -23,6 +23,7 @@ fanimate-oscodec.workspace = true
 env_logger.workspace = true
 log.workspace = true
 pollster.workspace = true
+raw-window-handle = "0.6"
 wgpu.workspace = true
 winit.workspace = true
 image.workspace = true

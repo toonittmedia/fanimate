@@ -27,8 +27,6 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(6);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tab {
-    Tools,
-    Canvas,
     Timeline,
     Layers,
     Properties,
@@ -40,9 +38,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [
-        Self::Canvas,
-        Self::Tools,
+    pub const ALL: [Tab; 8] = [
         Self::Layers,
         Self::Timeline,
         Self::Properties,
@@ -55,8 +51,6 @@ impl Tab {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Tools => "Tools",
-            Self::Canvas => "Canvas",
             Self::Timeline => "Timeline",
             Self::Layers => "Layers",
             Self::Properties => "Properties",
@@ -87,8 +81,6 @@ impl egui_dock::TabViewer for TabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
         let shell = &mut *self.shell;
         match tab {
-            Tab::Tools => tools::show(ui, shell),
-            Tab::Canvas => canvas::show(ui, shell),
             Tab::Timeline => timeline::show(ui, shell),
             Tab::Layers => layers::show(ui, shell),
             Tab::Properties => properties::show(ui, shell),
@@ -100,18 +92,22 @@ impl egui_dock::TabViewer for TabViewer<'_> {
         }
     }
 
-    fn is_closeable(&self, tab: &Tab) -> bool {
-        *tab != Tab::Canvas
-    }
-
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
         match tab {
-            Tab::Canvas | Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet | Tab::Bones => {
-                [false, false]
-            }
+            Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet | Tab::Bones => [false, false],
             _ => [false, true],
         }
     }
+}
+
+/// The tools column's contents (not a dock tab: it has no tab bar).
+pub fn tools_panel(ui: &mut egui::Ui, shell: &mut Shell, columns: usize) {
+    tools::show(ui, shell, columns);
+}
+
+/// The canvas, which fills what the other panels leave.
+pub fn canvas_panel(ui: &mut egui::Ui, shell: &mut Shell) {
+    canvas::show(ui, shell);
 }
 
 /// The status bar's update button, while an update waits.
@@ -121,7 +117,8 @@ fn update_label(shell: &Shell) -> Option<String> {
         State::Available(r) if shell.updates.skipped.as_deref() != Some(&r.version.to_string()) => {
             Some(format!("Update to {}", r.version))
         }
-        State::Downloading(r) => Some(format!("Downloading {}", r.version)),
+        // the progress bar beside it says how far along
+        State::Downloading(r) => Some(format!("Updating to {}", r.version)),
         State::Ready(r, _) => Some(format!("Restart to update to {}", r.version)),
         _ => None,
     }
@@ -178,6 +175,23 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                             .fill(p.button);
                         if ui.add(button).clicked() {
                             shell.ui.show_update = true;
+                        }
+                        // a download shows how far it is; one with no known
+                        // size shows a moving bar
+                        if matches!(shell.updater.state(), crate::update::State::Downloading(_)) {
+                            let fraction = shell.updater.progress();
+                            let bar = match fraction {
+                                Some(f) => egui::ProgressBar::new(f),
+                                None => egui::ProgressBar::new(0.0).animate(true),
+                            }
+                            .desired_width(90.0)
+                            .desired_height(6.0)
+                            .fill(p.accent);
+                            ui.add(bar)
+                                .on_hover_text("Downloading the update. You can keep working.");
+                            if let Some(f) = fraction {
+                                ui.label(muted(format!("{:.0}%", f * 100.0)));
+                            }
                         }
                         ui.separator();
                     }

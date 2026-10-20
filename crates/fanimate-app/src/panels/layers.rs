@@ -162,6 +162,36 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
         shell.editor.set_visible(id, !visible);
     }
 
+    // the padlock at the end of the row: shown when locked, or on hover
+    let locked = shell.editor.doc.find(id).is_some_and(|l| l.locked);
+    let lock_rect = Rect::from_min_size(
+        egui::pos2(rect.right() - 24.0, rect.top()),
+        egui::vec2(20.0, ROW_HEIGHT),
+    );
+    if locked || response.hovered() {
+        let lock = ui.interact(lock_rect, Id::new(("lock", id)), Sense::click());
+        icons::paint(
+            &painter,
+            Rect::from_center_size(lock_rect.center(), egui::vec2(14.0, 14.0)),
+            if locked { Icon::Lock } else { Icon::Unlock },
+            if locked {
+                p.text
+            } else {
+                p.text_muted.gamma_multiply(0.6)
+            },
+        );
+        if lock
+            .on_hover_text(if locked {
+                "Locked: the canvas and tools leave this layer alone. Click to unlock."
+            } else {
+                "Lock this layer"
+            })
+            .clicked()
+        {
+            shell.editor.set_locked(id, !locked);
+        }
+    }
+
     // label colour swatch
     let swatch = Rect::from_center_size(
         egui::pos2(eye_rect.right() + 8.0, rect.center().y),

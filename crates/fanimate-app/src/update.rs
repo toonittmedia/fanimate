@@ -139,6 +139,10 @@ pub struct Release {
     pub page: String,
     /// The update file and its signature, when this copy can install it.
     pub file: Option<(String, String, String)>,
+    /// The update file's size in bytes, to show the download's progress.
+    pub size: Option<u64>,
+    /// What changed, in Markdown (the release's description).
+    pub notes: String,
 }
 
 /// The newest release in a GitHub releases list newer than `current`.
@@ -160,17 +164,25 @@ pub fn newest(list: &Value, current: Version, suffix: Option<&str>) -> Option<Re
         if version <= current || best.as_ref().is_some_and(|b| b.version >= version) {
             continue;
         }
-        let assets: Vec<(&str, &str)> = r
+        let assets: Vec<(&str, &str, Option<u64>)> = r
             .get("assets")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(|a| Some((a.get("name")?.as_str()?, a.get("browser_download_url")?.as_str()?)))
+            .filter_map(|a| {
+                Some((
+                    a.get("name")?.as_str()?,
+                    a.get("browser_download_url")?.as_str()?,
+                    a.get("size").and_then(Value::as_u64),
+                ))
+            })
             .collect();
+        let mut size = None;
         let file = suffix.and_then(|suffix| {
-            let (name, url) = assets.iter().find(|(n, _)| n.ends_with(suffix))?;
+            let (name, url, bytes) = assets.iter().find(|(n, _, _)| n.ends_with(suffix))?;
             let sig_name = format!("{name}.sig");
-            let (_, sig) = assets.iter().find(|(n, _)| *n == sig_name)?;
+            let (_, sig, _) = assets.iter().find(|(n, _, _)| *n == sig_name)?;
+            size = *bytes;
             Some(((*name).to_owned(), (*url).to_owned(), (*sig).to_owned()))
         });
         let page = r
@@ -178,7 +190,18 @@ pub fn newest(list: &Value, current: Version, suffix: Option<&str>) -> Option<Re
             .and_then(Value::as_str)
             .unwrap_or(DOWNLOAD_PAGE)
             .to_owned();
-        best = Some(Release { version, page, file });
+        let notes = r
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        best = Some(Release {
+            version,
+            page,
+            file,
+            size,
+            notes,
+        });
     }
     best
 }
@@ -215,6 +238,15 @@ pub enum State {
 #[derive(Clone, Default)]
 pub struct Updater {
     pub state: Arc<Mutex<State>>,
+    /// The file being downloaded, which grows as curl writes it.
+    part: Arc<Mutex<Option<PathBuf>>>,
+}
+
+/// How far along a download is, 0 to 1, from the bytes so far and the
+/// update file's size. `None` when the size is not known.
+pub fn fraction(done: u64, total: Option<u64>) -> Option<f32> {
+    let total = total.filter(|t| *t > 0)?;
+    Some((done as f64 / total as f64).clamp(0.0, 1.0) as f32)
 }
 
 impl Updater {
@@ -257,6 +289,11 @@ impl Updater {
             return;
         };
         self.set(State::Downloading(release.clone()));
+        let part = folder.join(format!("{name}.part"));
+        let _ = std::fs::remove_file(&part);
+        if let Ok(mut shared) = self.part.lock() {
+            *shared = Some(part);
+        }
         let me = self.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<PathBuf, String> {
@@ -284,6 +321,21 @@ impl Updater {
 
     pub fn reset(&self) {
         self.set(State::Idle);
+        if let Ok(mut part) = self.part.lock() {
+            *part = None;
+        }
+    }
+
+    /// How much of the update has been downloaded, while it downloads. The
+    /// download runs in curl on its own thread; this only looks at the size
+    /// of the file it is writing, so asking costs the interface nothing.
+    pub fn progress(&self) -> Option<f32> {
+        let State::Downloading(release) = self.state() else {
+            return None;
+        };
+        let part = self.part.lock().ok()?.clone()?;
+        let done = std::fs::metadata(part).ok()?.len();
+        fraction(done, release.size)
     }
 }
 
@@ -430,7 +482,8 @@ mod tests {
         serde_json::json!({
             "tag_name": tag, "prerelease": pre, "draft": false,
             "html_url": format!("https://example.com/{tag}"),
-            "assets": assets.iter().map(|n| serde_json::json!({"name": n, "browser_download_url": format!("https://dl/{n}")})).collect::<Vec<_>>(),
+            "body": format!("Notes for {tag}"),
+            "assets": assets.iter().map(|n| serde_json::json!({"name": n, "size": 1000, "browser_download_url": format!("https://dl/{n}")})).collect::<Vec<_>>(),
         })
     }
 
@@ -461,6 +514,9 @@ mod tests {
         let (name, url, sig) = r.file.unwrap();
         assert_eq!(name, "Fanimate-0.2.0-windows-x64-setup.exe");
         assert!(url.ends_with(&name) && sig.ends_with(".sig"));
+        // the size of the update file, not its signature's, and the notes
+        assert_eq!(r.size, Some(1000));
+        assert_eq!(r.notes, "Notes for v0.2.0");
         assert_eq!(r.page, "https://example.com/v0.2.0");
         // nothing newer
         assert!(newest(&list, Version(0, 3, 0), Some(suffix)).is_none());
@@ -478,6 +534,39 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn download_progress_is_a_fraction_of_the_file_size() {
+        assert_eq!(fraction(0, Some(1000)), Some(0.0));
+        assert_eq!(fraction(250, Some(1000)), Some(0.25));
+        // curl may have written a little past what the feed said
+        assert_eq!(fraction(1200, Some(1000)), Some(1.0));
+        assert_eq!(fraction(10, None), None);
+        assert_eq!(fraction(10, Some(0)), None);
+    }
+
+    #[test]
+    fn a_download_reports_its_progress_from_the_file_it_writes() {
+        let dir = std::env::temp_dir().join(format!("fanimate-update-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("update.part");
+        std::fs::write(&part, vec![0u8; 400]).unwrap();
+        let updater = Updater::default();
+        let release = Release {
+            version: Version(0, 3, 0),
+            page: String::new(),
+            file: None,
+            size: Some(1000),
+            notes: String::new(),
+        };
+        // nothing downloading: no progress
+        assert_eq!(updater.progress(), None);
+        updater.set(State::Downloading(release));
+        *updater.part.lock().unwrap() = Some(part);
+        assert_eq!(updater.progress(), Some(0.4));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

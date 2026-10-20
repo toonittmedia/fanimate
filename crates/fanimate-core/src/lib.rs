@@ -25,15 +25,15 @@ pub mod scene;
 pub mod transform;
 
 pub use actions::RigAction;
-pub use anim::{Channel, Frame, Interpolation, Key};
+pub use anim::{Channel, Frame, Interpolation, Key, Keying};
 pub use bones::{Bone, Skeleton};
 pub use boolean::BoolOp;
 pub use brush::{BrushOptions, BrushSample, Stabiliser};
 pub use color::Color;
-pub use eval::{DrawItem, ImageItem, evaluate};
+pub use eval::{CAMERA_ZOOM, DrawItem, ImageItem, camera_at, camera_frame, evaluate};
 pub use frames::{Cel, Part};
 pub use glam::{Affine2, Vec2};
 pub use media::{Audio, Image, Media, MediaFile};
 pub use path::{Path, PathCmd, RectParams, Shape, Stroke, Style};
-pub use scene::{Document, Label, Layer, LayerId, LayerKind};
+pub use scene::{Camera, ChannelId, Document, Guide, Label, Layer, LayerId, LayerKind};
 pub use transform::{AnimTransform, Transform};

@@ -46,6 +46,59 @@ pub fn evaluate(doc: &Document, frame: f32) -> Vec<DrawItem<'_>> {
     out
 }
 
+/// The most a camera may zoom out or in, so a stray value cannot collapse the
+/// view to nothing or a point.
+pub const CAMERA_ZOOM: std::ops::RangeInclusive<f32> = 0.05..=50.0;
+
+/// What the document's camera does to the canvas at `frame`: document space
+/// to the space of the picture the camera takes (the same size as the
+/// canvas). The camera sits over the middle of the canvas, moved by its
+/// position, rolled by its roll (positive is clockwise, as everywhere) and
+/// zoomed by its zoom; the canvas turns the other way and grows. `None` when
+/// the camera is looking at the whole canvas, as it does with no animation.
+pub fn camera_at(doc: &Document, frame: f32) -> Option<Affine2> {
+    let cam = &doc.camera;
+    let zoom = cam.zoom.sample(frame);
+    let zoom = if zoom.is_finite() && zoom != 0.0 {
+        zoom.abs().clamp(*CAMERA_ZOOM.start(), *CAMERA_ZOOM.end())
+    } else {
+        1.0
+    };
+    let (position, roll) = (cam.position.sample(frame), cam.roll.sample(frame));
+    let (position, roll) = if position.is_finite() && roll.is_finite() {
+        (position, roll)
+    } else {
+        (glam::Vec2::ZERO, 0.0)
+    };
+    let centre = doc.size() / 2.0;
+    let m = Affine2::from_translation(centre)
+        * Affine2::from_scale(glam::Vec2::splat(zoom))
+        * Affine2::from_angle(-roll)
+        * Affine2::from_translation(-(centre + position));
+    // the camera that sees everything is no camera
+    (m != Affine2::IDENTITY).then_some(m)
+}
+
+/// The part of the canvas the camera shows at `frame`, as its four corners in
+/// document space (top left, top right, bottom right, bottom left), for the
+/// frame drawn on the canvas.
+pub fn camera_frame(doc: &Document, frame: f32) -> Option<[glam::Vec2; 4]> {
+    let inverse = camera_at(doc, frame).unwrap_or(Affine2::IDENTITY).inverse();
+    if !inverse.is_finite() {
+        return None;
+    }
+    let (w, h) = (doc.width, doc.height);
+    Some(
+        [
+            glam::Vec2::ZERO,
+            glam::Vec2::new(w, 0.0),
+            glam::Vec2::new(w, h),
+            glam::Vec2::new(0.0, h),
+        ]
+        .map(|c| inverse.transform_point2(c)),
+    )
+}
+
 /// Reusable evaluator. Keeps its scratch buffers between frames so playback
 /// does not allocate.
 #[derive(Default)]
@@ -64,6 +117,9 @@ pub struct Evaluator {
     editing: Option<crate::scene::LayerId>,
     /// Leave rough sketches out, as renders do.
     pub skip_rough: bool,
+    /// Look at the canvas through the document's camera, as renders do.
+    /// The canvas the animator works on shows the whole page instead.
+    pub camera: bool,
 }
 
 /// The bone layer a subtree is inside.
@@ -82,6 +138,7 @@ impl Evaluator {
     pub fn for_render() -> Self {
         Self {
             skip_rough: true,
+            camera: true,
             ..Self::default()
         }
     }
@@ -89,7 +146,12 @@ impl Evaluator {
     pub fn evaluate_into<'a>(&mut self, doc: &'a Document, frame: f32, out: &mut Vec<DrawItem<'a>>) {
         out.clear();
         self.editing = doc.action_edit.as_ref().map(|e| e.layer);
-        self.visit(&doc.layers, frame, Affine2::IDENTITY, 1.0, None, out);
+        let root = if self.camera {
+            camera_at(doc, frame).unwrap_or(Affine2::IDENTITY)
+        } else {
+            Affine2::IDENTITY
+        };
+        self.visit(&doc.layers, frame, root, 1.0, None, out);
     }
 
     /// `world` is the parent's space to document space. Inside a bone layer,
@@ -120,6 +182,9 @@ impl Evaluator {
             match &layer.kind {
                 LayerKind::Vector { shapes } => {
                     for (index, shape) in shapes.iter().enumerate() {
+                        if !shape.visible {
+                            continue;
+                        }
                         let item = self.shape_item(layer.id, index, None, shape, frame, world, opacity, rig);
                         out.push(item);
                     }
@@ -129,7 +194,7 @@ impl Evaluator {
                         continue;
                     };
                     for (part, index, shape) in cel.shapes() {
-                        if self.skip_rough && part == crate::frames::Part::Rough {
+                        if !shape.visible || (self.skip_rough && part == crate::frames::Part::Rough) {
                             continue;
                         }
                         let item =
@@ -366,28 +431,168 @@ fn deform(shape: &mut Shape, skins: &[Affine2], weights: &[Vec<(usize, f32)>], r
 /// `shape` as it is on `frame`. Only shapes with point keys are copied, so
 /// playing unanimated artwork allocates nothing.
 fn at_frame(shape: &Shape, frame: f32) -> Cow<'_, Shape> {
-    if !shape.is_animated() {
+    if !shape.is_animated() && !shape.colors_animated() {
         return Cow::Borrowed(shape);
     }
-    match shape.path_at(frame) {
-        Cow::Borrowed(p) if std::ptr::eq(p, &shape.path) => Cow::Borrowed(shape),
-        path => Cow::Owned(Shape {
-            name: shape.name.clone(),
-            path: path.into_owned(),
-            style: shape.style,
-            bone: shape.bone,
-            widths: shape.widths.clone(),
-            path_keys: Vec::new(),
-            skin: shape.skin.clone(),
-            rect: shape.rect,
-        }),
-    }
+    // a shape whose colours move but whose points do not keeps its own path
+    let path = match shape.path_at(frame) {
+        Cow::Borrowed(p) if std::ptr::eq(p, &shape.path) && !shape.colors_animated() => {
+            return Cow::Borrowed(shape);
+        }
+        path => path.into_owned(),
+    };
+    Cow::Owned(Shape {
+        name: shape.name.clone(),
+        path,
+        style: shape.style_at(frame),
+        bone: shape.bone,
+        widths: shape.widths.clone(),
+        path_keys: Vec::new(),
+        skin: shape.skin.clone(),
+        rect: shape.rect,
+        visible: shape.visible,
+        fill_keys: Vec::new(),
+        stroke_keys: Vec::new(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::anim::Interpolation;
+
+    #[test]
+    fn the_camera_sees_everything_until_it_is_moved() {
+        let mut doc = Document::new("c", 200.0, 100.0, 24.0);
+        assert!(camera_at(&doc, 0.0).is_none(), "no camera, no change");
+        // the frame it draws is the whole canvas
+        let all = camera_frame(&doc, 0.0).unwrap();
+        assert_eq!(all[0], glam::Vec2::ZERO);
+        assert_eq!(all[2], glam::Vec2::new(200.0, 100.0));
+        // zoomed in on the middle, twice as close: the middle stays, the corners go off
+        doc.camera.zoom.base = 2.0;
+        let m = camera_at(&doc, 0.0).unwrap();
+        assert!(
+            (m.transform_point2(glam::Vec2::new(100.0, 50.0)) - glam::Vec2::new(100.0, 50.0)).length() < 1e-4
+        );
+        assert!(
+            (m.transform_point2(glam::Vec2::new(150.0, 50.0)) - glam::Vec2::new(200.0, 50.0)).length() < 1e-4
+        );
+        // and its frame on the canvas is the middle half
+        let frame = camera_frame(&doc, 0.0).unwrap();
+        assert!(
+            (frame[0] - glam::Vec2::new(50.0, 25.0)).length() < 1e-3,
+            "{:?}",
+            frame[0]
+        );
+        assert!((frame[2] - glam::Vec2::new(150.0, 75.0)).length() < 1e-3);
+        // moved right: what was at its middle (the point it looks at) lands in the middle
+        doc.camera.zoom.base = 1.0;
+        doc.camera.position.base = glam::Vec2::new(40.0, 0.0);
+        let m = camera_at(&doc, 0.0).unwrap();
+        assert!(
+            (m.transform_point2(glam::Vec2::new(140.0, 50.0)) - glam::Vec2::new(100.0, 50.0)).length() < 1e-4
+        );
+        // rolled a quarter turn clockwise: the canvas turns anticlockwise about the middle
+        doc.camera.position.base = glam::Vec2::ZERO;
+        doc.camera.roll.base = std::f32::consts::FRAC_PI_2;
+        let m = camera_at(&doc, 0.0).unwrap();
+        let p = m.transform_point2(glam::Vec2::new(150.0, 50.0)); // right of the middle
+        assert!((p - glam::Vec2::new(100.0, 0.0)).length() < 1e-3, "{p:?}"); // goes to the top
+        // values that are not numbers or a zoom of nothing cannot break the view
+        doc.camera.roll.base = f32::NAN;
+        doc.camera.zoom.base = 0.0;
+        assert!(camera_at(&doc, 0.0).is_none());
+        doc.camera.zoom.base = 1.0e9;
+        let huge = camera_at(&doc, 0.0).unwrap();
+        assert!(
+            (huge.matrix2.x_axis.length() - *CAMERA_ZOOM.end()).abs() < 1e-3,
+            "clamped"
+        );
+    }
+
+    #[test]
+    fn the_camera_animates_and_renders_look_through_it_but_the_canvas_does_not() {
+        use crate::{Color, Style};
+        let mut doc = Document::new("c", 200.0, 100.0, 24.0);
+        doc.camera.zoom = crate::Channel::new(1.0)
+            .with_key(0, 1.0, Interpolation::Linear)
+            .with_key(10, 2.0, Interpolation::Linear);
+        let shape = Shape::rectangle(
+            "r",
+            Vec2::new(90.0, 40.0),
+            Vec2::splat(20.0),
+            0.0,
+            Style::fill(Color::BLACK),
+        );
+        let layer = doc.new_layer("l", LayerKind::vector(vec![shape]));
+        doc.layers.push(layer);
+        let mut canvas = Evaluator::default();
+        let mut render = Evaluator::for_render();
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        canvas.evaluate_into(&doc, 10.0, &mut a);
+        render.evaluate_into(&doc, 10.0, &mut b);
+        assert_eq!(
+            a[0].transform,
+            Affine2::IDENTITY,
+            "the canvas shows the whole page"
+        );
+        // the render at frame 10 has the artwork twice as big about the middle
+        assert!((b[0].transform.matrix2.x_axis.length() - 2.0).abs() < 1e-4);
+        render.evaluate_into(&doc, 0.0, &mut b);
+        assert_eq!(b[0].transform, Affine2::IDENTITY, "frame 0 sees it all");
+        render.evaluate_into(&doc, 5.0, &mut b);
+        assert!(
+            (b[0].transform.matrix2.x_axis.length() - 1.5).abs() < 1e-4,
+            "halfway"
+        );
+    }
+
+    #[test]
+    fn colours_change_over_time_and_the_path_stays_where_it_is() {
+        use crate::{Color, Key, Style};
+        let mut doc = Document::new("c", 100.0, 100.0, 24.0);
+        let mut shape = Shape::rectangle("r", Vec2::ZERO, Vec2::splat(10.0), 0.0, Style::fill(Color::BLACK));
+        shape.style.stroke = Some(crate::Stroke {
+            color: Color::BLACK,
+            width: 2.0,
+        });
+        shape.fill_keys = vec![
+            Key {
+                frame: 0,
+                value: Color::BLACK,
+                interp: Interpolation::Linear,
+            },
+            Key {
+                frame: 10,
+                value: Color::WHITE,
+                interp: Interpolation::Linear,
+            },
+        ];
+        let layer = doc.new_layer("l", LayerKind::vector(vec![shape.clone()]));
+        doc.layers.push(layer);
+        let at = |doc: &Document, f: f32| {
+            let items = evaluate(doc, f);
+            (items[0].shape.style, items[0].shape.path.clone())
+        };
+        let (style0, path0) = at(&doc, 0.0);
+        let (style5, path5) = at(&doc, 5.0);
+        let (style99, _) = at(&doc, 99.0);
+        assert_eq!(style0.fill, Some(Color::BLACK));
+        let mid = style5.fill.unwrap();
+        assert!(
+            (mid.r - 0.5).abs() < 1e-4 && (mid.g - 0.5).abs() < 1e-4,
+            "{mid:?}"
+        );
+        assert_eq!(style99.fill, Some(Color::WHITE), "held after the last key");
+        assert_eq!(path0, path5, "only the colour moved");
+        // the stroke, with no keys, keeps its colour and width
+        assert_eq!(style5.stroke, shape.style.stroke);
+        // a shape with no colour keys is drawn as it is, not copied
+        let plain = Shape::new("p", shape.path.clone(), Style::fill(Color::BLACK));
+        assert!(matches!(at_frame(&plain, 3.0), Cow::Borrowed(_)));
+        assert!(matches!(at_frame(&shape, 3.0), Cow::Owned(_)));
+    }
     use crate::bones::Skeleton;
     use crate::path::{Path, Style};
     use crate::transform::AnimTransform;
