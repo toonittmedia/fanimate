@@ -20,7 +20,8 @@ pub enum TaskbarProgress {
 
 /// A fraction as the (done, of) pair Windows takes: out of 1000, so the bar
 /// moves in small steps, and never outside the bar.
-pub fn scale(fraction: f32) -> (u64, u64) {
+#[cfg(any(windows, test))]
+fn scale(fraction: f32) -> (u64, u64) {
     let f = if fraction.is_finite() {
         fraction.clamp(0.0, 1.0)
     } else {
