@@ -331,6 +331,39 @@ fn show_spans(ui: &mut Ui, p: &Palette, spans: &[Span], size: f32, strong: bool)
     });
 }
 
+/// The width of each column of a table in `available` points with `gap`
+/// between columns: shared out by the longest text in each, none narrower
+/// than a word or two.
+fn column_widths(header: &[Vec<Span>], rows: &[Vec<Vec<Span>>], available: f32, gap: f32) -> Vec<f32> {
+    let columns = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+        .max(1);
+    let length =
+        |cell: Option<&Vec<Span>>| cell.map_or(0, |c| c.iter().map(|s| s.text.chars().count()).sum());
+    let longest: Vec<usize> = (0..columns)
+        .map(|i| {
+            rows.iter()
+                .map(|r| length(r.get(i)))
+                .chain(std::iter::once(length(header.get(i))))
+                .max()
+                .unwrap_or(0)
+                .max(4)
+        })
+        .collect();
+    let room = (available - gap * (columns - 1) as f32).max(60.0 * columns as f32);
+    let total: usize = longest.iter().sum();
+    // a column never needs more than its longest text takes
+    longest
+        .iter()
+        .map(|n| {
+            (room * *n as f32 / total as f32)
+                .max(60.0)
+                .min(*n as f32 * 8.0 + 8.0)
+        })
+        .collect()
+}
+
 /// Draw the blocks, filling the width.
 pub fn show(ui: &mut Ui, p: &Palette, blocks: &[Block]) {
     for (n, block) in blocks.iter().enumerate() {
@@ -377,17 +410,29 @@ pub fn show(ui: &mut Ui, p: &Palette, blocks: &[Block]) {
                 ui.add_space(6.0);
             }
             Block::Table { header, rows } => {
+                const GAP: f32 = 16.0;
+                // each column gets a share of the width by how much text it
+                // holds, so a long cell wraps at its own column and the table
+                // fills the dialog (a wrapped cell in a grid otherwise sizes
+                // itself to a sliver)
+                let widths = column_widths(header, rows, ui.available_width(), GAP);
                 egui::Grid::new(("markdown-table", n))
                     .striped(true)
-                    .spacing([16.0, 5.0])
+                    .spacing([GAP, 5.0])
                     .show(ui, |ui| {
-                        for cell in header {
-                            show_spans(ui, p, cell, 12.5, true);
+                        for (cell, width) in header.iter().zip(&widths) {
+                            ui.scope(|ui| {
+                                ui.set_width(*width);
+                                show_spans(ui, p, cell, 12.5, true);
+                            });
                         }
                         ui.end_row();
                         for row in rows {
-                            for cell in row {
-                                show_spans(ui, p, cell, 12.5, false);
+                            for (cell, width) in row.iter().zip(&widths) {
+                                ui.scope(|ui| {
+                                    ui.set_width(*width);
+                                    show_spans(ui, p, cell, 12.5, false);
+                                });
                             }
                             ui.end_row();
                         }
@@ -407,6 +452,35 @@ mod tests {
 
     fn texts(spans: &[Span]) -> Vec<&str> {
         spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn table_columns_share_the_width_by_their_text() {
+        let cell = |t: &str| vec![Span::plain(t)];
+        let header = vec![cell("Platform"), cell("File")];
+        let rows = vec![vec![
+            cell("Windows 10 and 11"),
+            cell(
+                "Fanimate-0.2.3-windows-x64-setup.exe (installs for your account, no administrator rights needed)",
+            ),
+        ]];
+        let widths = column_widths(&header, &rows, 680.0, 16.0);
+        assert_eq!(widths.len(), 2);
+        // the long column is wider, and nothing is a sliver
+        assert!(
+            widths[1] > widths[0] && widths.iter().all(|w| *w >= 60.0),
+            "{widths:?}"
+        );
+        // together they fit
+        assert!(widths.iter().sum::<f32>() + 16.0 <= 680.0 + 0.5, "{widths:?}");
+        // a narrow window still leaves every column readable
+        assert!(
+            column_widths(&header, &rows, 100.0, 16.0)
+                .iter()
+                .all(|w| *w >= 60.0)
+        );
+        // no table, no columns to size: one default column rather than a crash
+        assert_eq!(column_widths(&[], &[], 300.0, 16.0).len(), 1);
     }
 
     #[test]

@@ -274,6 +274,7 @@ impl Action {
             },
             AddChannelKey(fanimate_core::ChannelId::FillColor(_)) => "Key Fill Colour Here",
             AddChannelKey(fanimate_core::ChannelId::StrokeColor(_)) => "Key Stroke Colour Here",
+            AddChannelKey(fanimate_core::ChannelId::Trim(_)) => "Key Stroke Exposure Here",
             AddChannelKey(_) => "Add Keyframe on This Property",
             DeleteChannelKey(_) => "Delete Keyframe on This Property",
             SetChannelInterpolation(_, i) => match i {
@@ -820,6 +821,7 @@ impl Tool {
                 | Self::Eyedropper
                 | Self::DrawShape
                 | Self::LineWidth
+                | Self::StrokeExposure
                 | Self::ShapeBuilder
                 | Self::TransformLayer
                 | Self::SelectBone
@@ -909,7 +911,7 @@ impl Tool {
                 "Press next to a point on a stroke and drag up to widen it, down to narrow it. Selected points change together."
             }
             Self::StrokeExposure => {
-                "Coming in a later release: trim the start or end of a stroke. It needs a file format change first."
+                "Press on a stroke and drag along it to show less or more of it. Alt+drag moves its start. Animate it by doing the same on another frame."
             }
             Self::ShapeBuilder => {
                 "Drag across overlapping regions to unite them; Alt+drag subtracts them. Release to see the result."

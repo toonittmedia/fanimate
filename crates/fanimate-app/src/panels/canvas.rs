@@ -12,7 +12,7 @@ use crate::panels::handles::{self, Hit, Screen};
 
 /// Apply snapping to a document-space point. Stores the hint line in
 /// `shell.ui.snap_hint` so the overlay can draw it. Returns the snapped point.
-fn do_snap(shell: &mut Shell, p: Vec2) -> Vec2 {
+pub(super) fn do_snap(shell: &mut Shell, p: Vec2) -> Vec2 {
     // other shapes' lines are worked out once per gesture (the document, the
     // selection and the frame decide them), not on every pointer move
     let key = (
@@ -501,8 +501,11 @@ fn freehand_tool(
                 fanimate_editor::StatusKind::Info,
                 "Drag around an area to sketch a shape, then let go to close and fill it",
             );
-        } else if shell.editor.begin_stroke(doc(pos), pressure, zoom) {
-            shell.editor.finish_stroke();
+        } else {
+            let at = do_snap(shell, doc(pos));
+            if shell.editor.begin_stroke(at, pressure, zoom) {
+                shell.editor.finish_stroke();
+            }
         }
         return;
     }
@@ -511,10 +514,13 @@ fn freehand_tool(
         // the pointer has moved a little
         let start = press_origin.or(response.interact_pointer_pos());
         if let Some(start) = start {
+            // only where a stroke starts snaps (to join strokes at a point or
+            // a guide); the rest of it follows the hand
+            let start = do_snap(shell, doc(start));
             let began = if outline {
-                shell.editor.begin_outline(doc(start), zoom)
+                shell.editor.begin_outline(start, zoom)
             } else {
-                shell.editor.begin_stroke(doc(start), pressure, zoom)
+                shell.editor.begin_stroke(start, pressure, zoom)
             };
             if !began {
                 return;
@@ -1462,6 +1468,28 @@ fn editing_tools_e(
                 if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
                     shell.ui.line_width_press = None;
                     shell.editor.end_line_width();
+                }
+            }
+        }
+
+        // ---- Stroke Exposure ----
+        // press on a stroke and drag along it: the end follows the pointer
+        // (the start with Alt), and on a later frame it is keyed
+        Tool::StrokeExposure => {
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(press) = ctx.input(|i| i.pointer.press_origin())
+                && shell.editor.begin_exposure(doc(press), slop * 3.0, mods.alt)
+            {
+                shell.ui.exposure_active = true;
+            }
+            if shell.ui.exposure_active {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    shell.editor.drag_exposure(doc(pos));
+                    ctx.request_repaint();
+                }
+                if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
+                    shell.ui.exposure_active = false;
+                    shell.editor.end_exposure();
                 }
             }
         }

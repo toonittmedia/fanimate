@@ -119,6 +119,7 @@ fn update_label(shell: &Shell) -> Option<String> {
         }
         // the progress bar beside it says how far along
         State::Downloading(r) => Some(format!("Updating to {}", r.version)),
+        State::Installing(r) | State::Installed(r) => Some(format!("Installing {}", r.version)),
         State::Ready(r, _) => Some(format!("Restart to update to {}", r.version)),
         _ => None,
     }

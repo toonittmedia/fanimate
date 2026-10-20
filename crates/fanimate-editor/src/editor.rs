@@ -21,6 +21,7 @@ mod bones;
 mod booleans;
 mod construct;
 mod draw;
+mod exposure;
 mod handles;
 mod import;
 mod points;
@@ -130,6 +131,8 @@ pub struct Editor {
     curvature: Option<tools_e::CurvaturePath>,
     /// The Line Width drag in progress.
     line_width: Option<tools_e::LineWidthDrag>,
+    /// The Stroke Exposure drag in progress.
+    exposure: Option<exposure::ExposureDrag>,
     /// Polygon side count (3..=32), Star point count (2..=16), for the drag tools.
     pub poly_sides: u32,
     pub star_points: u32,
@@ -194,6 +197,7 @@ impl Editor {
             pen: None,
             curvature: None,
             line_width: None,
+            exposure: None,
             poly_sides: 6,
             star_points: 5,
             star_inner: 0.4,
@@ -1383,6 +1387,14 @@ impl Editor {
                         let now = fanimate_core::anim::sample_in(stroke.color, &shape.stroke_keys, at);
                         fanimate_core::anim::set_key_in(&mut shape.stroke_keys, frame, now, interp);
                     }
+                }
+            }
+            ChannelId::Trim(i) => {
+                if let LayerKind::Vector { shapes } = &mut l.kind
+                    && let Some(shape) = shapes.get_mut(i)
+                {
+                    let now = shape.trim_at(frame as f32);
+                    fanimate_core::anim::set_key_in(&mut shape.trim_keys, frame, now, interp);
                 }
             }
             // the camera's are keyed above, before a layer is looked for

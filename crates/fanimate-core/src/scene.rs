@@ -508,6 +508,9 @@ impl Layer {
                     if !s.stroke_keys.is_empty() {
                         v.push(ChannelId::StrokeColor(i));
                     }
+                    if !s.trim_keys.is_empty() {
+                        v.push(ChannelId::Trim(i));
+                    }
                 }
             }
             LayerKind::Bone { skeleton, .. } => v.extend((0..skeleton.bones.len()).map(ChannelId::Bone)),
@@ -544,6 +547,11 @@ impl Layer {
                 Some(s) if !s.name.is_empty() => format!("Stroke: {}", s.name),
                 _ => format!("Stroke: shape {}", i + 1),
             },
+            (ChannelId::Trim(i), LayerKind::Vector { shapes }) => match shapes.get(i) {
+                Some(s) if !s.name.is_empty() => format!("Exposure: {}", s.name),
+                _ => format!("Exposure: shape {}", i + 1),
+            },
+            (ChannelId::Trim(i), _) => format!("Exposure: shape {}", i + 1),
             (ChannelId::CameraPosition | ChannelId::CameraZoom | ChannelId::CameraRoll, _) => {
                 ch.camera_label().to_owned()
             }
@@ -565,6 +573,7 @@ impl Layer {
             (ChannelId::Shape(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.path_keys,
             (ChannelId::FillColor(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.fill_keys,
             (ChannelId::StrokeColor(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.stroke_keys,
+            (ChannelId::Trim(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.trim_keys,
             (ChannelId::Switch, LayerKind::Switch { switch, .. }) => switch,
             _ => return None,
         })
@@ -583,6 +592,7 @@ impl Layer {
             (ChannelId::Shape(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.path_keys,
             (ChannelId::FillColor(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.fill_keys,
             (ChannelId::StrokeColor(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.stroke_keys,
+            (ChannelId::Trim(i), LayerKind::Vector { shapes }) => &mut shapes.get_mut(i)?.trim_keys,
             (ChannelId::Switch, LayerKind::Switch { switch, .. }) => switch,
             _ => return None,
         })
@@ -604,6 +614,8 @@ pub enum ChannelId {
     /// A vector shape's fill colour, and its stroke colour, by its index.
     FillColor(usize),
     StrokeColor(usize),
+    /// A vector shape's stroke exposure (how much of the stroke is drawn).
+    Trim(usize),
     /// A switch layer's choice of child.
     Switch,
     /// The camera's position, zoom and roll (see [`Camera`]). They belong to

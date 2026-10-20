@@ -525,6 +525,7 @@ impl Checker {
         self.widths(shape, sloc);
         self.path_keys(shape, sloc, end);
         self.color_keys(shape, sloc, end);
+        self.exposure(shape, sloc, end);
         self.skin(shape, sloc, bones);
     }
 
@@ -560,6 +561,37 @@ impl Checker {
         }
         if self.repair {
             shape.drop_orphan_color_keys();
+        }
+    }
+
+    /// Stroke exposure: keys like any, and a start and end that are numbers
+    /// from 0 to 1 (outside that they are held within it).
+    fn exposure(&mut self, shape: &mut fanimate_core::Shape, loc: &str, end: i32) {
+        use fanimate_core::Vec2;
+        if !shape.is_trimmed() {
+            return;
+        }
+        let finite = |v: &Vec2| v.is_finite();
+        self.keys(&mut shape.trim_keys, finite, &format!("{loc} > trim_keys"), end);
+        let within = |v: &Vec2| (0.0..=1.0).contains(&v.x) && (0.0..=1.0).contains(&v.y);
+        let held = |v: Vec2| {
+            let one = |c: f32| if c.is_finite() { c.clamp(0.0, 1.0) } else { 0.0 };
+            Vec2::new(one(v.x), one(v.y))
+        };
+        let outside = !within(&shape.trim) || shape.trim_keys.iter().any(|k| !within(&k.value));
+        if outside {
+            self.issue(
+                Severity::Warning,
+                loc,
+                "stroke exposure is outside 0 to 1; it is held within".into(),
+                true,
+            );
+            if self.repair {
+                shape.trim = held(shape.trim);
+                for key in &mut shape.trim_keys {
+                    key.value = held(key.value);
+                }
+            }
         }
     }
 
@@ -1208,6 +1240,63 @@ mod tests {
             unreachable!()
         };
         assert!(shapes[0].rect.is_none());
+        assert!(validate(&doc).is_clean());
+    }
+
+    #[test]
+    fn corner_radii_that_do_not_fit_make_the_shape_a_plain_path() {
+        use fanimate_core::{Color, Shape, Style, Vec2};
+        let mut doc = Document::new("p", 100.0, 100.0, 24.0);
+        let mut rect = Shape::rectangle(
+            "r",
+            Vec2::ZERO,
+            Vec2::new(40.0, 20.0),
+            0.0,
+            Style::fill(Color::BLACK),
+        );
+        assert!(rect.set_rect_corner_radius(0, 5.0));
+        // half the shorter side is 10: a radius of 50 cannot be the rectangle's
+        rect.rect.as_mut().unwrap().radii = Some([50.0, 0.0, 0.0, 0.0]);
+        let layer = doc.new_layer("l", LayerKind::vector(vec![rect]));
+        doc.layers.push(layer);
+        let report = validate(&doc);
+        assert_eq!(report.issues.len(), 1, "{report}");
+        repair(&mut doc);
+        let LayerKind::Vector { shapes } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        assert!(shapes[0].rect.is_none());
+        assert!(validate(&doc).is_clean());
+    }
+
+    #[test]
+    fn stroke_exposure_outside_its_range_is_held_within_it() {
+        use fanimate_core::{Color, Shape, Style, Vec2};
+        let mut doc = Document::new("p", 100.0, 100.0, 24.0);
+        let mut shape = Shape::new(
+            "s",
+            fanimate_core::Path::circle(Vec2::ZERO, 5.0),
+            Style::fill(Color::BLACK).with_stroke(Color::BLACK, 2.0),
+        );
+        shape.trim = Vec2::new(-0.5, 2.0);
+        shape.trim_keys = vec![Key {
+            frame: 3,
+            value: Vec2::new(0.0, f32::NAN),
+            interp: Interpolation::Linear,
+        }];
+        let layer = doc.new_layer("l", LayerKind::vector(vec![shape]));
+        doc.layers.push(layer);
+        let report = validate(&doc);
+        assert!(report.issues.len() >= 2, "{report}");
+        repair(&mut doc);
+        let LayerKind::Vector { shapes } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        assert_eq!(shapes[0].trim, Vec2::new(0.0, 1.0));
+        assert!(
+            shapes[0].trim_keys.is_empty(),
+            "the key that was not a number is removed"
+        );
         assert!(validate(&doc).is_clean());
     }
 

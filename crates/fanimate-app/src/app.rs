@@ -161,6 +161,10 @@ pub struct UiState {
     pub handle_gesture: Option<crate::panels::handles::Gesture>,
     /// Show a rectangle's corner radius as a percentage of its largest.
     pub radius_relative: bool,
+    /// Edit each corner's radius on its own, not all four together.
+    pub radius_each: bool,
+    /// A Stroke Exposure drag is going on.
+    pub exposure_active: bool,
     /// The selection frame as drawn last frame, which clicks are tested against.
     pub frame: Option<fanimate_editor::SelectionFrame>,
     /// The outline under the pointer.
@@ -496,7 +500,10 @@ impl eframe::App for FanimateApp {
         let shell = &self.shell;
         let wanted = if let Some((_, fraction)) = shell.renders.active {
             TaskbarProgress::Fraction(fraction)
-        } else if matches!(shell.updater.state(), crate::update::State::Downloading(_)) {
+        } else if matches!(
+            shell.updater.state(),
+            crate::update::State::Downloading(_) | crate::update::State::Installing(_)
+        ) {
             shell
                 .updater
                 .progress()
@@ -882,7 +889,7 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
                 shell.ui.show_update = true;
                 shell.updater.check(true, &shell.install);
             }
-            Action::InstallUpdate => install_update(ctx, shell),
+            Action::InstallUpdate => install_update(shell),
             Action::Workspace(w) => shell.ui.workspace = Some(w),
             Action::CommandPalette => shell.ui.palette = Some(Default::default()),
             Action::LayerProperties => shell.ui.focus_properties = true,
@@ -915,8 +922,14 @@ fn update_tick(ctx: &egui::Context, shell: &mut Shell) {
         }
     }
     match shell.updater.state() {
-        State::Checking { .. } | State::Downloading(_) => {
+        State::Checking { .. } | State::Downloading(_) | State::Installing(_) => {
             ctx.request_repaint_after(Duration::from_millis(300))
+        }
+        State::Installed(release) => {
+            log::info!("installing Fanimate {}", release.version);
+            shell.updater.reset();
+            shell.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         State::UpToDate => {
             if std::mem::take(&mut shell.update_manual) {
@@ -943,7 +956,7 @@ fn update_tick(ctx: &egui::Context, shell: &mut Shell) {
 
 /// Install a downloaded update: wait for renders, then hand over to the
 /// installer and quit. Unsaved changes were already asked about.
-fn install_update(ctx: &egui::Context, shell: &mut Shell) {
+fn install_update(shell: &mut Shell) {
     let crate::update::State::Ready(release, file) = shell.updater.state() else {
         shell.editor.set_status(
             StatusKind::Info,
@@ -961,16 +974,9 @@ fn install_update(ctx: &egui::Context, shell: &mut Shell) {
         );
         return;
     }
-    match crate::update::install(&shell.install, &file) {
-        Ok(()) => {
-            log::info!("installing Fanimate {}", release.version);
-            shell.allow_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        Err(e) => shell
-            .editor
-            .set_status(StatusKind::Error, format!("Could not install the update: {e}")),
-    }
+    // a failure is reported even though the update window has closed
+    shell.update_manual = true;
+    shell.updater.start_install(shell.install.clone(), release, file);
 }
 
 fn zoom_by(shell: &mut Shell, factor: f32) {

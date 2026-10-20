@@ -51,7 +51,7 @@ impl RadiusTarget {
     pub fn radius_at(&self, which: usize, pointer: Vec2) -> f32 {
         let inv = self.world.inverse();
         if !inv.is_finite() || !pointer.is_finite() {
-            return self.rect.radius;
+            return self.rect.corner_radii()[which % 4];
         }
         let from_corner = (inv.transform_point2(pointer) - self.corner(which)) * Self::inward(which);
         ((from_corner.x + from_corner.y) / 2.0).clamp(0.0, self.rect.max_radius())
@@ -226,11 +226,10 @@ impl Editor {
         }
     }
 
-    /// The rectangle whose corners the radius handles and the Properties
-    /// panel edit: the one shape selected, if it is still a rectangle. That
-    /// is the selected points when they make up exactly one shape, else the
-    /// only shape of the only selected layer.
-    pub fn radius_target(&self) -> Option<RadiusTarget> {
+    /// The one shape the shape properties edit: the selected points when they
+    /// make up exactly one shape, else the only shape of the only selected
+    /// layer.
+    pub fn single_shape_target(&self) -> Option<(LayerId, usize)> {
         let layer = self.primary()?;
         let LayerKind::Vector { shapes } = &self.doc.find(layer)?.kind else {
             return None;
@@ -244,6 +243,18 @@ impl Editor {
                 .iter()
                 .all(|r| r.layer == layer && r.shape == first.shape);
             (one_shape && self.shape_point_refs(layer, first.shape) == self.points).then_some(first.shape)?
+        };
+        (index < shapes.len()).then_some((layer, index))
+    }
+
+    /// The rectangle whose corners the radius handles and the Properties
+    /// panel edit: the one shape selected, if it is still a rectangle. That
+    /// is the selected points when they make up exactly one shape, else the
+    /// only shape of the only selected layer.
+    pub fn radius_target(&self) -> Option<RadiusTarget> {
+        let (layer, index) = self.single_shape_target()?;
+        let LayerKind::Vector { shapes } = &self.doc.find(layer)?.kind else {
+            return None;
         };
         let shape = shapes.get(index)?;
         // a shape that follows a bone is drawn somewhere else than its points
@@ -280,6 +291,26 @@ impl Editor {
         if changed {
             // the point count changes with the corners, so points chosen
             // before are not the same points now: the whole shape stays chosen
+            if !self.points.is_empty() {
+                self.points = self.shape_point_refs(target.layer, target.index);
+            }
+            self.dirty = true;
+        }
+        changed
+    }
+
+    /// Set the radius of one corner of the selected rectangle (0 top left,
+    /// 1 top right, 2 bottom right, 3 bottom left), leaving the others.
+    /// Call [`begin_radius_edit`](Self::begin_radius_edit) once first.
+    pub fn set_one_corner_radius(&mut self, corner: usize, radius: f32) -> bool {
+        let Some(target) = self.radius_target() else {
+            return false;
+        };
+        let Some(shape) = self.point_shape_mut((target.layer, target.index)) else {
+            return false;
+        };
+        let changed = shape.set_rect_corner_radius(corner, radius);
+        if changed {
             if !self.points.is_empty() {
                 self.points = self.shape_point_refs(target.layer, target.index);
             }
@@ -494,6 +525,27 @@ mod tests {
         assert!(outline[0].1, "closed");
         assert!(outline[0].0.iter().any(|p| close(*p, Vec2::new(100.0, 60.0))));
         assert!(ed.shape_outline(id, 9).is_empty());
+    }
+
+    #[test]
+    fn one_corner_can_be_rounded_on_its_own_in_one_undo_step() {
+        let (mut ed, id) = editor();
+        ed.select_shape(id, 0, SelectMode::Replace);
+        assert!(ed.begin_radius_edit());
+        assert!(ed.set_one_corner_radius(2, 14.0));
+        assert_eq!(rect_target(&ed).rect.corner_radii(), [0.0, 0.0, 14.0, 0.0]);
+        assert!(ed.set_one_corner_radius(0, 6.0));
+        assert_eq!(rect_target(&ed).rect.corner_radii(), [6.0, 0.0, 14.0, 0.0]);
+        // setting one radius afterwards sets all four again
+        assert!(ed.set_corner_radius(9.0));
+        assert_eq!(rect_target(&ed).rect.corner_radii(), [9.0; 4]);
+        ed.run(Action::Undo);
+        ed.select_shape(id, 0, SelectMode::Replace);
+        assert_eq!(
+            rect_target(&ed).rect.corner_radii(),
+            [0.0; 4],
+            "the whole edit is one step"
+        );
     }
 
     #[test]

@@ -231,6 +231,11 @@ pub enum State {
     Downloading(Release),
     /// Downloaded and verified, waiting to install.
     Ready(Release, PathBuf),
+    /// Unpacking and swapping the new version in, on its own thread (the
+    /// macOS bundle takes a while to unpack).
+    Installing(Release),
+    /// Installed and started; the caller quits.
+    Installed(Release),
     Failed(String),
 }
 
@@ -315,6 +320,19 @@ impl Updater {
             me.set(match result {
                 Ok(path) => State::Ready(release, path),
                 Err(e) => State::Failed(format!("Could not download the update: {e}")),
+            });
+        });
+    }
+
+    /// Install a verified update in the background. The state becomes
+    /// `Installed` when the new version has started, or `Failed`.
+    pub fn start_install(&self, kind: Install, release: Release, file: PathBuf) {
+        self.set(State::Installing(release.clone()));
+        let me = self.clone();
+        std::thread::spawn(move || {
+            me.set(match install(&kind, &file) {
+                Ok(()) => State::Installed(release),
+                Err(e) => State::Failed(format!("Could not install the update: {e}")),
             });
         });
     }
@@ -485,6 +503,36 @@ mod tests {
             "body": format!("Notes for {tag}"),
             "assets": assets.iter().map(|n| serde_json::json!({"name": n, "size": 1000, "browser_download_url": format!("https://dl/{n}")})).collect::<Vec<_>>(),
         })
+    }
+
+    #[test]
+    fn installing_runs_in_the_background_and_reports_failure() {
+        let updater = Updater::default();
+        let release = Release {
+            version: Version(0, 2, 3),
+            page: String::new(),
+            file: None,
+            size: None,
+            notes: String::new(),
+        };
+        // a copy that cannot update itself fails, and the state says so
+        updater.start_install(Install::Portable, release, PathBuf::from("none"));
+        let started = std::time::Instant::now();
+        loop {
+            match updater.state() {
+                State::Failed(e) => {
+                    assert!(e.contains("cannot update itself"), "{e}");
+                    break;
+                }
+                State::Installing(_) => {}
+                other => panic!("unexpected state {other:?}"),
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the install never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

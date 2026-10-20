@@ -193,6 +193,23 @@ impl Tessellator {
                     log::warn!("stroke of \"{}\" has no usable width", item.shape.name);
                     continue;
                 }
+                // stroke exposure: only part of the stroke is drawn, so it is
+                // stroked from a cut of the path (the fill used the whole one)
+                let mut widths = widths;
+                let trimmed;
+                if item.shape.trim != Vec2::new(0.0, 1.0) {
+                    trimmed = item
+                        .shape
+                        .path
+                        .trimmed(item.shape.trim.x, item.shape.trim.y, widths);
+                    if trimmed.0.cmds.is_empty() {
+                        continue;
+                    }
+                    widths = trimmed.1.as_deref();
+                    if !self.build_path(&trimmed.0.cmds, item.transform, widths) {
+                        continue;
+                    }
+                }
                 let mut opts = StrokeOptions::tolerance(self.tolerance).with_line_width(line_width);
                 if widths.is_some() {
                     // brush strokes: width from the profile, rounded like ink
@@ -387,6 +404,46 @@ mod tests {
         assert!((half_height(&mesh, 49.0..=51.0) - 5.0).abs() < 0.3);
         assert!(half_height(&mesh, -2.0..=1.0) < 1.0);
         assert!(half_height(&mesh, 99.0..=102.0) < 1.5);
+    }
+
+    #[test]
+    fn stroke_exposure_draws_only_that_part_of_the_stroke_and_all_of_the_fill() {
+        use fanimate_core::{Path, Shape, Style};
+        let path = Path::rect(Vec2::ZERO, Vec2::new(100.0, 40.0), 0.0);
+        let mut shape = Shape::new(
+            "s",
+            path,
+            Style::fill(Color::WHITE).with_stroke(Color::BLACK, 2.0),
+        );
+        let reach = |mesh: &Mesh, colour: [f32; 4]| {
+            mesh.vertices
+                .iter()
+                .filter(|v| v[2..6] == colour)
+                .map(|v| v[0].max(v[1]))
+                .fold(f32::MIN, f32::max)
+        };
+        let whole = mesh_of(&shape, Affine2::IDENTITY);
+        // the stroke goes all the way round: past the right edge and the bottom
+        assert!(reach(&whole, [0.0, 0.0, 0.0, 1.0]) > 40.5);
+        // a tenth of the way round is a short bit of the top edge
+        shape.trim = Vec2::new(0.0, 0.1);
+        let part = mesh_of(&shape, Affine2::IDENTITY);
+        let stroke_y = part
+            .vertices
+            .iter()
+            .filter(|v| v[2..6] == [0.0, 0.0, 0.0, 1.0])
+            .map(|v| v[1])
+            .fold(f32::MIN, f32::max);
+        assert!(
+            stroke_y < 2.0,
+            "only the top edge is drawn, not the sides: {stroke_y}"
+        );
+        // the fill is still the whole rectangle
+        assert!(reach(&part, [1.0, 1.0, 1.0, 1.0]) >= 99.9);
+        // nothing exposed draws no stroke at all
+        shape.trim = Vec2::new(0.3, 0.3);
+        let none = mesh_of(&shape, Affine2::IDENTITY);
+        assert!(none.vertices.iter().all(|v| v[2..6] != [0.0, 0.0, 0.0, 1.0]));
     }
 
     #[test]

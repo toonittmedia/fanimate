@@ -467,6 +467,25 @@ impl Shape {
         }
     }
 
+    /// Whether the stroke's exposure is anything but the whole stroke, or
+    /// animated.
+    pub fn is_trimmed(&self) -> bool {
+        !crate::path::is_full_trim(&self.trim) || !self.trim_keys.is_empty()
+    }
+
+    /// The stroke's start and end (each 0 to 1) at `frame`.
+    pub fn trim_at(&self, frame: f32) -> Vec2 {
+        crate::anim::sample_in(self.trim, &self.trim_keys, frame)
+    }
+
+    /// Change the stroke's exposure at `frame` the way an edit is recorded
+    /// (see [`Keying`]). Both ends are kept within 0 to 1.
+    pub fn set_trim_at(&mut self, frame: Frame, trim: Vec2, keying: Keying) {
+        let clamp = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+        let trim = Vec2::new(clamp(trim.x), clamp(trim.y));
+        crate::anim::write_in(&mut self.trim, &mut self.trim_keys, frame, trim, keying);
+    }
+
     /// Without a fill there is nothing for fill keys to colour: drop them.
     pub fn drop_orphan_color_keys(&mut self) {
         if self.style.fill.is_none() {

@@ -23,6 +23,7 @@ pub mod points;
 pub mod samples;
 pub mod scene;
 pub mod transform;
+pub mod trim;
 
 pub use actions::RigAction;
 pub use anim::{Channel, Frame, Interpolation, Key, Keying};

@@ -968,7 +968,31 @@ mod tests {
             value: Color::WHITE,
             interp: fanimate_core::Interpolation::Step,
         }];
-        let mut layer = doc.new_layer("art", LayerKind::vector(vec![hidden]));
+        // a rectangle with one corner rounded
+        let mut rounded = Shape::rectangle(
+            "card",
+            Vec2::new(5.0, 5.0),
+            Vec2::new(40.0, 30.0),
+            0.0,
+            Style::fill(Color::WHITE),
+        );
+        assert!(rounded.set_rect_corner_radius(1, 6.0));
+        // with only part of its stroke drawn, which grows over the animation
+        rounded.style = rounded.style.with_stroke(Color::BLACK, 2.0);
+        rounded.trim = Vec2::new(0.1, 0.8);
+        rounded.trim_keys = vec![
+            fanimate_core::Key {
+                frame: 0,
+                value: Vec2::new(0.1, 0.2),
+                interp: fanimate_core::Interpolation::Smooth,
+            },
+            fanimate_core::Key {
+                frame: 12,
+                value: Vec2::new(0.1, 0.8),
+                interp: fanimate_core::Interpolation::Smooth,
+            },
+        ];
+        let mut layer = doc.new_layer("art", LayerKind::vector(vec![hidden, rounded]));
         layer.locked = true;
         doc.layers.push(layer);
         for name in ["file.fnm", "folder.fnm"] {
@@ -987,6 +1011,14 @@ mod tests {
         assert!(loaded.layers.last().unwrap().locked);
         assert_eq!(loaded.camera, doc.camera);
         assert!(loaded.camera.is_animated());
+        let LayerKind::Vector { shapes } = &loaded.layers.last().unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            shapes[1].parametric_rect().map(|r| r.corner_radii()),
+            Some([0.0, 6.0, 0.0, 0.0]),
+            "the corners kept their own radii"
+        );
         // the manifest says version 5, so an older reader refuses what it
         // would misread: it would show the hidden shape and lose the guides
         let manifest = fs::read_to_string(dir.join("folder.fnm").join("manifest.json")).unwrap();

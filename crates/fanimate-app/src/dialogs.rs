@@ -209,6 +209,16 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
                     "You can close this and keep working. Progress shows in the status bar.",
                 );
             }
+            State::Installing(r) | State::Installed(r) => {
+                ui.label(format!("Installing Fanimate {}…", r.version));
+                ui.add(
+                    egui::ProgressBar::new(0.0)
+                        .animate(true)
+                        .desired_width(ui.available_width())
+                        .fill(p.accent),
+                );
+                kit::note(ui, &p, "Fanimate closes and opens again when it is done.");
+            }
             State::Ready(r, _) => {
                 ui.label(RichText::new(format!("Fanimate {} is ready to install", r.version)).strong());
                 ui.label(

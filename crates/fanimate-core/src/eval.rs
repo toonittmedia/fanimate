@@ -431,12 +431,13 @@ fn deform(shape: &mut Shape, skins: &[Affine2], weights: &[Vec<(usize, f32)>], r
 /// `shape` as it is on `frame`. Only shapes with point keys are copied, so
 /// playing unanimated artwork allocates nothing.
 fn at_frame(shape: &Shape, frame: f32) -> Cow<'_, Shape> {
-    if !shape.is_animated() && !shape.colors_animated() {
+    let trim_moves = !shape.trim_keys.is_empty();
+    if !shape.is_animated() && !shape.colors_animated() && !trim_moves {
         return Cow::Borrowed(shape);
     }
     // a shape whose colours move but whose points do not keeps its own path
     let path = match shape.path_at(frame) {
-        Cow::Borrowed(p) if std::ptr::eq(p, &shape.path) && !shape.colors_animated() => {
+        Cow::Borrowed(p) if std::ptr::eq(p, &shape.path) && !shape.colors_animated() && !trim_moves => {
             return Cow::Borrowed(shape);
         }
         path => path.into_owned(),
@@ -453,6 +454,8 @@ fn at_frame(shape: &Shape, frame: f32) -> Cow<'_, Shape> {
         visible: shape.visible,
         fill_keys: Vec::new(),
         stroke_keys: Vec::new(),
+        trim: shape.trim_at(frame),
+        trim_keys: Vec::new(),
     })
 }
 
@@ -605,6 +608,45 @@ mod tests {
             Path::rect(Vec2::ZERO, Vec2::splat(1.0), 0.0),
             Style::fill(Color::BLACK),
         )
+    }
+
+    #[test]
+    fn stroke_exposure_moves_with_its_keys() {
+        use crate::anim::{Keying, set_key_in};
+        let mut doc = Document::new("t", 100.0, 100.0, 24.0);
+        let mut shape = square();
+        shape.style.stroke = Some(crate::Stroke {
+            color: Color::BLACK,
+            width: 1.0,
+        });
+        // the stroke grows from nothing to all of it over 10 frames
+        set_key_in(
+            &mut shape.trim_keys,
+            0,
+            Vec2::new(0.0, 0.0),
+            Interpolation::Linear,
+        );
+        set_key_in(
+            &mut shape.trim_keys,
+            10,
+            Vec2::new(0.0, 1.0),
+            Interpolation::Linear,
+        );
+        let layer = doc.new_layer("v", LayerKind::vector(vec![shape]));
+        doc.layers.push(layer);
+        let end_at = |frame: f32| evaluate(&doc, frame)[0].shape.trim.y;
+        assert_eq!(end_at(0.0), 0.0);
+        assert!((end_at(5.0) - 0.5).abs() < 1e-5);
+        assert_eq!(end_at(10.0), 1.0);
+        // an edit on a later frame keys it, and on the first frame changes it outright
+        let mut still = square();
+        still.set_trim_at(0, Vec2::new(0.25, 0.75), Keying::default());
+        assert_eq!((still.trim, still.trim_keys.len()), (Vec2::new(0.25, 0.75), 0));
+        still.set_trim_at(8, Vec2::new(0.0, 1.0), Keying::default());
+        assert_eq!(still.trim_keys.len(), 2, "a key to start from, and the new one");
+        // a still shape is not copied to be drawn
+        let plain = Shape::new("p", Path::circle(Vec2::ZERO, 1.0), Style::fill(Color::BLACK));
+        assert!(matches!(at_frame(&plain, 3.0), Cow::Borrowed(_)));
     }
 
     #[test]

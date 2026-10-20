@@ -112,11 +112,11 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Curvature tool: click adds Catmull-Rom smooth points, Alt+click adds a corner, Esc finishes. Live ghost segment in the canvas preview. Status-bar hint. `Tool::Curvature`, bound to `C` in both keymaps.
 - [x] Shape tools: Line (`L`), Polygon (`Shift+L`), Star (`Shift+O`), Triangle (`Shift+R`). Drag to draw; scroll wheel adjusts sides / points while dragging; Alt adjusts star inner radius. Path builders in `fanimate-core` (`Path::line`, `Path::polygon`, `Path::star`, `Path::triangle`). All tested.
 - [x] Editing tools: Delete Edge (click a segment, splits into two open paths), Magnet (attract / Alt=repel points in radius), Scale Points (drag from centroid), Rotate Points (drag angle from centroid, Shift snaps 15°). All bound in both keymaps and working via canvas.
-- [x] Fill and stroke tools: Draw Shape (click copies style), Freehand with Width (variable pressure via drag-Y), Line Width (drag adjusts widths profile). All bound. Stroke Exposure is bound but shown disabled, and its hint says it comes later.
+- [x] Fill and stroke tools: Draw Shape (click copies style), Freehand with Width (variable pressure via drag-Y), Line Width (drag adjusts widths profile). All bound. Stroke Exposure works since 0.2.3.
 - [x] Shape Builder (`Shift+M` Fanimate and Moho): drag across overlapping regions to unite them; Alt+drag to subtract. Uses the existing `combine` / `BoolOp` backend. Tested.
 - [x] Each tool: `Tool` variant, `label`, `group`, `hint`, `is_available`, keymap bindings in both presets, an SVG icon in `icons/fanimate/`, wired in `icons.rs`. 13 new tests in `tools_e.rs` (290 total, all pass).
 - [x] Line Width and Draw Shape were rebuilt in 0.2.3 (drag up or down on a point; freehand closed shape).
-- [ ] Not built: Stroke Exposure. It needs a trim-fraction field per shape (a format bump), so the tool is listed as unavailable until then.
+- [x] Stroke Exposure (0.2.3): `trim` and `trim_keys` on a shape (format version 5), drag along a stroke or use Properties; keyed like any property.
 
 ### Phase F: Rulers, grid, snapping
 
@@ -150,16 +150,16 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 
 ## UX pass 2 (0.2.3)
 
-Built: What's New in the app; Preferences, Export, Shortcuts, About and Update as modal dialogs with a shared layout; links that open the browser; non-blocking update with progress; the canvas outside the dock with three fixed regions and History in the Layers area; the tools panel at three per row; interpolation colours and a dropdown for new keys; expandable property rows with their own keys; key buttons in Properties; Moho-style keying; a document-level camera with a timeline row, Properties fields, look-through and a frame overlay; colour animation for fill and stroke; the shapes list in the Style panel; layer lock, Align and the draggable toolbar; layer type conversion; guides in the document; rotated ruler labels; remembered Export and Save As folders; Render Preview Frame (Ctrl+R) and Import on Ctrl+I; audio import for MP3, OGG, FLAC and AAC; taskbar render progress on Windows. Format version 5.
+Built: Stroke Exposure (trim with keys), a radius for each corner, snapping for Freehand and Draw Shape starts and scaling handles, the macOS update install on a worker thread; What's New in the app; Preferences, Export, Shortcuts, About and Update as modal dialogs with a shared layout; links that open the browser; non-blocking update with progress; the canvas outside the dock with three fixed regions and History in the Layers area; the tools panel at three per row; interpolation colours and a dropdown for new keys; expandable property rows with their own keys; key buttons in Properties; Moho-style keying; a document-level camera with a timeline row, Properties fields, look-through and a frame overlay; colour animation for fill and stroke; the shapes list in the Style panel; layer lock, Align and the draggable toolbar; layer type conversion; guides in the document; rotated ruler labels; remembered Export and Save As folders; Render Preview Frame (Ctrl+R) and Import on Ctrl+I; audio import for MP3, OGG, FLAC and AAC; taskbar render progress on Windows. Format version 5.
 
 Not built, still open:
 
 - [ ] Recent thumbnails embedded in the `.fnm` (an app-data cache is used instead).
 - [ ] "Your files" on Home; more templates.
-- [ ] Stroke Exposure, per-corner radii and a keyed pivot (format fields).
+- [ ] A keyed pivot (a format field).
 - [ ] Offset Path; before and after numbers for the selection frame.
-- [ ] Snapping for Freehand, Eraser and the handles.
+- [ ] Snapping for the Eraser (it would erase away from the pointer), and for rotating and the pivot (they have their own steps).
 - [ ] Camera drag on the canvas (the camera is edited in Properties and on the timeline).
-- [ ] macOS update install on a worker thread; Moho keymap bindings for the new actions (left unbound on purpose for now).
+- [ ] Moho keymap bindings for the new actions (left unbound on purpose for now).
 - [ ] Real MP3, OGG, FLAC and AAC fixtures in the tests (only generated WAV and damaged input are tested).
 - [ ] Video import: [design note](video-import.md) only.

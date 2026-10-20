@@ -220,9 +220,11 @@ A skeleton. Shapes on vector layers anywhere inside `children` can bind to its b
 | `path_keys` | array of keys | Optional (version 2). [Point keyframes](#point-keyframes): the path at chosen frames. |
 | `skin` | array | Optional (version 3). [Smooth binding](#smooth-binding): per on-curve point, the bones it follows. Takes the place of `bone`. |
 | `visible` | boolean | Optional (version 5), default `true`. A hidden shape is not drawn, hit or edited, and keeps its place in the layer. |
+| `trim` | `[start, end]` | Optional (version 5), default `[0, 1]`. [Stroke exposure](#stroke-exposure): the part of the stroke that is drawn. |
+| `trim_keys` | array of keys | Optional (version 5). Keys for `trim`, with `value` as `[start, end]`, like a channel's. |
 | `fill_keys` | array of keys | Optional (version 5). [Colour keys](#colour-keys) for `style.fill`. |
 | `stroke_keys` | array of keys | Optional (version 5). Colour keys for `style.stroke.color`. |
-| `rect` | object | Optional (version 4). Says the shape is a rectangle: `x`, `y`, `width`, `height` and `radius` (the corner radius, 0 to half the shorter side), in the layer's space. See [Rectangles](#rectangles). |
+| `rect` | object | Optional (version 4). Says the shape is a rectangle: `x`, `y`, `width`, `height` and `radius` (the corner radius, 0 to half the shorter side), in the layer's space, and optionally (version 5) `radii`, four radii for the corners. See [Rectangles](#rectangles). |
 
 A bound shape's points are stored in the **rest pose**. At each frame the shape moves rigidly with its bone: from the bone's rest transform to its current transform. Weighted deformation (one point following several bones) will be added in a later version.
 
@@ -230,7 +232,13 @@ A bound shape's points are stored in the **rest pose**. At each frame the shape 
 
 `rect` records how a rectangle was made, so that its corner radius can still be changed after it is drawn. **The `path` is the shape**: a reader that ignores `rect` draws and edits the path as it always did. A reader that uses `rect` must use it only while the path is still the one the rectangle makes: four straight sides (`M`, `L`, `L`, `L`, `Z`, starting at `(x, y)`) when `radius` is 0, and with a radius above 0 four straight sides and four cubic corners (`M`, `L`, `C`, `L`, `C`, `L`, `C`, `L`, `C`, `Z`, starting at `(x + radius, y)`), both going clockwise on screen, within 0.01 of each point. If the path differs (a point was edited), or the shape has a width profile, point keys or a smooth binding, the shape is an ordinary path and `rect` means nothing. Fanimate does not need the field removed when it stops applying; the check is made when it is used.
 
+With `radii` (version 5, `[top left, top right, bottom right, bottom left]`, each 0 to half the shorter side) the corners have their own radii and `radius` only remembers the last one set for all four. The path goes clockwise from the top left: it starts at `(x + radii[0], y)`, then for the top right, bottom right, bottom left and top left corners in turn draws a line to where that corner's arc begins and, when the radius is above 0, the cubic arc. A corner with no radius contributes only the line, and the line that would return to the start is left out when the first corner is square. This is what a reader needs to check that the path still is the rectangle; it gives the same path as before for a rectangle whose corners are alike.
+
 Values that are not finite, a width or height of 0 or less, or a radius outside 0 to half the shorter side, are a warning, repaired by removing `rect`.
+
+### Stroke exposure
+
+`trim` limits the stroke to the part from `trim[0]` to `trim[1]`, each a fraction (0 to 1) of the length of every subpath, measured along the path (curves by their arc length). The fill is not trimmed. A `[0, 1]` trim, the default, draws the whole stroke, and a trimmed stroke is drawn as an open path with its width profile cut to match. Equal ends draw nothing. `trim_keys` animate it like a channel (sorted, one per frame, no negative frames, `interp` as for channels); `trim` is the value when there are none.
 
 ### Width profiles
 
@@ -441,6 +449,8 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | `camera` channel with bad keys (negative, out of order, duplicated or not finite) | Error | As for channel keys |
 | `camera.zoom` outside 0.05 to 50 | Warning | Held within the range when evaluated |
 | `fill_keys` or `stroke_keys` with bad keys or a colour that is not finite | Error | As for channel keys |
+| `trim_keys` with bad keys or values that are not finite | Error | As for channel keys |
+| `trim` or a trim key outside 0 to 1 | Warning | Held within 0 to 1 |
 | `fill_keys` on a shape with no fill, `stroke_keys` on one with no stroke | Warning | Remove the keys |
 | `rect` that is not finite, or has no size, or a radius outside its range | Warning | Remove `rect` |
 | Bone `limits` not a finite range with min ≤ max | Error | Remove the limits |
@@ -478,7 +488,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | 2 | Fanimate 0.0.6 | Shapes may have point keyframes (`path_keys`) | Older files need no conversion. An older reader would ignore `path_keys` and draw animated drawings without their animation, so the version was bumped. |
 | 3 | Fanimate 0.0.7 | Layers may have a label colour (`label`); bones may have `limits`, `pinned` and `strength`; shapes may have a smooth binding (`skin`); bone layers may have actions and Smart Bone actions; image layers and the `media` folder; frame-by-frame, switch and audio layers | Older files need no conversion. An older reader would drop labels and draw smoothly bound artwork unbound, so the version was bumped. |
 | 4 | Development builds after Fanimate 0.2.1 | Layers may have a pivot (`transform.pivot`); shapes may say they are rectangles (`rect`) | Older files need no conversion: without a pivot a layer turns about its origin, as it always did, and without `rect` a shape is a path. An older reader would turn a layer with a pivot about its origin and show it in the wrong place, so the version was bumped. |
-| 5 | Fanimate 0.2.3 | The project may have guides (`guides` in `document.json`); layers may be locked (`locked`); shapes may be hidden (`visible: false`); the project may have a camera (`camera`); shapes may have colour keys (`fill_keys`, `stroke_keys`) | Older files need no conversion: they have no guides, camera or colour keys and nothing locked or hidden. An older reader would show a hidden shape, ignore a lock, draw the colour keys' shapes in one colour and lose the guides and camera when it saved, so the version was bumped. |
+| 5 | Fanimate 0.2.3 | The project may have guides (`guides` in `document.json`); layers may be locked (`locked`); shapes may be hidden (`visible: false`); the project may have a camera (`camera`); shapes may have colour keys (`fill_keys`, `stroke_keys`), stroke exposure (`trim`, `trim_keys`) and rectangles may have a radius for each corner (`rect.radii`) | Older files need no conversion: they have no guides, camera or colour keys and nothing locked or hidden. An older reader would show a hidden shape, ignore a lock, draw the colour keys' shapes in one colour, draw whole strokes that are trimmed, round all four corners alike and lose the guides and camera when it saved, so the version was bumped. |
 
 ### The single-file container
 

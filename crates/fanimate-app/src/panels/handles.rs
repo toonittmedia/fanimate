@@ -60,8 +60,9 @@ pub enum Hit {
 /// The gesture in progress.
 #[derive(Clone, Copy, Debug)]
 pub enum Gesture {
-    /// A handle of the selection frame (the editor holds the rest).
-    Frame,
+    /// A handle of the selection frame (the editor holds the rest), and
+    /// whether it scales (the one that snaps).
+    Frame { scales: bool },
     /// A corner radius: which corner, and how far the pointer's radius was
     /// from the real one when it was grabbed, so the rectangle does not jump.
     Radius { corner: usize, grab: f32 },
@@ -120,7 +121,7 @@ pub fn hit_test(
 ) -> Option<Hit> {
     if let Some(target) = radius {
         for corner in 0..4 {
-            let at = screen.point(target.handle(corner, radius_inset(screen, target)));
+            let at = screen.point(target.handle(corner, radius_inset(screen, target, corner)));
             if at.distance(pos) <= GRAB {
                 return Some(Hit::Radius(corner));
             }
@@ -163,9 +164,9 @@ pub fn hit_test(
 
 /// How far in from its corner a radius handle is drawn: the radius, but
 /// never so close to the corner it cannot be grabbed.
-fn radius_inset(screen: &Screen, target: &RadiusTarget) -> f32 {
+fn radius_inset(screen: &Screen, target: &RadiusTarget, corner: usize) -> f32 {
     let reach = (RADIUS_INSET / screen.zoom).min(target.rect.max_radius());
-    target.rect.radius.max(reach)
+    target.rect.corner_radii()[corner % 4].max(reach)
 }
 
 /// The cursor for what is under the pointer.
@@ -209,16 +210,20 @@ pub fn interact(
         && let Some(press) = ctx.input(|i| i.pointer.press_origin())
     {
         shell.ui.handle_gesture = match hit_test(screen, frame, radius.as_ref(), press) {
-            Some(Hit::Handle(h)) => shell
-                .editor
-                .begin_handle(h, screen.doc(press))
-                .then_some(Gesture::Frame),
+            Some(Hit::Handle(h)) => {
+                shell
+                    .editor
+                    .begin_handle(h, screen.doc(press))
+                    .then_some(Gesture::Frame {
+                        scales: matches!(h, fanimate_editor::Handle::Scale { .. }),
+                    })
+            }
             Some(Hit::Radius(corner)) => {
                 radius
                     .filter(|_| shell.editor.begin_radius_edit())
                     .map(|t| Gesture::Radius {
                         corner,
-                        grab: t.radius_at(corner, screen.doc(press)) - t.rect.radius,
+                        grab: t.radius_at(corner, screen.doc(press)) - t.rect.corner_radii()[corner],
                     })
             }
             None => None,
@@ -233,19 +238,33 @@ pub fn interact(
     {
         let mods = ctx.input(|i| i.modifiers);
         match gesture {
-            Gesture::Frame => shell.editor.drag_handle(
-                screen.doc(pos),
-                HandleMods {
-                    shift: mods.shift,
-                    alt: mods.alt,
-                    snap: SNAP / screen.zoom,
-                },
-            ),
+            Gesture::Frame { scales } => {
+                // a scaling handle snaps like a point being dragged: to the
+                // grid, guides, the canvas and other shapes. Turning and the
+                // pivot have their own steps (15 degrees, the nine anchors).
+                let at = if scales {
+                    crate::panels::canvas::do_snap(shell, screen.doc(pos))
+                } else {
+                    screen.doc(pos)
+                };
+                shell.editor.drag_handle(
+                    at,
+                    HandleMods {
+                        shift: mods.shift,
+                        alt: mods.alt,
+                        snap: SNAP / screen.zoom,
+                    },
+                );
+            }
             Gesture::Radius { corner, grab } => {
                 if let Some(t) = shell.editor.radius_target() {
-                    shell
-                        .editor
-                        .set_corner_radius(t.radius_at(corner, screen.doc(pos)) - grab);
+                    let radius = t.radius_at(corner, screen.doc(pos)) - grab;
+                    // a handle moves all four corners; with Alt, only its own
+                    if mods.alt {
+                        shell.editor.set_one_corner_radius(corner, radius);
+                    } else {
+                        shell.editor.set_corner_radius(radius);
+                    }
                 }
             }
         }
@@ -330,9 +349,8 @@ pub fn paint_radius(
         .doc
         .find(target.layer)
         .map_or(p.accent, |l| crate::theme::label_color(l.shown_label()));
-    let inset = radius_inset(screen, target);
     for corner in 0..4 {
-        let at = screen.point(target.handle(corner, inset));
+        let at = screen.point(target.handle(corner, radius_inset(screen, target, corner)));
         let over = hover == Some(Hit::Radius(corner));
         painter.circle_filled(at, 4.5, if over { color } else { p.panel });
         painter.circle_stroke(at, 4.5, Stroke::new(1.5, color));

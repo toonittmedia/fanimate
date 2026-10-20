@@ -60,44 +60,40 @@ impl Path {
 
     /// Axis-aligned rectangle with optional rounded corners.
     pub fn rect(min: Vec2, size: Vec2, radius: f32) -> Self {
-        let r = radius.clamp(0.0, size.x.min(size.y) / 2.0);
+        Self::rounded_rect(min, size, [radius; 4])
+    }
+
+    /// A rectangle with a radius for each corner: top left, top right,
+    /// bottom right, bottom left. Each is brought into 0 to half the
+    /// shorter side. Going clockwise on screen from the top left; a corner
+    /// with no radius is a point, so a plain rectangle has four.
+    pub fn rounded_rect(min: Vec2, size: Vec2, radii: [f32; 4]) -> Self {
+        let most = size.x.min(size.y) / 2.0;
+        let radii = radii.map(|r| if r.is_finite() { r.clamp(0.0, most) } else { 0.0 });
         let max = min + size;
-        if r <= 0.0 {
-            return Self::new()
-                .move_to(min)
-                .line_to(Vec2::new(max.x, min.y))
-                .line_to(max)
-                .line_to(Vec2::new(min.x, max.y))
-                .close();
+        let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)];
+        // the way the outline leaves each corner (and so arrives at the next)
+        let leaving = [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y];
+        let first = corners[0] + leaving[0] * radii[0];
+        let mut path = Self::new().move_to(first);
+        // the other three corners, then the first again, which closes it
+        for i in [1, 2, 3, 0] {
+            let (r, at) = (radii[i], corners[i]);
+            let (arriving, leaving) = (leaving[(i + 3) % 4], leaving[i]);
+            let start = at - arriving * r;
+            // the last side is the closing one, unless the first corner is
+            // rounded; a side with no length (two corners rounded by half of
+            // it) keeps its zero-length line, as files already written do
+            let closing = i == 0 && first.distance(start) < 1e-4;
+            if !closing {
+                path = path.line_to(start);
+            }
+            if r > 0.0 {
+                let k = r * (1.0 - KAPPA);
+                path = path.cubic_to(at - arriving * k, at + leaving * k, at + leaving * r);
+            }
         }
-        let k = r * (1.0 - KAPPA);
-        Self::new()
-            .move_to(Vec2::new(min.x + r, min.y))
-            .line_to(Vec2::new(max.x - r, min.y))
-            .cubic_to(
-                Vec2::new(max.x - k, min.y),
-                Vec2::new(max.x, min.y + k),
-                Vec2::new(max.x, min.y + r),
-            )
-            .line_to(Vec2::new(max.x, max.y - r))
-            .cubic_to(
-                Vec2::new(max.x, max.y - k),
-                Vec2::new(max.x - k, max.y),
-                Vec2::new(max.x - r, max.y),
-            )
-            .line_to(Vec2::new(min.x + r, max.y))
-            .cubic_to(
-                Vec2::new(min.x + k, max.y),
-                Vec2::new(min.x, max.y - k),
-                Vec2::new(min.x, max.y - r),
-            )
-            .line_to(Vec2::new(min.x, min.y + r))
-            .cubic_to(
-                Vec2::new(min.x, min.y + k),
-                Vec2::new(min.x + k, min.y),
-                Vec2::new(min.x + r, min.y),
-            )
-            .close()
+        path.close()
     }
 
     /// Circle made of four cubic arcs.
@@ -312,8 +308,14 @@ pub struct RectParams {
     pub width: f32,
     pub height: f32,
     /// Corner radius, from 0 (square corners) to half the shorter side.
+    /// With `radii` set it is only what the corners were last set to
+    /// together; the corners use `radii`.
     #[serde(default)]
     pub radius: f32,
+    /// Version 5: a radius for each corner (top left, top right, bottom
+    /// right, bottom left) when they differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radii: Option<[f32; 4]>,
 }
 
 impl RectParams {
@@ -324,7 +326,14 @@ impl RectParams {
             width: size.x,
             height: size.y,
             radius,
+            radii: None,
         }
+    }
+
+    /// The radius of each corner: top left, top right, bottom right, bottom
+    /// left.
+    pub fn corner_radii(&self) -> [f32; 4] {
+        self.radii.unwrap_or([self.radius; 4])
     }
 
     pub fn min(&self) -> Vec2 {
@@ -342,17 +351,20 @@ impl RectParams {
 
     /// Whether these can make a path: finite, with a size and a radius that fits.
     pub fn is_valid(&self) -> bool {
+        let most = self.max_radius() + 1e-3;
         [self.x, self.y, self.width, self.height, self.radius]
             .iter()
+            .chain(self.radii.iter().flatten())
             .all(|v| v.is_finite())
             && self.width > 0.0
             && self.height > 0.0
-            && (0.0..=self.max_radius() + 1e-3).contains(&self.radius)
+            && self.corner_radii().iter().all(|r| (0.0..=most).contains(r))
+            && (0.0..=most).contains(&self.radius)
     }
 
     /// The path these describe.
     pub fn path(&self) -> Path {
-        Path::rect(self.min(), self.size(), self.radius)
+        Path::rounded_rect(self.min(), self.size(), self.corner_radii())
     }
 }
 
@@ -402,6 +414,14 @@ pub struct Shape {
     pub fill_keys: Vec<Key<Color>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stroke_keys: Vec<Key<Color>>,
+    /// Version 5: stroke exposure. Only the part of the stroke from `trim.x`
+    /// to `trim.y` is drawn, each 0 to 1 of the length of every subpath. The
+    /// fill is not trimmed. `trim_keys` animate it, with `trim` the value
+    /// when there are none.
+    #[serde(default = "full_trim", skip_serializing_if = "is_full_trim")]
+    pub trim: Vec2,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trim_keys: Vec<Key<Vec2>>,
 }
 
 fn shown() -> bool {
@@ -410,6 +430,15 @@ fn shown() -> bool {
 
 fn is_shown(v: &bool) -> bool {
     *v
+}
+
+/// The whole stroke: from the start to the end.
+fn full_trim() -> Vec2 {
+    Vec2::new(0.0, 1.0)
+}
+
+pub(crate) fn is_full_trim(v: &Vec2) -> bool {
+    *v == full_trim()
 }
 
 impl Shape {
@@ -426,6 +455,8 @@ impl Shape {
             visible: true,
             fill_keys: Vec::new(),
             stroke_keys: Vec::new(),
+            trim: full_trim(),
+            trim_keys: Vec::new(),
         }
     }
 
@@ -457,6 +488,31 @@ impl Shape {
             return false;
         }
         rect.radius = radius.clamp(0.0, rect.max_radius());
+        rect.radii = None;
+        self.path = rect.path();
+        self.rect = Some(rect);
+        true
+    }
+
+    /// Change the radius of one corner (0 top left, 1 top right, 2 bottom
+    /// right, 3 bottom left) of a rectangle. When the four end up equal it is
+    /// one radius again. Returns false (changing nothing) if this is not a
+    /// rectangle any more.
+    pub fn set_rect_corner_radius(&mut self, corner: usize, radius: f32) -> bool {
+        let Some(mut rect) = self.parametric_rect() else {
+            return false;
+        };
+        if !radius.is_finite() || corner >= 4 {
+            return false;
+        }
+        let mut radii = rect.corner_radii();
+        radii[corner] = radius.clamp(0.0, rect.max_radius());
+        if radii.iter().all(|r| *r == radii[0]) {
+            rect.radius = radii[0];
+            rect.radii = None;
+        } else {
+            rect.radii = Some(radii);
+        }
         self.path = rect.path();
         self.rect = Some(rect);
         true
@@ -498,6 +554,9 @@ impl Shape {
                 rect.width *= x.x;
                 rect.height *= x.x;
                 rect.radius *= x.x;
+                if let Some(radii) = &mut rect.radii {
+                    radii.iter_mut().for_each(|r| *r *= x.x);
+                }
             } else {
                 self.rect = None;
             }
@@ -693,6 +752,80 @@ mod tests {
         assert!(shape.set_rect_radius(0.0));
         assert_eq!(shape.path.on_curve_count(), 4);
         assert!(!shape.set_rect_radius(f32::NAN));
+    }
+
+    #[test]
+    fn each_corner_can_have_its_own_radius() {
+        let min = Vec2::new(10.0, 20.0);
+        let size = Vec2::new(100.0, 60.0);
+        let mut shape = Shape::rectangle("R", min, size, 0.0, Style::fill(Color::BLACK));
+        assert!(shape.set_rect_corner_radius(1, 20.0));
+        let rect = shape.parametric_rect().expect("still a rectangle");
+        assert_eq!(rect.corner_radii(), [0.0, 20.0, 0.0, 0.0]);
+        // one rounded corner: the four corners and the extra point where the arc starts
+        assert_eq!(shape.path.on_curve_count(), 5);
+        assert_eq!(shape.path, Path::rounded_rect(min, size, [0.0, 20.0, 0.0, 0.0]));
+        // the top right corner is where the curve is
+        assert!(
+            shape
+                .path
+                .points()
+                .any(|p| p.distance(Vec2::new(90.0, 20.0)) < 1e-4)
+        );
+        assert!(
+            shape
+                .path
+                .points()
+                .any(|p| p.distance(Vec2::new(110.0, 40.0)) < 1e-4)
+        );
+        // a radius is brought into range, and a corner that does not exist is refused
+        assert!(shape.set_rect_corner_radius(3, 500.0));
+        assert_eq!(shape.parametric_rect().unwrap().corner_radii()[3], 30.0);
+        assert!(!shape.set_rect_corner_radius(4, 1.0));
+        assert!(!shape.set_rect_corner_radius(0, f32::NAN));
+        // all four the same is one radius again, and setting one radius sets all four
+        for corner in 0..4 {
+            assert!(shape.set_rect_corner_radius(corner, 8.0));
+        }
+        let rect = shape.parametric_rect().unwrap();
+        assert_eq!((rect.radii, rect.radius), (None, 8.0));
+        assert_eq!(shape.path, Path::rect(min, size, 8.0));
+        assert!(shape.set_rect_corner_radius(2, 3.0));
+        assert!(shape.set_rect_radius(5.0));
+        assert_eq!(shape.parametric_rect().unwrap().corner_radii(), [5.0; 4]);
+    }
+
+    #[test]
+    fn a_plain_rounded_rectangle_is_the_shape_it_always_was() {
+        // the path of a rectangle with all four corners alike must not change
+        let square = Path::rect(Vec2::ZERO, Vec2::new(4.0, 2.0), 0.0);
+        assert_eq!(square.on_curve_count(), 4);
+        let round = Path::rect(Vec2::ZERO, Vec2::new(4.0, 2.0), 1.0);
+        // four sides and four arcs; at the full radius two sides have no length
+        assert_eq!(round.on_curve_count(), 9);
+        assert_eq!(
+            round.cmds.first(),
+            Some(&PathCmd::MoveTo(Vec2::new(1.0, 0.0))),
+            "starts where the top left arc ends"
+        );
+        assert_eq!(round.cmds.last(), Some(&PathCmd::Close));
+    }
+
+    #[test]
+    fn scaling_a_rectangle_scales_each_corner() {
+        let mut shape = Shape::rectangle(
+            "R",
+            Vec2::ZERO,
+            Vec2::new(100.0, 60.0),
+            0.0,
+            Style::fill(Color::BLACK),
+        );
+        assert!(shape.set_rect_corner_radius(0, 10.0));
+        shape.transform(Affine2::from_scale(Vec2::splat(2.0)));
+        let rect = shape
+            .parametric_rect()
+            .expect("an even scale keeps the rectangle");
+        assert_eq!(rect.corner_radii(), [20.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

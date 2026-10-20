@@ -271,6 +271,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
             }
         });
     rectangle(ui, shell);
+    stroke_exposure(ui, shell);
 
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
@@ -497,6 +498,82 @@ fn pivot_grid(ui: &mut egui::Ui, shell: &Shell) -> Option<(f32, f32)> {
     clicked
 }
 
+/// How much of the selected shape's stroke is drawn, with a key button: shown
+/// while one shape with a stroke is selected.
+fn stroke_exposure(ui: &mut egui::Ui, shell: &mut Shell) {
+    let Some((layer, index, trim)) = shell.editor.exposure_target() else {
+        return;
+    };
+    ui.add_space(8.0);
+    heading(ui, shell, "Stroke exposure");
+    let mut percent = [trim.x * 100.0, trim.y * 100.0];
+    let mut edit = None;
+    egui::Grid::new("exposure-props")
+        .num_columns(3)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Start");
+            let r = ui.add(
+                egui::DragValue::new(&mut percent[0])
+                    .range(0.0..=100.0)
+                    .speed(0.5)
+                    .suffix("%")
+                    .max_decimals(1),
+            );
+            if r.changed() {
+                edit = Some(r);
+            }
+            ui.end_row();
+            ui.label("End");
+            let r = ui.add(
+                egui::DragValue::new(&mut percent[1])
+                    .range(0.0..=100.0)
+                    .speed(0.5)
+                    .suffix("%")
+                    .max_decimals(1),
+            );
+            if r.changed() {
+                edit = Some(r);
+            }
+            key_button(ui, shell, ChannelId::Trim(index));
+            ui.end_row();
+        });
+    if let Some(r) = edit {
+        begin_edit(shell, &r, "Stroke exposure");
+        // the start stays before the end
+        let (start, end) = (percent[0] / 100.0, percent[1] / 100.0);
+        let moved_start = (start - trim.x).abs() > (end - trim.y).abs();
+        let next = if moved_start {
+            fanimate_core::Vec2::new(start.min(trim.y), trim.y)
+        } else {
+            fanimate_core::Vec2::new(trim.x, end.max(trim.x))
+        };
+        shell.editor.set_stroke_exposure(layer, index, next);
+    }
+    crate::kit::note(
+        ui,
+        &shell.palette.clone(),
+        "Show only part of the stroke. Do the same on another frame to animate it.",
+    );
+}
+
+/// A drag field for a corner radius, in pixels or as a percentage of the
+/// largest that fits.
+fn corner_field(value: &mut f32, relative: bool, max: f32) -> egui::DragValue<'_> {
+    if relative {
+        egui::DragValue::new(value)
+            .range(0.0..=100.0)
+            .speed(0.5)
+            .suffix("%")
+    } else {
+        egui::DragValue::new(value)
+            .range(0.0..=max)
+            .speed(0.5)
+            .suffix(" px")
+    }
+    .max_decimals(1)
+}
+
 /// A rectangle's corner radius, and Expand Shape: shown while one shape that
 /// is still a rectangle is selected.
 fn rectangle(ui: &mut egui::Ui, shell: &mut Shell) {
@@ -507,33 +584,56 @@ fn rectangle(ui: &mut egui::Ui, shell: &mut Shell) {
     heading(ui, shell, "Rectangle");
     let max = target.rect.max_radius();
     let relative = shell.ui.radius_relative;
+    let each = shell.ui.radius_each;
+    let radii = target.rect.corner_radii();
     // as a percentage, 100% is the most that fits: half the shorter side
-    let mut shown = if relative {
-        target.rect.radius / max.max(f32::EPSILON) * 100.0
-    } else {
-        target.rect.radius
+    let show = |r: f32| {
+        if relative {
+            r / max.max(f32::EPSILON) * 100.0
+        } else {
+            r
+        }
     };
+    let mut shown = show(radii[0]);
+    let mut shown_each = radii.map(show);
     let mut edit = None;
+    let mut edit_corner = None;
     egui::Grid::new("rect-props")
         .num_columns(2)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            ui.label("Corner radius");
-            let drag = if relative {
-                egui::DragValue::new(&mut shown)
-                    .range(0.0..=100.0)
-                    .speed(0.5)
-                    .suffix("%")
+            if each {
+                ui.label("Corner radii");
+                ui.vertical(|ui| {
+                    // top row is the top corners, as they sit on the shape
+                    for pair in [[0usize, 1], [3, 2]] {
+                        ui.horizontal(|ui| {
+                            for corner in pair {
+                                let r = ui
+                                    .add(corner_field(&mut shown_each[corner], relative, max))
+                                    .on_hover_text(
+                                        ["Top left", "Top right", "Bottom right", "Bottom left"][corner],
+                                    );
+                                if r.changed() {
+                                    edit_corner = Some((corner, r));
+                                }
+                            }
+                        });
+                    }
+                });
             } else {
-                egui::DragValue::new(&mut shown)
-                    .range(0.0..=max)
-                    .speed(0.5)
-                    .suffix(" px")
-            };
-            let r = ui.add(drag.max_decimals(1));
-            if r.changed() {
-                edit = Some(r);
+                ui.label("Corner radius");
+                let r = ui.add(corner_field(&mut shown, relative, max));
+                if r.changed() {
+                    edit = Some(r);
+                }
             }
+            ui.end_row();
+            ui.label("Corners");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut shell.ui.radius_each, false, "Together");
+                ui.selectable_value(&mut shell.ui.radius_each, true, "Each");
+            });
             ui.end_row();
             ui.label("Rounding");
             ui.horizontal(|ui| {
@@ -546,6 +646,12 @@ fn rectangle(ui: &mut egui::Ui, shell: &mut Shell) {
         begin_edit(shell, &r, "Corner radius");
         let radius = if relative { shown / 100.0 * max } else { shown };
         shell.editor.set_corner_radius(radius);
+    }
+    if let Some((corner, r)) = edit_corner {
+        begin_edit(shell, &r, "Corner radius");
+        let value = shown_each[corner];
+        let radius = if relative { value / 100.0 * max } else { value };
+        shell.editor.set_one_corner_radius(corner, radius);
     }
     if ui
         .button("Expand Shape")
