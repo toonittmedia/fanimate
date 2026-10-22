@@ -10,8 +10,9 @@
 //!   in pixels from the top-left with y down, so every position is scaled
 //!   by half the project height and flipped, and every angle negated.
 //! - Animated values are `{when, val, interp}` lists. Frame 0 holds the
-//!   rest value (for bones, the rest pose); the animation starts on frame
-//!   1, which becomes Fanimate's frame 0.
+//!   rest value (for bones, the rest pose), which is Fanimate's frame 0
+//!   too; the animation starts on frame 1 in both, so keys keep their
+//!   frame numbers.
 //! - Layers are listed bottom first, as Fanimate draws them.
 //! - A vector layer (`MeshLayer`) holds points and curves through them;
 //!   each curve point has a smoothness that sets how round the curve is
@@ -225,8 +226,9 @@ impl<'a> Reader<'a> {
         let num = |k: &str, d: f32| data.and_then(|p| p.get(k)).and_then(f).unwrap_or(d);
         let (w, h) = (num("width", 1280.0).max(1.0), num("height", 720.0).max(1.0));
         let mut doc = Document::new("Imported", w, h, num("fps", 24.0).clamp(1.0, 240.0));
-        doc.start = (num("start_frame", 1.0) as i32 - 1).max(0);
-        doc.end = (num("end_frame", 96.0) as i32 - 1).max(doc.start);
+        // Moho counts from 1 as Fanimate does, and its frame 0 is the rest pose
+        doc.start = (num("start_frame", 1.0) as i32).max(1);
+        doc.end = (num("end_frame", 96.0) as i32).max(doc.start);
         if let Some(c) = data.and_then(|p| p.get("back_color")).and_then(color) {
             doc.background = c;
         }
@@ -292,11 +294,11 @@ impl<'a> Reader<'a> {
                 ch.base = x;
                 first = i;
             } else {
-                ch.set_key((when - 1).min(i64::from(i32::MAX)) as i32, x, i);
+                ch.set_key(when.min(i64::from(i32::MAX)) as i32, x, i);
             }
         }
         // Moho moves from the rest value to the first key; Fanimate holds
-        // the first key before it, so start the move on frame 0
+        // the first key before it, so start the move on the rest frame, 0
         if let Some(k) = ch.keys.first()
             && k.frame > 0
             && k.value != ch.base
@@ -419,11 +421,11 @@ impl<'a> Reader<'a> {
         let mut out: Vec<Key<String>> = Vec::new();
         for (when, value, im) in keys(channel) {
             let Some(name) = value.as_str() else { continue };
-            let frame = (when - 1).clamp(0, i64::from(i32::MAX)) as i32;
+            let frame = when.clamp(0, i64::from(i32::MAX)) as i32;
             let interp = interp(im, &mut self.notes);
             match out.iter_mut().find(|k| k.frame == frame) {
-                // a later key on the same frame (frame 1 after the rest
-                // value) wins
+                // a later key on the same frame (a repeated or negative
+                // frame number) wins
                 Some(k) => k.value = name.to_owned(),
                 None => out.push(Key {
                     frame,
@@ -897,7 +899,7 @@ mod tests {
         let im = read(&project());
         let d = &im.doc;
         assert_eq!((d.width, d.height, d.fps), (200.0, 100.0, 24.0));
-        assert_eq!((d.start, d.end), (0, 23));
+        assert_eq!((d.start, d.end), (1, 24));
         assert_eq!(d.background, Color::rgb(1.0, 0.0, 0.0));
         assert_eq!(d.name, "Test");
     }
@@ -916,14 +918,14 @@ mod tests {
         assert_eq!(skeleton.bones[0].length, 25.0);
         // counter-clockwise becomes clockwise
         assert_eq!(skeleton.bones[0].angle.base, -0.5);
-        // Moho frame 5 is Fanimate frame 4; the move starts on frame 0
+        // keys keep Moho's frame numbers; the move starts on the rest frame, 0
         let keys: Vec<_> = skeleton.bones[1]
             .angle
             .keys
             .iter()
             .map(|k| (k.frame, k.value))
             .collect();
-        assert_eq!(keys, [(0, 0.0), (4, -1.0)]);
+        assert_eq!(keys, [(0, 0.0), (5, -1.0)]);
         // the square follows the upper arm, renumbered
         let LayerKind::Vector { shapes } = &children[0].kind else {
             panic!()
@@ -949,9 +951,9 @@ mod tests {
         // move, four sides, close
         assert_eq!(s.path.cmds.len(), 6);
         assert_eq!(s.path.cmds[0], fanimate_core::PathCmd::MoveTo(Vec2::ZERO));
-        // the points move on Moho frame 10: a key on frame 0 and frame 9
+        // the points move on Moho frame 10: a key on the rest frame and frame 10
         let frames: Vec<_> = s.path_keys.iter().map(|k| k.frame).collect();
-        assert_eq!(frames, [0, 9]);
+        assert_eq!(frames, [0, 10]);
         assert!(
             s.path_keys
                 .iter()

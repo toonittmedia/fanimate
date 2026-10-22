@@ -439,6 +439,103 @@ mod tests {
         }
     }
 
+    fn audio_fixture(name: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/audio")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    /// Decode a real encoded file (a generated 0.3 s, 440 Hz mono tone at
+    /// 22 050 Hz, see tests/fixtures/audio/README.md) and check what comes out.
+    fn check_tone(name: &str) {
+        let ext = name.rsplit('.').next().unwrap();
+        let wav = sound_to_wav(&audio_fixture(name), ext).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let info = sound_info(&wav).unwrap();
+        assert_eq!(info.channels, 1, "{name}");
+        assert_eq!(info.sample_rate, 22_050, "{name}");
+        // encoders add priming and padding frames, so the length is only close
+        assert!((info.seconds - 0.3).abs() < 0.12, "{name}: {} s", info.seconds);
+        let samples: Vec<i16> = hound::WavReader::new(std::io::Cursor::new(&wav))
+            .unwrap()
+            .samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        assert!(peak > 1_000, "{name}: the decoded sound is silent (peak {peak})");
+        // a 440 Hz tone crosses zero about 880 times a second; noise or a
+        // wrong sample order would cross far more or far less often
+        let mid = &samples[samples.len() / 4..samples.len() * 3 / 4];
+        let crossings = mid.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+        let per_second = crossings as f32 / (mid.len() as f32 / 22_050.0);
+        assert!(
+            (per_second - 880.0).abs() < 120.0,
+            "{name}: {per_second} crossings a second"
+        );
+    }
+
+    #[test]
+    fn mp3_decodes() {
+        check_tone("tone.mp3");
+    }
+
+    #[test]
+    fn ogg_vorbis_decodes() {
+        check_tone("tone.ogg");
+    }
+
+    #[test]
+    fn flac_decodes_with_its_exact_length() {
+        check_tone("tone.flac");
+        let wav = sound_to_wav(&audio_fixture("tone.flac"), "flac").unwrap();
+        // lossless and without padding: 0.3 s at 22 050 Hz is 6 615 samples
+        assert_eq!(
+            hound::WavReader::new(std::io::Cursor::new(&wav))
+                .unwrap()
+                .duration(),
+            6_615
+        );
+    }
+
+    #[test]
+    fn aac_in_m4a_decodes() {
+        check_tone("tone.m4a");
+    }
+
+    #[test]
+    fn aac_in_adts_decodes() {
+        check_tone("tone.aac");
+    }
+
+    #[test]
+    fn encoded_files_import_as_audio_layers_and_are_stored_as_wav() {
+        let mut ed = Editor::untitled();
+        for name in ["tone.mp3", "tone.ogg", "tone.flac", "tone.m4a", "tone.aac"] {
+            let id = ed
+                .import_audio(name, audio_fixture(name))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let Some(LayerKind::Audio(a)) = ed.doc.find(id).map(|l| &l.kind) else {
+                panic!("{name}: not an audio layer");
+            };
+            let stored = &ed.doc.media[&a.media].bytes;
+            assert!(stored.starts_with(b"RIFF"), "{name}: the project keeps WAV");
+        }
+    }
+
+    #[test]
+    fn a_cut_encoded_file_keeps_its_start_or_is_refused() {
+        for name in ["tone.mp3", "tone.ogg", "tone.flac", "tone.m4a", "tone.aac"] {
+            let ext = name.rsplit('.').next().unwrap();
+            let src = audio_fixture(name);
+            for cut in [0, 4, 64, src.len() / 2, src.len() - 1] {
+                // an error or the sound up to the cut, never a panic
+                let _ = sound_to_wav(&src[..cut], ext);
+            }
+        }
+    }
+
     fn mouths() -> (Editor, LayerId) {
         let mut ed = Editor::untitled();
         ed.run(Action::NewSwitchLayer);

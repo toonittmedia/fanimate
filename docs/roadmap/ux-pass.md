@@ -128,7 +128,7 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 - [x] Snapping to other shapes' points, edges and centres (0.2.3), on both axes at once. Guides are saved in the project and can be dragged.
 - [ ] Not built: snapping for Freehand, Eraser and the selection handles.
 - [x] Snap hint line on the canvas while dragging (drawn in a semi-transparent accent colour after the GPU texture; cleared at the start of each frame so it vanishes when no drag is active).
-- [x] Tool integration: `do_snap()` is called by every tool that drags a position — Move Layer, Select/Translate Points, Add Point, Pen, bone drag (AddBone/SelectBone/Pose), Rectangle, Ellipse, Line, Polygon, Star, Triangle. Shape drag `to` endpoints are snapped on each frame.
+- [x] Tool integration: `do_snap()` is called by every tool that drags a position: Move Layer, Select/Translate Points, Add Point, Pen, bone drag (AddBone/SelectBone/Pose), Rectangle, Ellipse, Line, Polygon, Star, Triangle. Shape drag `to` endpoints are snapped on each frame.
 - [x] Pixel snapping: the pixel-snap candidate is produced by the snap module and the canvas tools call it via `do_snap()`.
 - [x] Angle snapping for bones: Shift+AddBone snaps the bone angle to multiples of `snap.angle_step` degrees after position snapping. The `snap_angle` helper is used.
 - [x] Units other than px (pt, mm, in) in the ruler: the corner button cycles through `RulerUnit` variants (px → pt → mm → in → px); tick labels convert via `px_to_unit()` at the configured DPI.
@@ -152,14 +152,74 @@ Each phase ends with fmt, clippy `-D warnings`, the workspace tests and a check 
 
 Built: Stroke Exposure (trim with keys), a radius for each corner, snapping for Freehand and Draw Shape starts and scaling handles, the macOS update install on a worker thread; What's New in the app; Preferences, Export, Shortcuts, About and Update as modal dialogs with a shared layout; links that open the browser; non-blocking update with progress; the canvas outside the dock with three fixed regions and History in the Layers area; the tools panel at three per row; interpolation colours and a dropdown for new keys; expandable property rows with their own keys; key buttons in Properties; Moho-style keying; a document-level camera with a timeline row, Properties fields, look-through and a frame overlay; colour animation for fill and stroke; the shapes list in the Style panel; layer lock, Align and the draggable toolbar; layer type conversion; guides in the document; rotated ruler labels; remembered Export and Save As folders; Render Preview Frame (Ctrl+R) and Import on Ctrl+I; audio import for MP3, OGG, FLAC and AAC; taskbar render progress on Windows. Format version 5.
 
-Not built, still open:
+Not built, still open (the status of each after [UX pass 3](#ux-pass-3) is on the right):
 
-- [ ] Recent thumbnails embedded in the `.fnm` (an app-data cache is used instead).
-- [ ] "Your files" on Home; more templates.
-- [ ] A keyed pivot (a format field).
-- [ ] Offset Path; before and after numbers for the selection frame.
-- [ ] Snapping for the Eraser (it would erase away from the pointer), and for rotating and the pivot (they have their own steps).
-- [ ] Camera drag on the canvas (the camera is edited in Properties and on the timeline).
-- [ ] Moho keymap bindings for the new actions (left unbound on purpose for now).
-- [ ] Real MP3, OGG, FLAC and AAC fixtures in the tests (only generated WAV and damaged input are tested).
-- [ ] Video import: [design note](video-import.md) only.
+- [x] Recent thumbnails embedded in the `.fnm` (0.3.0: `thumbnail.png`, written on save, read before the app-data cache).
+- [x] "Your files" on Home; more templates (0.3.0: folders added on the Home tab; Blank, Walk cycle rig, Lip sync, Frame by frame).
+- [ ] A keyed pivot (a format field). Still open, see UX pass 3.
+- [ ] Offset Path. Still open, see UX pass 3. Before and after numbers for the selection frame: not taken in 0.3.0 (no release build fits on the maintainer's disk), still open.
+- [ ] Snapping for the Eraser (it would erase away from the pointer): still open, see UX pass 3. Snapping for rotating and the pivot: done in 0.3.0 (guides and shape points).
+- [x] Camera drag on the canvas (0.3.0: the Track, Zoom and Roll camera tools).
+- [ ] Moho keymap bindings for the new actions: only the layer clipboard actions are bound. Moho's manual does not list keys for the camera tools or Hide Edge (it lists only Translate Points on T), so they stay unbound rather than guessed.
+- [x] Real MP3, OGG, FLAC and AAC fixtures in the tests: generated tones in `crates/fanimate-editor/tests/fixtures/audio/` (MP3, Ogg Vorbis, FLAC, AAC in M4A and in ADTS) with decode tests in `src/editor/sound.rs`. They pass.
+- [ ] Video import: [design note](video-import.md) only. Still open.
+
+## UX pass 3
+
+Planned with the owner after 0.2.3; the plan is in the maintainer's planning notes and is summarised here. Everything below shipped in 0.3.0 and was checked in the running Windows build, except where it says otherwise (macOS and Linux were not tried; the pivot picker's click, Zoom and Roll camera, Alt+click to show a hidden edge, the Loop menu and the Order rows were covered by tests but not clicked through by hand). It ships as one format bump, **version 6**, so the new fields need only one migration. Files from every earlier version keep opening and look the same.
+
+### Format version 6
+
+| Change | Detail |
+|---|---|
+| 1-based frames | A document starts at frame 1 (a new one runs 1 to 120). Frame 0 is the rest pose: visible, selectable, and the place the keying rule seeds. Migration adds 1 to `start`, `end` and every key frame; it does not invent a frame 0 key for old files. |
+| Loop | Each animation channel can be set to Off, Absolute or Relative. Absolute repeats the keyed cycle; Relative adds the cycle's net change on each repeat. Only meaningful with two or more keys. |
+| Layer order | A stepped integer `Order` channel on layers inside groups, bone layers and switch layers. Siblings are drawn in the order of their sampled slot, so a layer can move in front of or behind its siblings over time. The Layers panel stays in storage order. |
+| Thumbnail | An optional small PNG entry in the `.fnm` container, written on save and ignored by older readers. It is covered by the checksum list. |
+
+The byte-level description belongs to [the format spec](../spec/fnm.md).
+
+### Timeline
+
+- Frame 0 shows in the ruler and the transport has a Rest Pose button (key `1` in the Fanimate keymap, unbound in Moho). First Frame and Home still go to frame 1. The transport reads "Frame 41 of 120".
+- Seconds: a label at each second on the ruler, and "seconds:frames" in the transport, the status bar, Properties and the X-sheet.
+- A monospace font (JetBrains Mono, OFL) for every frame number.
+- The names column has a drag divider, per tab, with a double-click to reset; long names get an ellipsis and a tooltip, in the Layers panel too.
+- The interpolation dropdown: each item is a full-width row, so hover reaches the panel edges and the icon is clickable.
+- Preferences > Timeline: hide layers with no keys (off by default). Groups stay when a child is animated and selected layers always show. The Camera row hides when the camera has no keys.
+- Key selection: click, Shift or Ctrl to add, a box drag across layers and channels, Ctrl+A, Esc. Add and Delete Key act on the selected keys, or on the playhead frame when none are selected. Dragging moves them all; Alt-drag copies.
+- Scale: hover grips at the ends of the selection stretch the keys about the opposite end (Alt: about the playhead), in whole frames, as one undo step.
+- Key copy and paste: Ctrl+C and Ctrl+V in the timeline keep layer and channel and put the earliest key at the playhead. In another tab, keys go to the selected layer's matching channels.
+- Loop: right-click a channel or key and choose Off, Absolute or Relative. A tinted bar with ghost keys runs from the last key to the end.
+- Order rows for layers in groups.
+
+### Tools and canvas
+
+- Tool groups follow the layer type: Transform, Camera and Workspace always show; Draw and Fill for vector layers; Bone for bone layers. If a layer change hides the active tool, the app switches to Transform.
+- A Camera group with Track, Zoom and Roll Camera. Dragging on the canvas keys the camera by the keying rule, in one undo step.
+- Point transform in the Moho style: with two or more points chosen, the Transform tool shows a frame with scale, rotate and a movable pivot, and edits go through the keying rule. The Scale Points and Rotate Points tools are removed.
+- A pivot picker: a target button on the floating toolbar and in Properties; the next canvas click sets the pivot, snapping to the nine anchors (Shift for free). Esc cancels. With points chosen, it sets the points' pivot.
+- Snapping for the rotate handle and the pivot, through guides and shape points.
+- Freehand and Freehand with Width are one tool. **Pen pressure** is a checkbox in the Style panel (on by default): on, a pen's pressure sets the width; off, the stroke has an even width. A mouse has no pressure, so it draws at full width either way. The drag-up-or-down width trick is gone.
+- **Hide Edge** (Shift+H): click a segment to leave its stroke undrawn, click it again or Alt+click to show it. The points and the fill stay. It is a flag per path command on the shape (`hidden_edge_flags`, format version 6); point insertion and removal, extending, closing and Delete Edge keep the flags in step, and flags that stop fitting the path are ignored (the edges show).
+- **Saved styles**, one line under "Brushes and new shapes" in the Style panel: a drop-down of styles, a save button (updates the chosen style when the look was edited, otherwise saves a new one) and a menu with Save as new, Update, Rename, Delete, Set as default and Reset to default. A style holds line colour, width, fill, outline, smoothing, taper and pen pressure (not the eraser or weight brush sizes). A built-in Default style cannot be changed or deleted. Styles are kept by the app and saved in the project (`styles`, format version 6); opening a project adds the styles it has that the app does not. A default other than the built-in one is what a session starts with; without one the brush stays as the last session left it.
+- Clipboard by focus: Ctrl+C, Ctrl+X and Ctrl+V copy points or shapes on the canvas and keys in the timeline. Layers use **Ctrl+Shift+C, Ctrl+Shift+X and Ctrl+Shift+V**; Ctrl+D still duplicates layers. A user who presses Ctrl+C on a selected layer gets a status hint. Shapes paste across tabs.
+
+### Home, keymaps, tests
+
+- "Your files" on Home: folders added on the Home tab, scanned for `.fnm` files and shown with their thumbnails. More built-in templates: blank, walk-cycle rig, lip sync, frame-by-frame.
+- Moho keymap: the layer clipboard actions (Ctrl+Shift+C, X, V) are bound in both keymaps. The camera tools, Hide Edge, Go to Rest Pose and Pick Pivot are left unbound in the Moho keymap, because Moho's own keys for them are not documented anywhere we may take them from. The keymap test rejects duplicate chords.
+- Audio fixtures: done (see the 0.2.3 list above).
+- Before and after numbers (CLAUDE.md rule 3) for the selection frame with points, the timeline with a key selection and the hide filter, and evaluation with Loop and Order, from `fanimate-cli bench`. Pending.
+
+### Not built in this pass
+
+- A keyed pivot. The pivot is not animated; keying it needs a format field and a rule for what a keyed pivot does to the layer's look.
+- Offset Path.
+- Snapping for the Eraser. It would erase away from the pointer.
+- Video import: [design note](video-import.md) only.
+
+### Consequences to know about
+
+- Ctrl+C on a selected layer no longer copies the layer; use Ctrl+Shift+C.
+- Frame numbers shown to the user, in the CLI `render --frame` and in the web player, move by one.

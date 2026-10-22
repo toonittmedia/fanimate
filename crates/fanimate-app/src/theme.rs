@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 const TOKENS: &str = include_str!("../../../brand/tokens/tokens.json");
 const INTER: &[u8] = include_bytes!("../../../brand/fonts/Inter-Variable.ttf");
+const JETBRAINS_MONO: &[u8] = include_bytes!("../../../brand/fonts/JetBrainsMono-Regular.ttf");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Theme {
@@ -158,12 +159,25 @@ pub fn install_fonts(ctx: &egui::Context) {
     };
     fonts.font_data.insert(
         "Inter".into(),
-        std::sync::Arc::new(FontData::from_static(INTER).tweak(crisp)),
+        std::sync::Arc::new(FontData::from_static(INTER).tweak(crisp.clone())),
     );
     if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
         family.insert(0, "Inter".into());
     }
+    // Frame numbers: digits stay the same width, so a ruler or counter does not jitter.
+    fonts.font_data.insert(
+        "JetBrains Mono".into(),
+        std::sync::Arc::new(FontData::from_static(JETBRAINS_MONO).tweak(crisp)),
+    );
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+        family.insert(0, "JetBrains Mono".into());
+    }
     ctx.set_fonts(fonts);
+}
+
+/// The monospace font (JetBrains Mono) for frame numbers and clocks.
+pub fn mono(size: f32) -> egui::FontId {
+    egui::FontId::new(size, FontFamily::Monospace)
 }
 
 pub fn apply(ctx: &egui::Context, theme: Theme) -> Palette {

@@ -37,6 +37,10 @@ pub struct HandleMods {
     /// How close, in document units, the pivot has to come to one of the
     /// box's nine anchors to snap to it.
     pub snap: f32,
+    /// The pointer after snapping to guides and other shapes' points, when
+    /// those are on: the pivot follows it unless it comes near one of the
+    /// box's anchors, which win.
+    pub snapped: Option<Vec2>,
 }
 
 /// The box around the selection, in document space.
@@ -112,13 +116,13 @@ pub(super) struct HandleDrag {
     free_scale: bool,
 }
 
-fn wrap_pi(a: f32) -> f32 {
+pub(super) fn wrap_pi(a: f32) -> f32 {
     (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 /// How far the pointer has taken a side: the anchor that stays put and the
 /// ratio the box grows by, along one axis. `s` is the side being dragged.
-fn axis(s: i8, lo: f32, hi: f32, pointer: f32, from_centre: bool) -> (f32, f32) {
+pub(super) fn axis(s: i8, lo: f32, hi: f32, pointer: f32, from_centre: bool) -> (f32, f32) {
     let centre = (lo + hi) / 2.0;
     if s == 0 {
         return (centre, 1.0);
@@ -139,7 +143,7 @@ fn axis(s: i8, lo: f32, hi: f32, pointer: f32, from_centre: bool) -> (f32, f32) 
 }
 
 /// A ratio kept at least a little way from 0, so a box cannot collapse flat.
-fn keep_open(r: f32) -> f32 {
+pub(super) fn keep_open(r: f32) -> f32 {
     if r.abs() < 0.01 { 0.01_f32.copysign(r) } else { r }
 }
 
@@ -198,6 +202,12 @@ impl Editor {
     /// The frame around the selected layers, or `None` with nothing
     /// selected or nothing drawn.
     pub fn selection_frame(&self) -> Option<SelectionFrame> {
+        // two or more chosen points: the frame is theirs, not the layer's
+        if self.points_mode()
+            && let Some(frame) = self.points_frame()
+        {
+            return Some(frame);
+        }
         let roots = self.selected_roots();
         let bounds = self.layer_bounds(&roots);
         let mut members = Vec::new();
@@ -254,6 +264,11 @@ impl Editor {
     /// `pointer` is in document space. Returns false when there is nothing
     /// to drag.
     pub fn begin_handle(&mut self, handle: Handle, pointer: Vec2) -> bool {
+        if self.points_mode()
+            && let Some(frame) = self.points_frame()
+        {
+            return self.begin_points_handle(handle, pointer, &frame);
+        }
         let Some(frame) = self.selection_frame() else {
             return false;
         };
@@ -330,6 +345,10 @@ impl Editor {
 
     /// Move the handle to `pointer` (document space).
     pub fn drag_handle(&mut self, pointer: Vec2, mods: HandleMods) {
+        if self.points_drag.is_some() {
+            self.drag_points_handle(pointer, mods);
+            return;
+        }
         let Some(drag) = self.handle_drag.take() else {
             return;
         };
@@ -344,11 +363,12 @@ impl Editor {
 
     pub fn end_handle(&mut self) {
         self.handle_drag = None;
+        self.points_drag = None;
         self.handle_readout = None;
     }
 
     pub fn is_dragging_handle(&self) -> bool {
-        self.handle_drag.is_some()
+        self.handle_drag.is_some() || self.points_drag.is_some()
     }
 
     /// What to show beside the pointer while a handle is dragged: the new
@@ -493,7 +513,8 @@ impl Editor {
         if !world0.inverse().is_finite() {
             return;
         }
-        let mut pivot = world0.inverse().transform_point2(pointer);
+        // snapped to guides and other shapes, unless an anchor is nearer
+        let mut pivot = world0.inverse().transform_point2(mods.snapped.unwrap_or(pointer));
         // the nine anchors of the box: corners, middles of the sides, centre
         let mut best: Option<(f32, Vec2)> = None;
         for fy in [0.0, 0.5, 1.0] {

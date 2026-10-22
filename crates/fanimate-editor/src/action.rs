@@ -53,6 +53,11 @@ pub enum Action {
     Cut,
     Copy,
     Paste,
+    /// Cut, copy and paste the selected layers, whatever has focus (plain
+    /// Cut, Copy and Paste follow the focus: canvas points or timeline keys).
+    CutLayers,
+    CopyLayers,
+    PasteLayers,
     Duplicate,
     Delete,
     SelectAll,
@@ -105,6 +110,11 @@ pub enum Action {
     PrevFrame,
     FirstFrame,
     LastFrame,
+    /// Frame 0, the rest pose: how things are drawn and set up, before the
+    /// animation starts at frame 1.
+    GoToRestPose,
+    /// What the properties of the picked keys do after their last key.
+    SetLoop(fanimate_core::LoopMode),
     NextKey,
     PrevKey,
     AddKey,
@@ -165,6 +175,9 @@ pub enum Action {
     Tool(Tool),
     /// Moho's `A`: Add Point on a vector layer, Add Bone on a bone layer.
     AddPointOrBone,
+    /// Arm the pivot picker: the next click on the canvas places the pivot
+    /// of the selected layer, or of the chosen points.
+    PickPivot,
 }
 
 impl Action {
@@ -178,6 +191,10 @@ impl Action {
             OpenSample(Sample::Hello) => "Open Sample: Hello Fanimate",
             OpenSample(Sample::Benchmark) => "Open Sample: Benchmark Rig",
             OpenSample(Sample::StressTest) => "Open Sample: Stress Test",
+            OpenSample(Sample::Blank) => "Open Template: Blank 1080p 24 fps",
+            OpenSample(Sample::WalkCycle) => "Open Template: Walk Cycle Rig",
+            OpenSample(Sample::LipSync) => "Open Template: Lip Sync",
+            OpenSample(Sample::FrameByFrame) => "Open Template: Frame by Frame",
             OpenFolder => "Open Project Folder…",
             CloseDocument => "Close",
             CloseOtherDocuments => "Close Other Tabs",
@@ -202,6 +219,9 @@ impl Action {
             Cut => "Cut",
             Copy => "Copy",
             Paste => "Paste",
+            CutLayers => "Cut Layers",
+            CopyLayers => "Copy Layers",
+            PasteLayers => "Paste Layers",
             Duplicate => "Duplicate",
             Delete => "Delete",
             SelectAll => "Select All Layers",
@@ -249,6 +269,12 @@ impl Action {
             PrevFrame => "Previous Frame",
             FirstFrame => "First Frame",
             LastFrame => "Last Frame",
+            GoToRestPose => "Go to Rest Pose",
+            SetLoop(m) => match m {
+                fanimate_core::LoopMode::Off => "Loop: Off",
+                fanimate_core::LoopMode::Absolute => "Loop: Repeat",
+                fanimate_core::LoopMode::Relative => "Loop: Repeat and Offset",
+            },
             NextKey => "Next Keyframe",
             PrevKey => "Previous Keyframe",
             AddKey => "Add Keyframe",
@@ -295,6 +321,7 @@ impl Action {
             ActualSize => "Actual Size (100%)",
             Tool(t) => t.label(),
             AddPointOrBone => "Add Point / Add Bone",
+            PickPivot => "Set pivot by clicking",
         }
     }
 
@@ -307,9 +334,9 @@ impl Action {
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
             | SaveAsFolder | Import | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates
             | InstallUpdate | Quit => "File",
-            Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | Duplicate | Delete
-            | SelectAll | SelectNone | Rename | FinishPath | Union | Subtract | Intersect | ExpandShape
-            | Preferences | CommandPalette => "Edit",
+            Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
+            | PasteLayers | Duplicate | Delete | SelectAll | SelectNone | Rename | FinishPath | Union
+            | Subtract | Intersect | ExpandShape | Preferences | CommandPalette => "Edit",
             NewVectorLayer
             | NewGroupLayer
             | NewBoneLayer
@@ -323,6 +350,7 @@ impl Action {
             | ToggleLock
             | Align(_)
             | LayerProperties
+            | PickPivot
             | SetLabel(_)
             | SetShapeVisible(..)
             | DeleteShapes
@@ -344,6 +372,8 @@ impl Action {
             | PrevFrame
             | FirstFrame
             | LastFrame
+            | GoToRestPose
+            | SetLoop(_)
             | NextKey
             | PrevKey
             | AddKey
@@ -393,6 +423,9 @@ impl Action {
             Cut,
             Copy,
             Paste,
+            CutLayers,
+            CopyLayers,
+            PasteLayers,
             Duplicate,
             Delete,
             SelectAll,
@@ -416,6 +449,7 @@ impl Action {
             MoveLayerDown,
             ToggleVisibility,
             LayerProperties,
+            PickPivot,
             BindToBone,
             BindSmoothly,
             Unbind,
@@ -427,6 +461,7 @@ impl Action {
             PrevFrame,
             FirstFrame,
             LastFrame,
+            GoToRestPose,
             NextKey,
             PrevKey,
             AddKey,
@@ -443,6 +478,7 @@ impl Action {
         ];
         v.extend(fanimate_core::Interpolation::ALL.map(SetInterpolation));
         v.extend(fanimate_core::Interpolation::ALL.map(SetKeyInterpolation));
+        v.extend(fanimate_core::LoopMode::ALL.map(SetLoop));
         v.extend(fanimate_core::Part::ALL.map(SetPart));
         v.extend(Sample::ALL.iter().map(|s| OpenSample(*s)));
         v.extend(Preset::ALL.iter().map(|p| NewPreset(*p)));
@@ -539,16 +575,33 @@ pub fn search(all: &[Action], query: &str, recent: &[Action]) -> Vec<Action> {
     found.into_iter().map(|(.., a)| a).collect()
 }
 
-/// The sample projects in File › Open Sample.
+/// The sample projects and templates in File › Open Sample and on the Home
+/// tab. Each opens as a new, unsaved file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sample {
     Hello,
     Benchmark,
     StressTest,
+    /// An empty 1080p file at 24 fps.
+    Blank,
+    /// A stick figure on bones with a walk cycle.
+    WalkCycle,
+    /// A face and a switch layer of mouth shapes, ready for Lip Sync.
+    LipSync,
+    /// A frame-by-frame layer with twelve empty drawings.
+    FrameByFrame,
 }
 
 impl Sample {
-    pub const ALL: [Sample; 3] = [Self::Hello, Self::Benchmark, Self::StressTest];
+    pub const ALL: [Sample; 7] = [
+        Self::Blank,
+        Self::WalkCycle,
+        Self::LipSync,
+        Self::FrameByFrame,
+        Self::Hello,
+        Self::Benchmark,
+        Self::StressTest,
+    ];
 
     /// The name in the Open Sample menu.
     pub fn name(self) -> &'static str {
@@ -556,6 +609,23 @@ impl Sample {
             Self::Hello => "Hello Fanimate",
             Self::Benchmark => "Benchmark rig (40 bones)",
             Self::StressTest => "Stress test (400 bones)",
+            Self::Blank => "Blank 1080p 24 fps",
+            Self::WalkCycle => "Walk cycle rig",
+            Self::LipSync => "Lip sync",
+            Self::FrameByFrame => "Frame by frame",
+        }
+    }
+
+    /// One line about what it holds, for the Home tab.
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::Hello => "A bone-rigged letter",
+            Self::Benchmark => "40 bones, the speed test",
+            Self::StressTest => "400 bones, for stress",
+            Self::Blank => "1920 × 1080 px, an empty layer",
+            Self::WalkCycle => "A stick figure with a walk",
+            Self::LipSync => "A face and nine mouth shapes",
+            Self::FrameByFrame => "Twelve empty drawings",
         }
     }
 
@@ -565,6 +635,10 @@ impl Sample {
             Self::Hello => samples::hello(),
             Self::Benchmark => samples::benchmark(40),
             Self::StressTest => samples::benchmark(400),
+            Self::Blank => samples::blank(),
+            Self::WalkCycle => samples::walk_cycle(),
+            Self::LipSync => samples::lip_sync(),
+            Self::FrameByFrame => samples::frame_by_frame(),
         }
     }
 }
@@ -635,6 +709,7 @@ pub enum ToolGroup {
     Draw,
     Fill,
     Layer,
+    Camera,
     Bone,
     Workspace,
 }
@@ -645,12 +720,54 @@ impl ToolGroup {
             Self::Draw => "Draw",
             Self::Fill => "Fill",
             Self::Layer => "Layer",
+            Self::Camera => "Camera",
             Self::Bone => "Bone",
             Self::Workspace => "Workspace",
         }
     }
 
-    pub const ALL: [ToolGroup; 5] = [Self::Draw, Self::Fill, Self::Layer, Self::Bone, Self::Workspace];
+    pub const ALL: [ToolGroup; 6] = [
+        Self::Draw,
+        Self::Fill,
+        Self::Layer,
+        Self::Camera,
+        Self::Bone,
+        Self::Workspace,
+    ];
+
+    /// What kind of layer the group's tools need, for the status message when
+    /// a layer change takes the active tool away. `None` for the groups that
+    /// work on any layer (or none).
+    pub fn needs(self) -> Option<&'static str> {
+        match self {
+            Self::Draw | Self::Fill => Some("a vector layer"),
+            Self::Bone => Some("a bone layer"),
+            Self::Layer | Self::Camera | Self::Workspace => None,
+        }
+    }
+}
+
+/// The tool groups the Tools panel shows for the active layer (`None` when
+/// nothing is selected). Layer, Camera and Workspace are always there; Draw
+/// and Fill need a vector layer and Bone a bone layer. Groups, pictures,
+/// frame-by-frame, switch and audio layers show only the always-there groups.
+pub fn tool_groups_for(kind: Option<&fanimate_core::LayerKind>) -> Vec<ToolGroup> {
+    tool_groups_in(kind, false)
+}
+
+/// As [`tool_groups_for`], for a layer that may sit inside a bone layer
+/// (`in_rig`): the bone tools work on it too, as Paint Weights brushes a
+/// vector layer inside the rig and Manipulate Bones poses its bones.
+pub fn tool_groups_in(kind: Option<&fanimate_core::LayerKind>, in_rig: bool) -> Vec<ToolGroup> {
+    use fanimate_core::LayerKind;
+    ToolGroup::ALL
+        .into_iter()
+        .filter(|group| match group {
+            ToolGroup::Draw | ToolGroup::Fill => matches!(kind, Some(LayerKind::Vector { .. })),
+            ToolGroup::Bone => in_rig || matches!(kind, Some(LayerKind::Bone { .. })),
+            ToolGroup::Layer | ToolGroup::Camera | ToolGroup::Workspace => true,
+        })
+        .collect()
 }
 
 /// Canvas tools, grouped as in Moho Pro's Tools panel.
@@ -673,16 +790,21 @@ pub enum Tool {
     PaintBucket,
     Eyedropper,
     DeleteEdge,
+    /// Click a segment to leave its stroke undrawn (Alt+click shows it).
+    HideEdge,
     Magnet,
-    ScalePoints,
-    RotatePoints,
     DrawShape,
-    FreehandWidth,
     LineWidth,
     StrokeExposure,
     ShapeBuilder,
     #[default]
     TransformLayer,
+    /// Moves the document's camera (the picture follows the pointer).
+    TrackCamera,
+    /// Zooms the document's camera.
+    ZoomCamera,
+    /// Rolls the document's camera about its centre.
+    RollCamera,
     SelectBone,
     AddBone,
     ManipulateBones,
@@ -692,14 +814,13 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 31] = [
+    pub const ALL: [Tool; 32] = [
         Self::SelectPoints,
         Self::TranslatePoints,
         Self::AddPoint,
         Self::Pen,
         Self::Curvature,
         Self::Freehand,
-        Self::FreehandWidth,
         Self::Rectangle,
         Self::Ellipse,
         Self::Line,
@@ -708,9 +829,8 @@ impl Tool {
         Self::Triangle,
         Self::Eraser,
         Self::DeleteEdge,
+        Self::HideEdge,
         Self::Magnet,
-        Self::ScalePoints,
-        Self::RotatePoints,
         Self::PaintBucket,
         Self::Eyedropper,
         Self::DrawShape,
@@ -718,6 +838,9 @@ impl Tool {
         Self::StrokeExposure,
         Self::ShapeBuilder,
         Self::TransformLayer,
+        Self::TrackCamera,
+        Self::ZoomCamera,
+        Self::RollCamera,
         Self::SelectBone,
         Self::AddBone,
         Self::ManipulateBones,
@@ -734,7 +857,6 @@ impl Tool {
             Self::Pen => "Pen",
             Self::Curvature => "Curvature",
             Self::Freehand => "Freehand",
-            Self::FreehandWidth => "Freehand with Width",
             Self::Rectangle => "Rectangle",
             Self::Ellipse => "Ellipse",
             Self::Line => "Line",
@@ -743,9 +865,8 @@ impl Tool {
             Self::Triangle => "Triangle",
             Self::Eraser => "Eraser",
             Self::DeleteEdge => "Delete Edge",
+            Self::HideEdge => "Hide Edge",
             Self::Magnet => "Magnet",
-            Self::ScalePoints => "Scale Points",
-            Self::RotatePoints => "Rotate Points",
             Self::PaintBucket => "Paint Bucket",
             Self::Eyedropper => "Eyedropper",
             Self::DrawShape => "Draw Shape",
@@ -753,6 +874,9 @@ impl Tool {
             Self::StrokeExposure => "Stroke Exposure",
             Self::ShapeBuilder => "Shape Builder",
             Self::TransformLayer => "Transform Layer",
+            Self::TrackCamera => "Track camera",
+            Self::ZoomCamera => "Zoom camera",
+            Self::RollCamera => "Roll camera",
             Self::SelectBone => "Select Bone",
             Self::AddBone => "Add Bone",
             Self::ManipulateBones => "Manipulate Bones",
@@ -770,7 +894,6 @@ impl Tool {
             | Self::Pen
             | Self::Curvature
             | Self::Freehand
-            | Self::FreehandWidth
             | Self::Rectangle
             | Self::Ellipse
             | Self::Line
@@ -779,9 +902,8 @@ impl Tool {
             | Self::Triangle
             | Self::Eraser
             | Self::DeleteEdge
+            | Self::HideEdge
             | Self::Magnet
-            | Self::ScalePoints
-            | Self::RotatePoints
             | Self::ShapeBuilder => ToolGroup::Draw,
             Self::PaintBucket
             | Self::Eyedropper
@@ -789,6 +911,7 @@ impl Tool {
             | Self::LineWidth
             | Self::StrokeExposure => ToolGroup::Fill,
             Self::TransformLayer => ToolGroup::Layer,
+            Self::TrackCamera | Self::ZoomCamera | Self::RollCamera => ToolGroup::Camera,
             Self::SelectBone | Self::AddBone | Self::ManipulateBones | Self::PaintWeights => ToolGroup::Bone,
             Self::Pan | Self::Zoom => ToolGroup::Workspace,
         }
@@ -805,7 +928,6 @@ impl Tool {
                 | Self::Pen
                 | Self::Curvature
                 | Self::Freehand
-                | Self::FreehandWidth
                 | Self::Eraser
                 | Self::Rectangle
                 | Self::Ellipse
@@ -814,9 +936,8 @@ impl Tool {
                 | Self::Star
                 | Self::Triangle
                 | Self::DeleteEdge
+                | Self::HideEdge
                 | Self::Magnet
-                | Self::ScalePoints
-                | Self::RotatePoints
                 | Self::PaintBucket
                 | Self::Eyedropper
                 | Self::DrawShape
@@ -824,6 +945,9 @@ impl Tool {
                 | Self::StrokeExposure
                 | Self::ShapeBuilder
                 | Self::TransformLayer
+                | Self::TrackCamera
+                | Self::ZoomCamera
+                | Self::RollCamera
                 | Self::SelectBone
                 | Self::AddBone
                 | Self::ManipulateBones
@@ -842,9 +966,8 @@ impl Tool {
                 | Self::TranslatePoints
                 | Self::AddPoint
                 | Self::DeleteEdge
+                | Self::HideEdge
                 | Self::Magnet
-                | Self::ScalePoints
-                | Self::RotatePoints
         )
     }
 
@@ -855,10 +978,7 @@ impl Tool {
                 "Drag to move the selected layer; drag the handles to scale and the round button to rotate (Shift: proportions or 15 degrees). The dot is the pivot. An animated layer gets a keyframe on this frame."
             }
             Self::Freehand => {
-                "Draw brush strokes on the selected vector layer. A pen's pressure sets the width; set the size, smoothing and taper in the Style panel."
-            }
-            Self::FreehandWidth => {
-                "Draw brush strokes whose width you drag on each segment. Set the base width in the Style panel."
+                "Draw brush strokes on the selected vector layer. With pen pressure on, a pen's pressure sets the width; set the size, smoothing and taper in the Style panel."
             }
             Self::Rectangle => "Drag to draw a rectangle. Shift makes a square; Alt draws from the centre.",
             Self::Ellipse => "Drag to draw an ellipse. Shift makes a circle; Alt draws from the centre.",
@@ -895,14 +1015,20 @@ impl Tool {
                 "Click to add smooth points along a curve; Alt+click adds a corner. Click the first point to close. Esc finishes an open path."
             }
             Self::DeleteEdge => "Click a segment to delete it, splitting the shape into two open paths.",
+            Self::HideEdge => {
+                "Click a segment to leave its stroke undrawn; the points and fill stay. Click it again, or Alt+click, to show it."
+            }
             Self::Magnet => {
                 "Drag near points to attract or repel them. Hold Alt to repel. The draw width sets the magnet radius."
             }
-            Self::ScalePoints => {
-                "Drag to scale the selected points around their centre. Shift keeps them on the same axes."
+            Self::TrackCamera => {
+                "Drag to move the camera: the picture follows the pointer. Sets a keyframe on a later frame."
             }
-            Self::RotatePoints => {
-                "Drag to rotate the selected points around their centre. Shift snaps to 15-degree steps."
+            Self::ZoomCamera => {
+                "Drag up to zoom the camera in, down to zoom out. Sets a keyframe on a later frame."
+            }
+            Self::RollCamera => {
+                "Drag around the camera's centre to roll it (Shift: 15-degree steps). Sets a keyframe on a later frame."
             }
             Self::DrawShape => {
                 "Drag around an area to sketch a shape; let go to close it and fill it with the current Fill and Line colours."
@@ -942,5 +1068,154 @@ mod tests {
         for action in Action::all() {
             assert!(MENUS.contains(&action.category()), "{action:?}");
         }
+    }
+
+    fn every_kind() -> Vec<(&'static str, fanimate_core::LayerKind)> {
+        use fanimate_core::{Audio, Image, LayerKind, Skeleton};
+        vec![
+            ("vector", LayerKind::Vector { shapes: vec![] }),
+            ("group", LayerKind::Group { children: vec![] }),
+            (
+                "bone",
+                LayerKind::Bone {
+                    skeleton: Skeleton::default(),
+                    children: vec![],
+                },
+            ),
+            (
+                "image",
+                LayerKind::Image(Image {
+                    media: "a.png".into(),
+                    width: 1.0,
+                    height: 1.0,
+                    grid: [1, 1],
+                    bone: None,
+                    skin: None,
+                }),
+            ),
+            ("frames", LayerKind::Frames { cels: vec![] }),
+            (
+                "switch",
+                LayerKind::Switch {
+                    children: vec![],
+                    switch: vec![],
+                },
+            ),
+            (
+                "audio",
+                LayerKind::Audio(Audio {
+                    media: "a.wav".into(),
+                    start: 0,
+                    volume: 1.0,
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn tool_groups_follow_the_layer_type() {
+        use ToolGroup::*;
+        let always = vec![Layer, Camera, Workspace];
+        assert_eq!(tool_groups_for(None), always);
+        for (name, kind) in every_kind() {
+            let groups = tool_groups_for(Some(&kind));
+            let expected = match name {
+                "vector" => vec![Draw, Fill, Layer, Camera, Workspace],
+                "bone" => vec![Layer, Camera, Bone, Workspace],
+                _ => always.clone(),
+            };
+            assert_eq!(groups, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_layer_inside_a_bone_layer_keeps_the_bone_tools() {
+        use ToolGroup::*;
+        let vector = fanimate_core::LayerKind::Vector { shapes: vec![] };
+        assert_eq!(
+            tool_groups_in(Some(&vector), true),
+            vec![Draw, Fill, Layer, Camera, Bone, Workspace]
+        );
+        assert_eq!(
+            tool_groups_in(Some(&vector), false),
+            tool_groups_for(Some(&vector))
+        );
+        assert_eq!(tool_groups_in(None, false), tool_groups_for(None));
+    }
+
+    #[test]
+    fn the_always_groups_never_leave() {
+        for (name, kind) in every_kind() {
+            let groups = tool_groups_for(Some(&kind));
+            for group in [ToolGroup::Layer, ToolGroup::Camera, ToolGroup::Workspace] {
+                assert!(groups.contains(&group), "{name} lost {group:?}");
+                assert_eq!(group.needs(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn every_tool_is_listed_once_in_a_known_group() {
+        for tool in Tool::ALL {
+            assert_eq!(
+                Tool::ALL.iter().filter(|t| **t == tool).count(),
+                1,
+                "{tool:?} is listed more than once"
+            );
+            assert!(ToolGroup::ALL.contains(&tool.group()), "{tool:?}");
+        }
+        // every group has a tool, or the panel would show an empty heading
+        for group in ToolGroup::ALL {
+            assert!(Tool::ALL.iter().any(|t| t.group() == group), "{group:?} is empty");
+        }
+        // and a match without a wildcard keeps this list in step with the enum
+        for tool in Tool::ALL {
+            let _: usize = match tool {
+                Tool::SelectPoints
+                | Tool::TranslatePoints
+                | Tool::AddPoint
+                | Tool::Pen
+                | Tool::Curvature
+                | Tool::Freehand
+                | Tool::Rectangle
+                | Tool::Ellipse
+                | Tool::Line
+                | Tool::Polygon
+                | Tool::Star
+                | Tool::Triangle
+                | Tool::Eraser
+                | Tool::PaintBucket
+                | Tool::Eyedropper
+                | Tool::DeleteEdge
+                | Tool::HideEdge
+                | Tool::Magnet
+                | Tool::DrawShape
+                | Tool::LineWidth
+                | Tool::StrokeExposure
+                | Tool::ShapeBuilder
+                | Tool::TransformLayer
+                | Tool::TrackCamera
+                | Tool::ZoomCamera
+                | Tool::RollCamera
+                | Tool::SelectBone
+                | Tool::AddBone
+                | Tool::ManipulateBones
+                | Tool::PaintWeights
+                | Tool::Pan
+                | Tool::Zoom => 1,
+            };
+        }
+        assert_eq!(Tool::ALL.len(), 32);
+    }
+
+    #[test]
+    fn camera_tools_are_in_the_camera_group() {
+        for tool in [Tool::TrackCamera, Tool::ZoomCamera, Tool::RollCamera] {
+            assert_eq!(tool.group(), ToolGroup::Camera);
+            assert!(tool.is_available());
+            assert!(!tool.edits_points());
+            assert!(!tool.hint().is_empty());
+        }
+        assert_eq!(ToolGroup::Camera.label(), "Camera");
     }
 }

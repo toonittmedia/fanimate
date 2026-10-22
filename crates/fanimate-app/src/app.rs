@@ -54,6 +54,15 @@ struct Settings {
     snap: fanimate_editor::SnapSettings,
     /// Ruler unit (px, pt, mm, in).
     ruler_unit: crate::panels::rulers::RulerUnit,
+    /// The timeline lists only layers that have keys (selected ones always show).
+    hide_unanimated_layers: bool,
+    /// Folders the user added to "Your files" on the Home tab.
+    your_folders: Vec<PathBuf>,
+    /// Saved brush and shape styles, the one new sessions start with, and
+    /// the one the Style panel last showed.
+    styles: Vec<fanimate_core::StylePreset>,
+    default_style: String,
+    current_style: String,
 }
 
 /// Onion skin settings, remembered between sessions.
@@ -104,6 +113,11 @@ impl Default for Settings {
             grid: Default::default(),
             snap: Default::default(),
             ruler_unit: Default::default(),
+            hide_unanimated_layers: false,
+            your_folders: Vec::new(),
+            styles: Vec::new(),
+            default_style: String::new(),
+            current_style: String::new(),
         }
     }
 }
@@ -195,17 +209,25 @@ pub struct UiState {
     pub magnet_active: bool,
     /// Line Width: the screen height the press was at, while dragging.
     pub line_width_press: Option<f32>,
-    /// Scale/Rotate Points: anchor point and last-drag position.
-    pub points_transform_origin: Option<(fanimate_core::Vec2, fanimate_core::Vec2)>,
     /// The status message on screen, and when it appeared.
     pub status_since: Option<(String, Instant)>,
     /// Timeline zoom (pixels per frame) and horizontal scroll (frames).
     pub timeline_frame_width: f32,
     pub timeline_scroll: f32,
+    /// Width of the timeline's names column (0 until it is first drawn, then
+    /// the default); the document's tab keeps its own.
+    pub timeline_names_width: f32,
     /// Width of the timeline's frame area last frame, for "fit all".
     pub timeline_view_width: f32,
     /// The pointer is over the timeline, so zoom commands zoom it, not the canvas.
     pub timeline_hovered: bool,
+    /// The canvas or the Layers panel, when the pointer is over it (they set
+    /// this while they draw). With `timeline_hovered`, a press there decides
+    /// what Cut, Copy and Paste act on.
+    pub pointer_region: Option<fanimate_editor::Focus>,
+    /// A paste from a menu asked the system for its clipboard; the text
+    /// arrives as a paste event. `true` when it is for layers.
+    pub paste_requested: Option<bool>,
     /// The playhead's frame when the timeline last drew, to scroll it into
     /// view when something else moves it (a step, a key jump, the Frame field).
     pub timeline_seen_frame: fanimate_core::Frame,
@@ -237,6 +259,8 @@ pub struct UiState {
     pub preview: Option<crate::preview::Preview>,
     /// The previews on the Home tab.
     pub thumbs: crate::thumbs::Thumbs,
+    /// The "Your files" folders on the Home tab and what was found in them.
+    pub your_files: crate::yourfiles::YourFiles,
     /// The What's New dialog, while open.
     pub whats_new: Option<crate::whatsnew::WhatsNew>,
     /// A layer type change waiting for the answer to "this removes ...".
@@ -290,6 +314,10 @@ pub struct Shell {
     pub show_grid: bool,
     /// Unit displayed in the rulers.
     pub ruler_unit: crate::panels::rulers::RulerUnit,
+    /// The timeline lists only layers that have keys (selected layers always show).
+    pub hide_unanimated_layers: bool,
+    /// The saved brush and shape styles, and which is chosen and the default.
+    pub styles: fanimate_editor::StyleBook,
     /// Hands this Fanimate the files other launches ask for.
     instance: Option<crate::instance::Claim>,
     pub keymap: Keymap,
@@ -370,6 +398,14 @@ impl FanimateApp {
         // the blank document the Home tab hides until a document is opened
         let mut editor = Editor::untitled();
         editor.draw = settings.draw;
+        // a default style the user chose is how a session starts; without one
+        // the brush stays as the last session left it
+        let mut styles = fanimate_editor::StyleBook::new(settings.styles.clone(), &settings.default_style);
+        if styles.default_name() != fanimate_editor::BUILT_IN_STYLE {
+            styles.reset(&mut editor.draw);
+        } else {
+            styles.restore_current(&settings.current_style);
+        }
 
         let canvas = cc.wgpu_render_state.as_ref().map(CanvasGpu::new);
         let gpu_name = cc
@@ -414,6 +450,8 @@ impl FanimateApp {
                 show_rulers: true,
                 show_grid: false,
                 ruler_unit: settings.ruler_unit,
+                hide_unanimated_layers: settings.hide_unanimated_layers,
+                styles,
                 instance: opts.claim,
                 icon,
                 recovery: Recovery::new(recovery_root),
@@ -446,6 +484,7 @@ impl FanimateApp {
                     fit_pending: true,
                 },
                 ui: UiState {
+                    your_files: crate::yourfiles::YourFiles::new(settings.your_folders.clone()),
                     show_welcome: !settings.welcome_done && opts.bench_bones.is_none(),
                     // after an update, once: what changed
                     whats_new: (opts.bench_bones.is_none()
@@ -523,6 +562,11 @@ impl eframe::App for FanimateApp {
         let dt = (now - shell.last_tick).as_secs_f32().min(0.25);
         shell.last_tick = now;
         shell.editor.tick(dt);
+        // the project carries the app's saved styles; this is not an edit, so
+        // it is neither an undo step nor a reason to ask about saving
+        if shell.editor.doc.styles != shell.styles.saved() {
+            shell.editor.doc.styles = shell.styles.saved().to_vec();
+        }
         shell
             .audio
             .follow(&shell.editor.doc, shell.editor.playing, shell.editor.frame);
@@ -573,11 +617,25 @@ impl eframe::App for FanimateApp {
         titlebar::resize_edges(&ctx, &shell.ui.window);
         native_cursors(&ctx);
 
+        // a press in the canvas, the timeline or the Layers panel says what
+        // Cut, Copy and Paste act on from now on
+        let region = std::mem::take(&mut shell.ui.pointer_region).or(shell
+            .ui
+            .timeline_hovered
+            .then_some(fanimate_editor::Focus::Timeline));
+        if let Some(focus) = region
+            && !shell.docs.home_front()
+            && ctx.input(|i| i.pointer.any_pressed())
+        {
+            shell.editor.set_focus(focus);
+        }
+
         // run queued actions now that no widget borrows the editor
         for action in std::mem::take(&mut shell.pending) {
             dispatch(&ctx, shell, action);
         }
         recovery::tick(&ctx, shell);
+        shell.ui.thumbs.finish_saves(&ctx);
         update_tick(&ctx, shell);
         if let Some(tab) = shell.ui.open_tab.take() {
             self.layout.open(tab);
@@ -652,6 +710,11 @@ impl eframe::App for FanimateApp {
                 grid: s.grid.clone(),
                 snap: s.snap.clone(),
                 ruler_unit: s.ruler_unit,
+                hide_unanimated_layers: s.hide_unanimated_layers,
+                your_folders: s.ui.your_files.folders().to_vec(),
+                styles: s.styles.saved().to_vec(),
+                default_style: s.styles.default_name().to_owned(),
+                current_style: s.styles.current().to_owned(),
             },
         );
         eframe::set_value(storage, Layout::KEY, &self.layout);
@@ -772,16 +835,34 @@ fn handle_input(ctx: &egui::Context, shell: &mut Shell) {
     if ctx.egui_wants_keyboard_input() || any_modal_open(shell) || egui::Popup::is_any_open(ctx) {
         return;
     }
-    let events = ctx.input(|i| i.events.clone());
+    let (events, layers_chord) = ctx.input(|i| (i.events.clone(), i.modifiers.command && i.modifiers.shift));
     for event in events {
         match event {
             // egui turns Ctrl+C/X/V into these instead of key events
             // a paste needs a document in front, so not on Home
             egui::Event::Paste(_) if shell.docs.home_front() => {}
-            egui::Event::Copy => shell.pending.push(Action::Copy),
-            egui::Event::Cut => shell.pending.push(Action::Cut),
-            egui::Event::Paste(text) if !shell.editor.paste(Some(&text)) => {
-                shell.editor.set_status(StatusKind::Info, "Nothing to paste");
+            // egui-winit makes these of Ctrl+Shift+C/X/V as well, without the
+            // key press, so the layer commands are told apart by Shift; the
+            // plain ones follow the focus (canvas points, timeline keys)
+            egui::Event::Copy => shell.pending.push(match layers_chord {
+                true => Action::CopyLayers,
+                false => Action::Copy,
+            }),
+            egui::Event::Cut => shell.pending.push(match layers_chord {
+                true => Action::CutLayers,
+                false => Action::Cut,
+            }),
+            egui::Event::Paste(text) => {
+                // a paste a menu asked for says what it is for; a key press
+                // is told by Shift
+                let for_layers = shell.ui.paste_requested.take().unwrap_or(layers_chord);
+                let pasted = match for_layers {
+                    true => shell.editor.paste(Some(&text)),
+                    false => shell.editor.paste_focused(Some(&text)),
+                };
+                if !pasted {
+                    shell.editor.set_status(StatusKind::Info, "Nothing to paste");
+                }
             }
             egui::Event::Key {
                 key,
@@ -824,6 +905,13 @@ pub fn dispatch(ctx: &egui::Context, shell: &mut Shell, action: Action) {
 
 /// Run an action without the unsaved-changes check (already answered).
 pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
+    // a paste from a menu reads the system clipboard like Ctrl+V does, by
+    // asking for it: the text comes back as a paste event
+    if matches!(action, Action::Paste | Action::PasteLayers) && shell.editor.can_run(action) {
+        shell.ui.paste_requested = Some(action == Action::PasteLayers);
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+        return;
+    }
     match shell.editor.run(action) {
         Outcome::Done => {}
         Outcome::CopyText(text) => ctx.copy_text(text),
@@ -1108,6 +1196,7 @@ fn save_as_folder(shell: &mut Shell) {
     match shell.editor.save_folder_to(&path) {
         Ok(()) => {
             shell.remember(&path);
+            shell.ui.thumbs.after_save(&path, &shell.editor.doc);
             recovery::record(shell);
         }
         Err(e) => shell
@@ -1185,6 +1274,7 @@ pub fn save(shell: &mut Shell, ask: bool) -> bool {
     match shell.editor.save_to(&path) {
         Ok(()) => {
             shell.remember(&path);
+            shell.ui.thumbs.after_save(&path, &shell.editor.doc);
             // saved: a crash now would lose nothing
             recovery::record(shell);
             true

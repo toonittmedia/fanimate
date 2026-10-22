@@ -50,9 +50,16 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     let looking = shell.look_through_camera;
     if looking && shell.editor.tool != Tool::Pan {
         shell.editor.set_tool(Tool::Pan);
+    } else if !looking {
+        // a layer that has no use for the active tool takes it away
+        shell.editor.fit_tool_to_layer();
     }
 
     let full_rect = ui.available_rect_before_wrap();
+    // a press here makes Cut, Copy and Paste act on points and shapes
+    if ui.rect_contains_pointer(full_rect) {
+        shell.ui.pointer_region = Some(fanimate_editor::Focus::Canvas);
+    }
 
     // Reserve ruler strips along the top and left.
     let ruler_size = if shell.show_rulers {
@@ -101,12 +108,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     } else {
         None
     };
-    let handle_busy = on_canvas && handles::interact(&ctx, &response, shell, &screen, frame_seen.as_ref());
+    // armed, the pivot picker takes the next click and nothing else acts
+    let picking = handles::pick_pivot(&ctx, &response, shell, &screen);
+    let handle_busy =
+        on_canvas && !picking && handles::interact(&ctx, &response, shell, &screen, frame_seen.as_ref());
     let on_handle = response.clicked_by(egui::PointerButton::Primary)
         && response.interact_pointer_pos().is_some_and(|p| {
             handles::hit_test(&screen, frame_seen.as_ref(), radius_seen.as_ref(), p).is_some()
         });
-    let tools_free = !handle_busy && !on_handle;
+    let tools_free = !handle_busy && !on_handle && !picking;
 
     if tools_free {
         transform_tool(&ctx, &response, shell, &to_doc);
@@ -124,14 +134,17 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     bone_tools(&ctx, &response, shell, &to_doc);
     pen_tool(&ctx, &response, shell, &to_doc);
     curvature_tool(&ctx, &response, shell, &to_doc);
+    super::camera_tools::interact(&ctx, &response, shell, &to_doc);
 
     // what is under the pointer decides the cursor: a handle, else the tool
     let hover_hit = response
         .hover_pos()
-        .filter(|_| !handle_busy)
+        .filter(|_| !handle_busy && !picking)
         .and_then(|p| handles::hit_test(&screen, frame_seen.as_ref(), radius_seen.as_ref(), p));
     if let Some(hit) = hover_hit {
         ctx.set_cursor_icon(handles::cursor(&screen, frame_seen.as_ref(), hit));
+    } else if picking && response.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
     } else if response.hovered() || response.dragged() {
         ctx.set_cursor_icon(tool_cursor(&ctx, &response, shell.editor.tool));
     }
@@ -237,6 +250,12 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         menus::item(ui, shell, Action::ZoomOut);
         ui.separator();
         if shell.editor.tool.edits_points() {
+            // the canvas has the focus here, so these act on points and shapes
+            shell.editor.set_focus(fanimate_editor::Focus::Canvas);
+            menus::item(ui, shell, Action::Cut);
+            menus::item(ui, shell, Action::Copy);
+            menus::item(ui, shell, Action::Paste);
+            ui.separator();
             menus::shape_items(ui, shell);
             ui.separator();
         }
@@ -253,7 +272,9 @@ fn camera_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(
         .ui
         .timeline_expanded
         .contains(&crate::panels::timeline::CAMERA_ROW);
-    if doc.camera.is_default() && !open {
+    // a camera tool shows the frame it is moving, even before it has moved
+    let tool_active = super::camera_tools::is_camera_tool(shell.editor.tool);
+    if doc.camera.is_default() && !open && !tool_active {
         return;
     }
     let Some(corners) = fanimate_core::camera_frame(doc, shell.editor.frame) else {
@@ -325,12 +346,13 @@ fn tool_cursor(ctx: &egui::Context, response: &egui::Response, tool: Tool) -> eg
     }
     match tool {
         // Windows has no hand cursors, so panning shows the move arrows
-        Tool::Pan | Tool::TransformLayer | Tool::TranslatePoints => CursorIcon::Move,
+        Tool::Pan | Tool::TransformLayer | Tool::TranslatePoints | Tool::TrackCamera => CursorIcon::Move,
+        Tool::ZoomCamera => CursorIcon::ZoomIn,
+        Tool::RollCamera => CursorIcon::Crosshair,
         Tool::SelectPoints | Tool::SelectBone | Tool::ManipulateBones => CursorIcon::Default,
         Tool::Zoom if ctx.input(|i| i.modifiers.alt) => CursorIcon::ZoomOut,
         Tool::Zoom => CursorIcon::ZoomIn,
         Tool::Freehand
-        | Tool::FreehandWidth
         | Tool::AddPoint
         | Tool::Pen
         | Tool::Curvature
@@ -344,9 +366,8 @@ fn tool_cursor(ctx: &egui::Context, response: &egui::Response, tool: Tool) -> eg
         | Tool::Star
         | Tool::Triangle
         | Tool::DeleteEdge
+        | Tool::HideEdge
         | Tool::Magnet
-        | Tool::ScalePoints
-        | Tool::RotatePoints
         | Tool::DrawShape
         | Tool::LineWidth
         | Tool::StrokeExposure
@@ -481,7 +502,7 @@ fn freehand_tool(
 ) {
     // Draw Shape sketches a closed shape; the others make brush strokes
     let outline = shell.editor.tool == Tool::DrawShape;
-    if !outline && !matches!(shell.editor.tool, Tool::Freehand | Tool::FreehandWidth) {
+    if !outline && shell.editor.tool != Tool::Freehand {
         if shell.editor.is_drawing() {
             shell.editor.cancel_stroke();
         }
@@ -1340,8 +1361,7 @@ fn shape_tools_e(
         .drag_shape_e(tool, from, to, mods.shift, mods.alt, zoom)
 }
 
-/// Editing tools E: Delete Edge, Magnet, Scale Points, Rotate Points,
-/// Line Width, Stroke Exposure, Shape Builder.
+/// Editing tools E: Delete Edge, Magnet, Line Width, Stroke Exposure, Shape Builder.
 fn editing_tools_e(
     ctx: &egui::Context,
     response: &egui::Response,
@@ -1370,6 +1390,25 @@ fn editing_tools_e(
             }
         }
 
+        // ---- Hide Edge ----
+        Tool::HideEdge => {
+            if response.clicked_by(egui::PointerButton::Primary)
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let p = doc(pos);
+                if !shell.editor.toggle_edge_at(p, slop * 2.0, mods.alt) {
+                    shell.editor.set_status(
+                        fanimate_editor::StatusKind::Info,
+                        if mods.alt {
+                            "Alt+click a hidden segment to show it"
+                        } else {
+                            "Click on a line segment to hide it"
+                        },
+                    );
+                }
+            }
+        }
+
         // ---- Magnet ----
         Tool::Magnet => {
             let radius = shell.editor.draw.width * zoom / 2.0;
@@ -1389,64 +1428,6 @@ fn editing_tools_e(
                 }
             }
             let _ = radius;
-        }
-
-        // ---- Scale Points ----
-        Tool::ScalePoints => {
-            if response.drag_started_by(egui::PointerButton::Primary)
-                && let Some(start) = ctx.input(|i| i.pointer.press_origin())
-            {
-                shell.editor.checkpoint("Scale points");
-                shell.ui.points_transform_origin = Some((doc(start), doc(start)));
-            }
-            if let Some((anchor, last)) = shell.ui.points_transform_origin
-                && let Some(pos) = response.interact_pointer_pos()
-            {
-                let now = doc(pos);
-                let (old_len, new_len) = (
-                    (last - anchor).length().max(1e-6),
-                    (now - anchor).length().max(1e-6),
-                );
-                let factor = new_len / old_len;
-                if (factor - 1.0).abs() > 1e-4 {
-                    // Shift = scale uniformly; without Shift = scale both axes equally
-                    shell.editor.scale_selected_points(factor, factor);
-                    shell.ui.points_transform_origin = Some((anchor, now));
-                }
-            }
-            if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
-                shell.ui.points_transform_origin = None;
-            }
-        }
-
-        // ---- Rotate Points ----
-        Tool::RotatePoints => {
-            if response.drag_started_by(egui::PointerButton::Primary)
-                && let Some(start) = ctx.input(|i| i.pointer.press_origin())
-            {
-                shell.editor.checkpoint("Rotate points");
-                let centre = shell.editor.selected_points_centroid();
-                shell.ui.points_transform_origin = Some((centre, doc(start)));
-            }
-            if let Some((centre, last)) = shell.ui.points_transform_origin
-                && let Some(pos) = response.interact_pointer_pos()
-            {
-                let now = doc(pos);
-                let old_angle = (last - centre).y.atan2((last - centre).x);
-                let new_angle = (now - centre).y.atan2((now - centre).x);
-                let mut delta = new_angle - old_angle;
-                if mods.shift {
-                    let step = 15.0_f32.to_radians();
-                    delta = (delta / step).round() * step;
-                }
-                if delta.abs() > 1e-4 {
-                    shell.editor.rotate_selected_points(delta);
-                    shell.ui.points_transform_origin = Some((centre, now));
-                }
-            }
-            if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
-                shell.ui.points_transform_origin = None;
-            }
         }
 
         // ---- Line Width ----

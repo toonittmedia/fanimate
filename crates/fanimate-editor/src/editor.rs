@@ -3,10 +3,10 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-use fanimate_core::anim::{Animatable, KeyList};
+use fanimate_core::anim::KeyList;
 use fanimate_core::bones::Skeleton;
 use fanimate_core::{
-    Affine2, Channel, ChannelId, Document, Frame, Interpolation, Keying, Label, Layer, LayerId, LayerKind,
+    Affine2, ChannelId, Document, Frame, Interpolation, Keying, Label, Layer, LayerId, LayerKind, REST_FRAME,
     Transform, samples,
 };
 use fanimate_fnm::{FnmError, HistoryRecord, Report};
@@ -19,12 +19,15 @@ mod actions;
 mod arrange;
 mod bones;
 mod booleans;
+mod clipboard_shapes;
 mod construct;
 mod draw;
 mod exposure;
 mod handles;
 mod import;
+mod keys;
 mod points;
+mod points_frame;
 mod shapes;
 mod shapesel;
 mod sound;
@@ -32,8 +35,10 @@ mod svg;
 mod tools_e;
 pub use arrange::{AlignTo, ConvertTo, Loss};
 pub use bones::BoneRef;
+pub use clipboard_shapes::Focus;
 pub use draw::DrawStyle;
 pub use handles::{Handle, HandleMods, SelectionFrame};
+pub use keys::{KeyRef, KeySelect, KeyTarget};
 pub use points::PointRef;
 pub use shapesel::RadiusTarget;
 pub use sound::{MouthCue, SOUND_EXTENSIONS, SoundInfo, parse_rhubarb, sound_info, sound_to_wav};
@@ -141,10 +146,22 @@ pub struct Editor {
     /// Shape Builder drag state.
     pub shape_builder: Option<ShapeBuilderState>,
     clipboard: Option<String>,
+    /// Shapes and points on the clipboard, as JSON (see `clipboard_shapes`).
+    shape_clipboard: Option<String>,
+    /// Which part of the window Cut, Copy and Paste act on.
+    focus: Focus,
     /// Last plainly clicked layer, the anchor for Shift-click ranges.
     anchor: Option<LayerId>,
     /// Keys being dragged along the timeline.
     key_drag: Option<KeyDrag>,
+    /// The keys picked on the timeline (see `keys.rs`).
+    pub(crate) selected_keys: BTreeSet<KeyRef>,
+    /// Keys copied with Copy Keys, pasted at the playhead.
+    key_clip: Option<keys::KeyClip>,
+    /// The picked keys being moved or copied along the timeline.
+    sel_drag: Option<keys::KeyGesture>,
+    /// The picked keys being stretched or squeezed.
+    scale_drag: Option<keys::KeyGesture>,
     /// The selected bone, for the bone tools and binding.
     bone: Option<BoneRef>,
     /// The bone gesture in progress.
@@ -154,6 +171,19 @@ pub struct Editor {
     /// The selection frame handle being dragged, and what to show beside it.
     handle_drag: Option<handles::HandleDrag>,
     handle_readout: Option<String>,
+    /// The frame around two or more chosen points is being dragged.
+    points_drag: Option<points_frame::PointsDrag>,
+    /// Where the chosen points turn: a point in document space, or `None`
+    /// for their centroid. Not saved; forgotten when the choice changes.
+    pub points_pivot: Option<fanimate_core::Vec2>,
+    /// The points `points_pivot` was placed for: it only counts while the
+    /// choice is still exactly these, however the choice came to change.
+    points_pivot_for: BTreeSet<PointRef>,
+    /// The pivot picker is armed: the next canvas click places the pivot.
+    pub pivot_pick: bool,
+    /// How near (in document units) the picked pivot has to come to one of
+    /// the box's nine anchors to snap to it. The canvas sets it from its zoom.
+    pub pivot_snap: f32,
 }
 
 /// Retiming keys by dragging them on the timeline. The selected layers are
@@ -171,9 +201,36 @@ struct KeyDrag {
     camera: Option<fanimate_core::Camera>,
 }
 
+/// What the clipboards hold (layers, shapes and keys), so a copy made in one
+/// tab can be pasted in another: the app carries it from tab to tab.
+#[derive(Clone, Default)]
+pub struct Clipboards {
+    layers: Option<String>,
+    shapes: Option<String>,
+    keys: Option<keys::KeyClip>,
+}
+
 impl Editor {
+    /// The clipboards as they are now.
+    pub fn clipboards(&self) -> Clipboards {
+        Clipboards {
+            layers: self.clipboard.clone(),
+            shapes: self.shape_clipboard.clone(),
+            keys: self.key_clip.clone(),
+        }
+    }
+
+    /// Take over clipboards carried from another tab.
+    pub fn adopt_clipboards(&mut self, clipboards: Clipboards) {
+        self.clipboard = clipboards.layers;
+        self.shape_clipboard = clipboards.shapes;
+        self.key_clip = clipboards.keys;
+    }
+
     pub fn new(doc: Document) -> Self {
-        let frame = doc.start as f32;
+        // a document opens on the rest pose (frame 0), where things are drawn
+        // and set up; the animation plays from `doc.start`
+        let frame = REST_FRAME as f32;
         Self {
             doc,
             path: None,
@@ -203,13 +260,24 @@ impl Editor {
             star_inner: 0.4,
             shape_builder: None,
             clipboard: None,
+            shape_clipboard: None,
+            focus: Focus::default(),
             anchor: None,
             key_drag: None,
+            selected_keys: BTreeSet::new(),
+            key_clip: None,
+            sel_drag: None,
+            scale_drag: None,
             bone: None,
             bone_drag: None,
             part: fanimate_core::Part::default(),
             handle_drag: None,
             handle_readout: None,
+            points_drag: None,
+            points_pivot: None,
+            points_pivot_for: BTreeSet::new(),
+            pivot_pick: false,
+            pivot_snap: 8.0,
         }
     }
 
@@ -230,7 +298,9 @@ impl Editor {
     pub fn untitled_sized(name: &str, width: f32, height: f32, fps: f32) -> Self {
         let fps = fps.clamp(1.0, 120.0);
         let mut doc = Document::new(name, width.clamp(16.0, 16384.0), height.clamp(16.0, 16384.0), fps);
-        doc.end = (fps * 5.0).round() as i32 - 1;
+        // frames count from 1: five seconds is 1 to 120 at 24 fps
+        doc.start = 1;
+        doc.end = ((fps * 5.0).round() as Frame).max(1);
         let layer = labelled(doc.new_layer("Layer 1", LayerKind::vector(vec![])));
         let id = layer.id;
         doc.layers.push(layer);
@@ -351,19 +421,36 @@ impl Editor {
             Redo => self.redo(),
             UndoLayer => self.undo_layer(),
             GoToHistory(state) => self.go_to_history(state),
+            // plain Copy, Cut and Paste follow the focus (canvas points,
+            // timeline keys); layers have their own commands
             Copy => {
-                return match self.copy() {
+                return match self.copy_focused() {
                     Some(text) => Outcome::CopyText(text),
                     None => Outcome::Done,
                 };
             }
             Cut => {
-                return match self.cut() {
+                return match self.cut_focused() {
                     Some(text) => Outcome::CopyText(text),
                     None => Outcome::Done,
                 };
             }
             Paste => {
+                self.paste_focused(None);
+            }
+            CopyLayers => {
+                return match self.copy() {
+                    Some(text) => Outcome::CopyText(text),
+                    None => Outcome::Done,
+                };
+            }
+            CutLayers => {
+                return match self.cut() {
+                    Some(text) => Outcome::CopyText(text),
+                    None => Outcome::Done,
+                };
+            }
+            PasteLayers => {
                 self.paste(None);
             }
             Duplicate => self.duplicate(),
@@ -416,6 +503,9 @@ impl Editor {
             Unbind => {
                 self.unbind();
             }
+            PickPivot => self.arm_pivot_pick(),
+            // Esc backs out of the pivot picker first
+            SelectNone if self.pivot_pick => self.cancel_pivot_pick(),
             // Esc ends a Pen or Curvature path, keeping it, as in Illustrator
             SelectNone | FinishPath if self.is_drawing_curvature() => self.finish_curvature(),
             SelectNone | FinishPath if self.is_drawing_path() => self.finish_path(),
@@ -430,6 +520,11 @@ impl Editor {
                 self.combine_shapes(fanimate_core::BoolOp::Intersect);
             }
             ExpandShape => self.expand_shape(),
+            // with the timeline in front, Ctrl+A picks keys and Esc lets go of them
+            SelectAll if self.focus == Focus::Timeline => self.select_all_keys(),
+            SelectNone if self.focus == Focus::Timeline && self.has_selected_keys() => {
+                self.clear_key_selection()
+            }
             SelectAll if self.tool.edits_points() => self.select_all_points(),
             SelectNone if self.tool.edits_points() => self.points.clear(),
             Delete => self.delete_selected(),
@@ -449,6 +544,8 @@ impl Editor {
             NextFrame => self.step(1),
             PrevFrame => self.step(-1),
             FirstFrame => self.go_to(self.doc.start),
+            GoToRestPose => self.go_to(REST_FRAME),
+            SetLoop(mode) => self.set_loop_on_selected_keys(mode),
             LastFrame => self.go_to(self.doc.end),
             NextKey => self.jump_key(true),
             PrevKey => self.jump_key(false),
@@ -506,9 +603,12 @@ impl Editor {
                 .primary()
                 .is_some_and(|id| self.history.before_last_change(id, &self.doc).is_some()),
             GoToHistory(state) => state != self.history.cursor(),
-            Cut | Copy | Duplicate | Delete | GroupLayers | MoveLayerUp | MoveLayerDown
-            | ToggleVisibility | AddKey | DeleteKey => has_sel,
-            Rename | LayerProperties => self.primary().is_some(),
+            Cut | Copy => self.can_copy_focused(),
+            CutLayers | CopyLayers | Duplicate | Delete | GroupLayers | MoveLayerUp | MoveLayerDown
+            | ToggleVisibility => has_sel,
+            AddKey | DeleteKey => has_sel || self.has_selected_keys(),
+            SetLoop(_) => self.has_selected_keys(),
+            Rename | LayerProperties | PickPivot => self.primary().is_some(),
             SetLabel(_) => has_sel,
             BindToBone | BindSmoothly | Unbind => self.can_bind(),
             NewAction => self.actions_layer().is_some(),
@@ -524,7 +624,8 @@ impl Editor {
             EditAction(i) | InsertAction(i) | DeleteAction(i) => self
                 .actions_layer()
                 .is_some_and(|l| i < self.rig_actions(l).len()),
-            Paste => self.clipboard.is_some(),
+            Paste => self.can_paste(),
+            PasteLayers => self.clipboard.is_some(),
             FinishPath => self.is_drawing_path(),
             Union | Subtract | Intersect => self.can_combine(),
             ExpandShape => self.expandable_shapes() > 0,
@@ -556,6 +657,9 @@ impl Editor {
             self.cancel_curvature();
         }
         self.tool = tool;
+        if tool != Tool::TransformLayer {
+            self.pivot_pick = false;
+        }
         if !tool.is_available() {
             self.set_status(StatusKind::Info, format!("{}: {}", tool.label(), tool.hint()));
         }
@@ -617,6 +721,7 @@ impl Editor {
     fn prune_selection(&mut self) {
         let doc = &self.doc;
         self.selection.retain(|id| doc.find(*id).is_some());
+        self.prune_key_selection();
         // a point selection that no longer fits (the shape has other points now)
         // would be a half of a shape: better none
         let before = self.points.len();
@@ -776,6 +881,7 @@ impl Editor {
             self.doc.remove(*id);
         }
         self.selection.clear();
+        self.prune_key_selection();
         let n = roots.len();
         self.set_status(StatusKind::Info, format!("Deleted {n} layer{}", plural(n)));
     }
@@ -874,6 +980,11 @@ impl Editor {
     fn move_selected(&mut self, up: bool) {
         let mut roots = self.selected_roots();
         if roots.is_empty() {
+            return;
+        }
+        // after the rest pose, a layer's place is animation: key it (see `keys.rs`)
+        if self.current_frame() > REST_FRAME {
+            self.move_selected_keyed(&roots, up);
             return;
         }
         // move the leading layer first so neighbours do not block each other
@@ -1017,6 +1128,13 @@ impl Editor {
         if placement == Placement::Into && self.doc.find(target).is_none_or(|l| l.kind.children().is_none()) {
             return false;
         }
+        // after the rest pose, reordering among siblings is animation: key it
+        if self.current_frame() > REST_FRAME
+            && placement != Placement::Into
+            && let Some(done) = self.move_relative_keyed(&roots, target, placement == Placement::Above)
+        {
+            return done;
+        }
         self.checkpoint("Move layers");
         // remove bottom-most first; collect in document order (bottom first)
         let mut moving: Vec<Layer> = roots.iter().rev().filter_map(|id| self.doc.remove(*id)).collect();
@@ -1148,18 +1266,19 @@ impl Editor {
         self.frame.floor() as Frame
     }
 
-    /// How edits are recorded on the timeline: the first frame is where
-    /// things are drawn and set up, and edits on later frames are keyed (see
-    /// [`Keying`]).
+    /// How edits are recorded on the timeline: the rest pose (frame 0) is
+    /// where things are drawn and set up, and edits on later frames are keyed
+    /// (see [`Keying`]).
     pub fn keying(&self) -> Keying {
-        Keying::new(self.doc.start, self.key_interp)
+        Keying::new(REST_FRAME, self.key_interp)
     }
 
     pub fn go_to(&mut self, frame: Frame) {
         self.playing = false;
-        // free to go on past the last frame: that is where keys for later
-        // are placed. Playback still loops over start..end.
-        self.frame = frame.max(self.doc.start) as f32;
+        // the rest pose (frame 0) is the earliest frame, and a real one to stand
+        // on. Free to go on past the last frame: that is where keys for later
+        // are placed. Playback still loops over start..=end.
+        self.frame = frame.max(REST_FRAME) as f32;
     }
 
     fn step(&mut self, by: Frame) {
@@ -1171,8 +1290,9 @@ impl Editor {
         if !self.playing {
             return;
         }
-        // played from past the last frame, it starts over from the first
-        if self.frame >= (self.doc.end + 1) as f32 {
+        // played from the rest pose or from past the last frame, it starts
+        // over from the first
+        if self.frame < self.doc.start as f32 || self.frame >= (self.doc.end + 1) as f32 {
             self.frame = self.doc.start as f32;
         }
         let n = self.doc.frame_count().max(1) as f32;
@@ -1210,9 +1330,11 @@ impl Editor {
         // the drawing or pose held now starts at the last key at or before
         // the current frame; onion skins are the ones before and after it
         let held = frames.partition_point(|f| *f <= now);
+        // the rest pose is not a frame of the animation: no skin of it
         let past = frames[..held.saturating_sub(1)]
             .iter()
             .rev()
+            .filter(|f| **f >= start)
             .take(before)
             .copied()
             .collect();
@@ -1248,6 +1370,12 @@ impl Editor {
     /// Key every transform channel and opacity of the selected layers at
     /// the current frame, holding their current values.
     fn add_key(&mut self) {
+        // with keys picked on the timeline, those are the ones that get a key
+        self.prune_key_selection();
+        if self.has_selected_keys() {
+            self.add_key_to_selected_keys();
+            return;
+        }
         let roots = self.selected_roots();
         if roots.is_empty() {
             return;
@@ -1256,31 +1384,8 @@ impl Editor {
         let frame = self.current_frame();
         let interp = self.key_interp;
         for id in roots {
-            // on a frame-by-frame layer a key is a drawing: a copy of the
-            // one showing, to change (Animate's F6)
-            if let Some(LayerKind::Frames { cels }) = self.doc.find_mut(id).map(|l| &mut l.kind) {
-                if !cels.iter().any(|c| c.frame == frame) {
-                    let mut cel = fanimate_core::frames::cel_at(cels, frame as f32)
-                        .map(|i| cels[i].clone())
-                        .unwrap_or_default();
-                    cel.frame = frame;
-                    let at = cels.partition_point(|c| c.frame < frame);
-                    cels.insert(at, cel);
-                }
-                continue;
-            }
             if let Some(l) = self.doc.find_mut(id) {
-                key_now(&mut l.transform.position, frame, interp);
-                key_now(&mut l.transform.rotation, frame, interp);
-                key_now(&mut l.transform.scale, frame, interp);
-                key_now(&mut l.opacity, frame, interp);
-                // a vector layer's drawings too, so they can change shape
-                if let LayerKind::Vector { shapes } = &mut l.kind {
-                    for shape in shapes {
-                        let path = shape.path_at(frame as f32).into_owned();
-                        shape.key_path(frame, path, interp);
-                    }
-                }
+                keys::key_layer_any(l, frame, interp);
             }
         }
     }
@@ -1288,6 +1393,12 @@ impl Editor {
     /// Remove keys on the current frame from the selected layers,
     /// including their bones.
     fn delete_key(&mut self) {
+        // with keys picked on the timeline, those are the ones that go
+        self.prune_key_selection();
+        if self.has_selected_keys() {
+            self.delete_selected_keys();
+            return;
+        }
         let roots = self.selected_roots();
         let frame = self.current_frame();
         let any = roots.iter().any(|id| self.key_frames(*id).contains(&frame));
@@ -1336,12 +1447,7 @@ impl Editor {
         if ch.is_camera() {
             self.checkpoint("Add keyframe");
             let (frame, interp) = (self.current_frame(), self.key_interp);
-            let camera = &mut self.doc.camera;
-            match ch {
-                ChannelId::CameraPosition => key_now(&mut camera.position, frame, interp),
-                ChannelId::CameraZoom => key_now(&mut camera.zoom, frame, interp),
-                _ => key_now(&mut camera.roll, frame, interp),
-            }
+            keys::key_camera_channel_now(&mut self.doc.camera, ch, frame, interp);
             return;
         }
         let Some(id) = self.primary() else { return };
@@ -1349,71 +1455,9 @@ impl Editor {
             return;
         }
         self.checkpoint("Add keyframe");
-        let frame = self.current_frame();
-        let interp = self.key_interp;
-        let Some(l) = self.doc.find_mut(id) else { return };
-        match ch {
-            ChannelId::Position => key_now(&mut l.transform.position, frame, interp),
-            ChannelId::Rotation => key_now(&mut l.transform.rotation, frame, interp),
-            ChannelId::Scale => key_now(&mut l.transform.scale, frame, interp),
-            ChannelId::Opacity => key_now(&mut l.opacity, frame, interp),
-            ChannelId::Bone(i) => {
-                if let LayerKind::Bone { skeleton, .. } = &mut l.kind
-                    && let Some(bone) = skeleton.bones.get_mut(i)
-                {
-                    key_now(&mut bone.angle, frame, interp);
-                }
-            }
-            ChannelId::Shape(i) => {
-                if let LayerKind::Vector { shapes } = &mut l.kind
-                    && let Some(shape) = shapes.get_mut(i)
-                {
-                    let path = shape.path_at(frame as f32).into_owned();
-                    shape.key_path(frame, path, interp);
-                }
-            }
-            ChannelId::FillColor(i) | ChannelId::StrokeColor(i) => {
-                if let LayerKind::Vector { shapes } = &mut l.kind
-                    && let Some(shape) = shapes.get_mut(i)
-                {
-                    let at = frame as f32;
-                    // a key holds the colour as it is now, so only a shape with that colour has one
-                    if matches!(ch, ChannelId::FillColor(_)) {
-                        if let Some(fill) = shape.style.fill {
-                            let now = fanimate_core::anim::sample_in(fill, &shape.fill_keys, at);
-                            fanimate_core::anim::set_key_in(&mut shape.fill_keys, frame, now, interp);
-                        }
-                    } else if let Some(stroke) = shape.style.stroke {
-                        let now = fanimate_core::anim::sample_in(stroke.color, &shape.stroke_keys, at);
-                        fanimate_core::anim::set_key_in(&mut shape.stroke_keys, frame, now, interp);
-                    }
-                }
-            }
-            ChannelId::Trim(i) => {
-                if let LayerKind::Vector { shapes } = &mut l.kind
-                    && let Some(shape) = shapes.get_mut(i)
-                {
-                    let now = shape.trim_at(frame as f32);
-                    fanimate_core::anim::set_key_in(&mut shape.trim_keys, frame, now, interp);
-                }
-            }
-            // the camera's are keyed above, before a layer is looked for
-            ChannelId::CameraPosition | ChannelId::CameraZoom | ChannelId::CameraRoll => {}
-            ChannelId::Switch => {
-                if let LayerKind::Switch { children, switch } = &mut l.kind
-                    && let Some(shown) = fanimate_core::scene::switch_choice(children, switch, frame as f32)
-                {
-                    let key = fanimate_core::Key {
-                        frame,
-                        value: children[shown].name.clone(),
-                        interp,
-                    };
-                    match switch.binary_search_by_key(&frame, |k| k.frame) {
-                        Ok(at) => switch[at] = key,
-                        Err(at) => switch.insert(at, key),
-                    }
-                }
-            }
+        let (frame, interp) = (self.current_frame(), self.key_interp);
+        if let Some(l) = self.doc.find_mut(id) {
+            keys::key_channel_now(l, ch, frame, interp);
         }
         self.dirty = true;
     }
@@ -1505,6 +1549,10 @@ impl Editor {
     /// layers, if there are keys there and they all agree; `Some(None)`
     /// when they differ.
     pub fn key_interpolation(&self) -> Option<Option<Interpolation>> {
+        // keys picked in the timeline are the ones meant, wherever the playhead is
+        if self.has_selected_keys() {
+            return self.picked_interpolation();
+        }
         let frame = self.current_frame();
         let mut found: Option<Option<Interpolation>> = None;
         for id in &self.selection {
@@ -1530,6 +1578,10 @@ impl Editor {
             return;
         }
         if self.key_interpolation() == Some(Some(interp)) {
+            return;
+        }
+        if self.has_selected_keys() {
+            self.set_picked_interpolation(interp);
             return;
         }
         self.checkpoint("Change interpolation");
@@ -1672,8 +1724,9 @@ impl Editor {
         self.key_drag = None;
     }
 
+    /// Whether keys are being dragged or scaled in the timeline.
     pub fn is_dragging_keys(&self) -> bool {
-        self.key_drag.is_some()
+        self.key_drag.is_some() || self.is_dragging_selected_keys() || self.key_scale_anchor().is_some()
     }
 
     /// A layer's transform at the current frame.
@@ -1739,11 +1792,6 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-fn key_now<T: Animatable>(ch: &mut Channel<T>, frame: Frame, interp: Interpolation) {
-    let v = ch.sample(frame as f32);
-    ch.set_key(frame, v, interp);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1784,7 +1832,7 @@ mod tests {
     fn copy_paste_through_text_gives_fresh_ids() {
         let (mut ed, [_, b, _]) = three();
         ed.select(b, SelectMode::Replace);
-        let Outcome::CopyText(text) = ed.run(Action::Copy) else {
+        let Outcome::CopyText(text) = ed.run(Action::CopyLayers) else {
             panic!()
         };
         // paste into a different editor, as between two windows
@@ -1804,7 +1852,7 @@ mod tests {
         let (mut ed, [a, ..]) = three();
         assert!(!ed.paste(Some("hello")));
         ed.select(a, SelectMode::Replace);
-        ed.run(Action::Copy);
+        ed.run(Action::CopyLayers);
         assert!(ed.paste(Some("not layers")));
         assert_eq!(names(&ed), ["A", "A", "B", "C"]);
     }
@@ -1814,9 +1862,9 @@ mod tests {
         let (mut ed, [a, b, _]) = three();
         ed.select(a, SelectMode::Replace);
         ed.select(b, SelectMode::Toggle);
-        ed.run(Action::Cut);
+        ed.run(Action::CutLayers);
         assert_eq!(names(&ed), ["C"]);
-        ed.run(Action::Paste);
+        ed.run(Action::PasteLayers);
         assert_eq!(names(&ed), ["C", "A", "B"]);
     }
 
@@ -2005,18 +2053,19 @@ mod tests {
     }
 
     #[test]
-    fn keying_uses_the_documents_first_frame_as_the_base() {
+    fn keying_uses_the_rest_pose_as_the_base_whatever_the_range() {
         let (mut ed, [a, ..]) = three();
         ed.doc.start = 24;
-        ed.go_to(24);
+        ed.go_to(0);
         let mut t = ed.layer_transform(a).unwrap();
         t.rotation = 0.5;
         ed.set_layer_transform(a, t);
         assert!(!ed.doc.find(a).unwrap().transform.rotation.is_animated());
-        ed.go_to(30);
+        // the first frame of the range is animation too
+        ed.go_to(24);
         t.rotation = 1.0;
         ed.set_layer_transform(a, t);
-        assert_eq!(ed.key_frames(a), [24, 30]);
+        assert_eq!(ed.key_frames(a), [0, 24]);
     }
 
     #[test]
@@ -2121,7 +2170,13 @@ mod tests {
         assert!(channels.contains(&ChannelId::FillColor(0)));
         assert!(!channels.contains(&ChannelId::StrokeColor(0)));
         ed.run(Action::AddChannelKey(ChannelId::StrokeColor(0)));
-        assert_eq!(ed.layer_shapes(a).unwrap()[0].stroke_keys.len(), 1);
+        // a key on a later frame seeds the rest pose too
+        let stroke_frames: Vec<_> = ed.layer_shapes(a).unwrap()[0]
+            .stroke_keys
+            .iter()
+            .map(|k| k.frame)
+            .collect();
+        assert_eq!(stroke_frames, [0, 6]);
         // turning the fill off ends its animation
         let mut style = style_now(&ed);
         style.fill = None;
@@ -2144,15 +2199,19 @@ mod tests {
         let l = ed.doc.find(a).unwrap();
         assert!(l.transform.rotation.is_animated());
         assert!(!l.transform.position.is_animated(), "only that property");
-        assert_eq!(ed.channel_key_frames(a, rotation), [6]);
+        assert_eq!(
+            ed.channel_key_frames(a, rotation),
+            [0, 6],
+            "the rest pose is keyed too"
+        );
         assert!(ed.can_run(Action::DeleteChannelKey(rotation)));
         ed.run(Action::SetChannelInterpolation(rotation, Interpolation::Step));
         assert_eq!(
-            ed.doc.find(a).unwrap().transform.rotation.keys[0].interp,
+            ed.doc.find(a).unwrap().transform.rotation.keys[1].interp,
             Interpolation::Step
         );
         ed.run(Action::DeleteChannelKey(rotation));
-        assert!(!ed.doc.find(a).unwrap().transform.rotation.is_animated());
+        assert_eq!(ed.channel_key_frames(a, rotation), [0]);
         // a property the layer does not have cannot be keyed
         assert!(!ed.can_run(Action::AddChannelKey(ChannelId::Bone(0))));
         // each of those was one undo step
@@ -2170,14 +2229,14 @@ mod tests {
         ed.drag_keys_to(9);
         ed.end_key_drag();
         let l = ed.doc.find(a).unwrap();
-        assert_eq!(l.transform.rotation.keys[0].frame, 9);
-        assert_eq!(l.transform.position.keys[0].frame, 5);
+        assert_eq!(l.transform.rotation.keys[1].frame, 9);
+        assert_eq!(l.transform.position.keys[1].frame, 5);
         assert!(
             !ed.begin_channel_key_drag(a, ChannelId::Rotation, 5),
             "no key there any more"
         );
         ed.run(Action::Undo);
-        assert_eq!(ed.doc.find(a).unwrap().transform.rotation.keys[0].frame, 5);
+        assert_eq!(ed.doc.find(a).unwrap().transform.rotation.keys[1].frame, 5);
     }
 
     #[test]
@@ -2196,7 +2255,8 @@ mod tests {
         ed.run(Action::PrevKey);
         assert_eq!(ed.current_frame(), 5);
         ed.run(Action::DeleteKey);
-        assert_eq!(ed.key_frames(a), [12]);
+        // the key on the rest pose, seeded when the first was added, stays
+        assert_eq!(ed.key_frames(a), [0, 12]);
     }
 
     #[test]
@@ -2232,22 +2292,45 @@ mod tests {
             ed.drag_keys_to(f);
         }
         ed.end_key_drag();
-        assert_eq!(ed.key_frames(a), [9, 12]);
-        assert_eq!(ed.key_frames(b), [5, 12]);
+        assert_eq!(ed.key_frames(a), [0, 9, 12]);
+        assert_eq!(ed.key_frames(b), [0, 5, 12]);
         assert_eq!(ed.current_frame(), 9);
         ed.run(Action::Undo);
-        assert_eq!(ed.key_frames(a), [5, 12]);
+        assert_eq!(ed.key_frames(a), [0, 5, 12]);
         // dropping on another key replaces it
         assert!(ed.begin_key_drag(5));
         ed.drag_keys_to(12);
         ed.end_key_drag();
-        assert_eq!(ed.key_frames(a), [12]);
+        assert_eq!(ed.key_frames(a), [0, 12]);
         // a drag that goes nowhere records nothing
         let steps = ed.history.undo_label().map(str::to_owned);
         assert!(ed.begin_key_drag(12));
         ed.drag_keys_to(12);
         ed.end_key_drag();
         assert_eq!(ed.history.undo_label().map(str::to_owned), steps);
+    }
+
+    #[test]
+    fn select_all_and_escape_work_on_keys_when_the_timeline_has_focus() {
+        let (mut ed, [a, b, _]) = three();
+        ed.select(a, SelectMode::Replace);
+        ed.select(b, SelectMode::Toggle);
+        for f in [5, 12] {
+            ed.go_to(f);
+            ed.run(Action::AddKey);
+        }
+        // with the canvas in front Select All does not pick keys
+        ed.set_focus(Focus::Canvas);
+        ed.run(Action::SelectAll);
+        assert!(!ed.has_selected_keys());
+        // with the timeline in front it picks them
+        ed.set_focus(Focus::Timeline);
+        ed.run(Action::SelectAll);
+        assert!(ed.has_selected_keys());
+        // Esc lets go of the keys first, leaving the layers
+        ed.run(Action::SelectNone);
+        assert!(!ed.has_selected_keys());
+        assert!(!ed.selection.is_empty());
     }
 
     #[test]
@@ -2261,7 +2344,9 @@ mod tests {
         ed.run(Action::SetInterpolation(Interpolation::Step));
         assert_eq!(ed.key_interpolation(), Some(Some(Interpolation::Step)));
         let l = ed.doc.find(a).unwrap();
-        assert_eq!(l.transform.position.keys[0].interp, Interpolation::Step);
+        // keys[0] is the rest pose, seeded with the first key
+        assert_eq!(l.transform.position.keys[0].interp, Interpolation::Smooth);
+        assert_eq!(l.transform.position.keys[1].interp, Interpolation::Step);
         ed.run(Action::Undo);
         assert_eq!(ed.key_interpolation(), Some(Some(Interpolation::Smooth)));
     }
@@ -2269,12 +2354,13 @@ mod tests {
     #[test]
     fn playback_loops_and_frames_clamp() {
         let (mut ed, _) = three();
-        ed.doc.end = 23;
+        ed.doc.end = 24;
         ed.playing = true;
-        ed.tick(1.5); // 36 frames at 24 fps over a 24-frame range
-        assert_eq!(ed.current_frame(), 12);
+        // from the rest pose it starts on frame 1: 36 frames at 24 fps over frames 1 to 24
+        ed.tick(1.5);
+        assert_eq!(ed.current_frame(), 13);
         // the playhead may go past the last frame (keys for later go there),
-        // but never before the first
+        // but never before the rest pose
         ed.go_to(500);
         assert_eq!(ed.current_frame(), 500);
         assert!(!ed.playing);
@@ -2285,16 +2371,16 @@ mod tests {
     #[test]
     fn playing_from_past_the_end_starts_over() {
         let (mut ed, _) = three();
-        ed.doc.end = 23;
+        ed.doc.end = 24;
         ed.go_to(40);
         ed.playing = true;
-        ed.tick(0.25); // 6 frames
-        assert_eq!(ed.current_frame(), 6);
+        ed.tick(0.25); // 6 frames after frame 1
+        assert_eq!(ed.current_frame(), 7);
         // the playhead at the very last frame plays on and loops as before
-        ed.go_to(23);
+        ed.go_to(24);
         ed.playing = true;
         ed.tick(0.25);
-        assert_eq!(ed.current_frame(), 5);
+        assert_eq!(ed.current_frame(), 6);
     }
 
     #[test]
@@ -2391,8 +2477,8 @@ mod tests {
     fn a_new_file_takes_its_size_and_frame_rate() {
         let ed = Editor::untitled_sized("Short", 1920.0, 1080.0, 30.0);
         assert_eq!((ed.doc.width, ed.doc.height, ed.doc.fps), (1920.0, 1080.0, 30.0));
-        // five seconds, counted from frame 0
-        assert_eq!((ed.doc.start, ed.doc.end), (0, 149));
+        // five seconds, counted from frame 1; frame 0 is the rest pose
+        assert_eq!((ed.doc.start, ed.doc.end), (1, 150));
         assert_eq!(ed.doc.name, "Short");
         assert_eq!(ed.doc.layers.len(), 1);
         assert!(ed.path.is_none() && !ed.dirty);
@@ -2415,7 +2501,7 @@ mod tests {
         let plain = Editor::untitled();
         assert_eq!(
             (plain.doc.width, plain.doc.height, plain.doc.end),
-            (1280.0, 720.0, 119)
+            (1280.0, 720.0, 120)
         );
     }
 
@@ -2497,10 +2583,12 @@ mod tests {
     fn can_run_reflects_state() {
         let (mut ed, [a, ..]) = three();
         assert!(!ed.can_run(Action::Undo));
-        assert!(!ed.can_run(Action::Copy));
-        assert!(!ed.can_run(Action::Paste));
+        assert!(!ed.can_run(Action::CopyLayers));
+        assert!(!ed.can_run(Action::PasteLayers));
         ed.select(a, SelectMode::Replace);
-        ed.run(Action::Copy);
+        assert!(ed.can_run(Action::CopyLayers));
+        ed.run(Action::CopyLayers);
+        assert!(ed.can_run(Action::PasteLayers));
         assert!(ed.can_run(Action::Paste));
         assert!(!ed.can_run(Action::Ungroup));
     }

@@ -127,6 +127,11 @@ impl<'a> Archive<'a> {
         self.entries.keys().map(String::as_str)
     }
 
+    /// The size `name` says it has once inflated, without inflating it.
+    pub fn size(&self, name: &str) -> Option<usize> {
+        Some(self.entry(name)?.size)
+    }
+
     fn entry(&self, name: &str) -> Option<Entry> {
         self.entries
             .get(name)

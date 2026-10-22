@@ -198,6 +198,10 @@ fn buttons(ui: &mut egui::Ui, shell: &mut Shell, push: &mut Vec<Action>) {
             if layers.len() > 1 {
                 button(ui, shell, push, Icon::GroupLayer, "Group", Action::GroupLayers);
             }
+            // one layer has a pivot, and so do two or more chosen points
+            if layers.len() == 1 || shell.editor.points.len() > 1 {
+                button(ui, shell, push, Icon::Pivot, "", Action::PickPivot);
+            }
         }
         _ => {
             button(

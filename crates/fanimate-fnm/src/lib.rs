@@ -28,8 +28,8 @@ pub mod zip;
 
 pub use history::{HistoryRecord, HistoryState};
 pub use io::{
-    FORMAT_NAME, FORMAT_VERSION, is_media_name, load, load_and_repair, load_archive, load_from, save,
-    save_folder,
+    FORMAT_NAME, FORMAT_VERSION, MAX_THUMBNAIL_BYTES, THUMBNAIL_NAME, is_media_name, load, load_and_repair,
+    load_archive, load_from, read_thumbnail, save, save_folder, save_with_thumbnail,
 };
 pub use journal::{Journal, Recoverable, SessionInfo, find_recoverable};
 pub use validate::{Issue, Report, Severity, repair, validate};

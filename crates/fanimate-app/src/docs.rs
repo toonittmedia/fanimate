@@ -58,13 +58,20 @@ impl Startup {
     }
 }
 
+/// What tabs share: the brush look, the tool and the clipboards.
+type Carry = (
+    fanimate_editor::DrawStyle,
+    fanimate_editor::Tool,
+    fanimate_editor::Clipboards,
+);
+
 /// A document in a background tab.
 pub struct Parked {
     editor: Editor,
     view: CanvasView,
-    /// Timeline zoom (pixels per frame) and scroll (frames), and the layers
-    /// whose property rows are open.
-    timeline: (f32, f32),
+    /// Timeline zoom (pixels per frame), scroll (frames) and the width of the
+    /// names column, and the layers whose property rows are open.
+    timeline: (f32, f32, f32),
     expanded: std::collections::HashSet<fanimate_core::LayerId>,
     session: Session,
 }
@@ -135,7 +142,11 @@ impl Shell {
         Parked {
             editor: std::mem::replace(&mut self.editor, Editor::untitled()),
             view: self.view.clone(),
-            timeline: (self.ui.timeline_frame_width, self.ui.timeline_scroll),
+            timeline: (
+                self.ui.timeline_frame_width,
+                self.ui.timeline_scroll,
+                self.ui.timeline_names_width,
+            ),
             expanded: std::mem::take(&mut self.ui.timeline_expanded),
             session: std::mem::take(&mut self.recovery.session),
         }
@@ -143,7 +154,7 @@ impl Shell {
 
     /// Make a parked document the live one. `carry` is what tabs share: the
     /// brush and the tool.
-    fn install(&mut self, parked: Parked, carry: (fanimate_editor::DrawStyle, fanimate_editor::Tool)) {
+    fn install(&mut self, parked: Parked, carry: Carry) {
         let Parked {
             mut editor,
             view,
@@ -154,19 +165,24 @@ impl Shell {
         self.adopt(&mut editor, carry);
         self.editor = editor;
         self.view = view;
-        (self.ui.timeline_frame_width, self.ui.timeline_scroll) = timeline;
+        (
+            self.ui.timeline_frame_width,
+            self.ui.timeline_scroll,
+            self.ui.timeline_names_width,
+        ) = timeline;
         self.ui.timeline_expanded = expanded;
         self.recovery.session = session;
         self.reset_gestures();
     }
 
-    fn adopt(&self, editor: &mut Editor, carry: (fanimate_editor::DrawStyle, fanimate_editor::Tool)) {
+    fn adopt(&self, editor: &mut Editor, carry: Carry) {
         editor.draw = carry.0;
         let _ = editor.run(Action::Tool(carry.1));
+        editor.adopt_clipboards(carry.2);
     }
 
-    fn carry(&self) -> (fanimate_editor::DrawStyle, fanimate_editor::Tool) {
-        (self.editor.draw, self.editor.tool)
+    fn carry(&self) -> Carry {
+        (self.editor.draw, self.editor.tool, self.editor.clipboards())
     }
 
     /// Half-done gestures belong to the document they started in.
@@ -181,7 +197,6 @@ impl Shell {
         ui.curvature_down = false;
         ui.magnet_active = false;
         ui.line_width_press = None;
-        ui.points_transform_origin = None;
         ui.active_edit = None;
     }
 
@@ -194,6 +209,9 @@ impl Shell {
         self.docs.open(live, info);
         self.ui.scroll_tab_into_view = true;
         self.adopt(&mut editor, carry);
+        // the project's own styles join the app's, so a project made on
+        // another computer keeps its looks
+        self.styles.merge(&editor.doc.styles);
         self.editor = editor;
         self.view.fit();
         self.ui.timeline_scroll = 0.0;
@@ -299,6 +317,7 @@ impl Shell {
                     // nothing open: Home shows, over a blank placeholder
                     self.editor = Editor::untitled();
                     self.editor.draw = carry.0;
+                    self.editor.adopt_clipboards(carry.2);
                     self.view.fit();
                     self.reset_gestures();
                 }

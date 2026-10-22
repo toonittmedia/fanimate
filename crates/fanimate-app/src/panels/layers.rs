@@ -22,6 +22,10 @@ const INDENT: f32 = 16.0;
 struct DraggedLayers(Vec<LayerId>);
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
+    // a press here makes Cut, Copy and Paste hint at the layer commands
+    if ui.rect_contains_pointer(ui.max_rect()) {
+        shell.ui.pointer_region = Some(fanimate_editor::Focus::Layers);
+    }
     toolbar(ui, shell);
     ui.add(
         egui::TextEdit::singleline(&mut shell.ui.layer_filter)
@@ -66,7 +70,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                 menus::item(ui, shell, Action::NewBoneLayer);
                 menus::item(ui, shell, Action::NewFramesLayer);
                 ui.separator();
-                menus::item(ui, shell, Action::Paste);
+                menus::item(ui, shell, Action::PasteLayers);
             });
         });
 }
@@ -261,13 +265,20 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
         }
     } else {
         let color = if visible { p.text } else { p.text_muted };
+        let font = egui::FontId::proportional(13.0);
+        // stop short of the padlock; a cut name shows whole in the tooltip
+        let room = (lock_rect.left() - 4.0 - name_rect.left()).max(0.0);
+        let (shown, cut) = fit_name(&painter, &name, &font, color, room);
         painter.text(
             egui::pos2(name_rect.left(), rect.center().y),
             egui::Align2::LEFT_CENTER,
-            &name,
-            egui::FontId::proportional(13.0),
+            shown,
+            font,
             color,
         );
+        if cut && response.hover_pos().is_some_and(|pos| name_rect.contains(pos)) {
+            response.clone().on_hover_text(&name);
+        }
     }
 
     // selection and rename
@@ -300,6 +311,33 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
     menus::context_menu(&response, |ui| menus::layer_context(ui, shell));
 
     drag_and_drop(ui, shell, &response, rect, id, is_container);
+}
+
+/// `name` cut with a real ellipsis so it is at most `room` points wide, and whether it was cut.
+fn fit_name(
+    painter: &egui::Painter,
+    name: &str,
+    font: &egui::FontId,
+    color: egui::Color32,
+    room: f32,
+) -> (String, bool) {
+    let width = |text: String| painter.layout_no_wrap(text, font.clone(), color).size().x;
+    if width(name.to_owned()) <= room {
+        return (name.to_owned(), false);
+    }
+    let chars: Vec<char> = name.chars().collect();
+    let with_ellipsis = |n: usize| chars[..n].iter().collect::<String>().trim_end().to_owned() + "…";
+    // the longest prefix that still fits beside the ellipsis
+    let (mut lo, mut hi) = (0, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if width(with_ellipsis(mid)) <= room {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    (with_ellipsis(lo), true)
 }
 
 fn drag_and_drop(

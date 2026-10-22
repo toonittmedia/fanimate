@@ -5,6 +5,7 @@
 //! on it blocks the rest of the app.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use eframe::egui::{self, Align2, FontId, Rect, RichText, ScrollArea, Sense, Stroke, pos2, vec2};
 use fanimate_editor::{Action, Preset, Sample};
@@ -12,6 +13,7 @@ use fanimate_editor::{Action, Preset, Sample};
 use crate::app::Shell;
 use crate::docs::Startup;
 use crate::menus;
+use crate::yourfiles::{self, Found};
 
 const NAV_WIDTH: f32 = 240.0;
 const CARD_WIDTH: f32 = 168.0;
@@ -25,23 +27,31 @@ pub enum Section {
     #[default]
     Home,
     Recent,
+    YourFiles,
     Templates,
 }
 
 impl Section {
-    const ALL: [Section; 3] = [Self::Home, Self::Recent, Self::Templates];
+    const ALL: [Section; 4] = [Self::Home, Self::Recent, Self::YourFiles, Self::Templates];
 
     fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
             Self::Recent => "Recent",
+            Self::YourFiles => "Your files",
             Self::Templates => "Templates",
         }
     }
 }
 
+/// How many templates and projects per folder the Home page itself shows;
+/// the rest are one click away in their own section.
+const HOME_TEMPLATES: usize = 4;
+const HOME_PER_FOLDER: usize = 6;
+
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     shell.ui.thumbs.poll(ui.ctx());
+    shell.ui.your_files.poll(ui.ctx());
     let p = shell.palette;
     egui::Panel::left("home-nav")
         .exact_size(NAV_WIDTH)
@@ -65,6 +75,11 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                 match shell.ui.home_section {
                     Section::Home => home(ui, shell),
                     Section::Recent => recent(ui, shell, usize::MAX),
+                    Section::YourFiles => {
+                        ui.label(RichText::new("Your files").size(22.0).strong());
+                        ui.add_space(8.0);
+                        your_files(ui, shell, usize::MAX);
+                    }
                     Section::Templates => templates(ui, shell),
                 }
             });
@@ -152,14 +167,22 @@ fn home(ui: &mut egui::Ui, shell: &mut Shell) {
             }
         }
     });
-    if !shell.recent.is_empty() {
-        ui.add_space(26.0);
-        section_title(ui, shell, "Recent");
-        recent(ui, shell, 5);
-        if shell.recent.len() > 5 && ui.link("See all recent files").clicked() {
-            shell.ui.home_section = Section::Recent;
-        }
+    ui.add_space(26.0);
+    section_title(ui, shell, "Recent");
+    recent(ui, shell, 5);
+    if shell.recent.len() > 5 && ui.link("See all recent files").clicked() {
+        shell.ui.home_section = Section::Recent;
     }
+    ui.add_space(26.0);
+    section_title(ui, shell, "Your files");
+    your_files(ui, shell, HOME_PER_FOLDER);
+    ui.add_space(26.0);
+    section_title(ui, shell, "Templates");
+    template_cards(ui, shell, HOME_TEMPLATES);
+    if Sample::ALL.len() > HOME_TEMPLATES && ui.link("See all templates").clicked() {
+        shell.ui.home_section = Section::Templates;
+    }
+    ui.add_space(20.0);
 }
 
 fn section_title(ui: &mut egui::Ui, shell: &Shell, text: &str) {
@@ -345,24 +368,161 @@ fn describe(path: &Path) -> (String, String) {
 fn templates(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.label(RichText::new("Templates").size(22.0).strong());
     ui.label(
-        RichText::new("Sample projects to look inside. They open as new, unsaved files.")
+        RichText::new("Starting points and samples to look inside. They open as new, unsaved files.")
             .color(shell.palette.text_muted),
     );
     ui.add_space(16.0);
+    template_cards(ui, shell, usize::MAX);
+}
+
+/// The first `limit` templates as cards; a click opens one as a new file.
+fn template_cards(ui: &mut egui::Ui, shell: &mut Shell, limit: usize) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-        for sample in Sample::ALL {
-            let detail = match sample {
-                Sample::Hello => "A bone-rigged letter",
-                Sample::Benchmark => "40 bones, the speed test",
-                Sample::StressTest => "400 bones, for stress",
-            };
+        for sample in Sample::ALL.into_iter().take(limit) {
             let preview = shell.ui.thumbs.sample(sample).cloned();
-            if card(ui, shell, sample.name(), detail, None, preview.as_ref()).clicked() {
+            let r = card(ui, shell, sample.name(), sample.detail(), None, preview.as_ref());
+            if r.clicked() {
                 shell.pending.push(Action::OpenSample(sample));
             }
+            menus::context_menu(&r, |ui| {
+                if ui.button("Open as a new file").clicked() {
+                    shell.pending.push(Action::OpenSample(sample));
+                    ui.close();
+                }
+            });
         }
     });
+}
+
+/// A folder's own name, and the folder it is in.
+fn folder_label(dir: &Path) -> (String, String) {
+    let name = dir
+        .file_name()
+        .map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let parent = dir.parent().map_or_else(String::new, |p| p.display().to_string());
+    (name, parent)
+}
+
+/// The folders the user added and the projects in them, `limit` per folder.
+/// A click opens a project as a tab.
+fn your_files(ui: &mut egui::Ui, shell: &mut Shell, limit: usize) {
+    let p = shell.palette;
+    let mut add = false;
+    let mut refresh = false;
+    let mut remove: Option<PathBuf> = None;
+    let mut open: Option<PathBuf> = None;
+    let now = SystemTime::now();
+
+    let folders = shell.ui.your_files.folders().to_vec();
+    if folders.is_empty() {
+        ui.label(RichText::new("Add a folder to see your projects here.").color(p.text_muted));
+        ui.add_space(6.0);
+        if ui.button("Add folder…").clicked() {
+            add = true;
+        }
+    } else {
+        ui.horizontal(|ui| {
+            if ui.button("Add folder…").clicked() {
+                add = true;
+            }
+            if ui.link("Refresh").clicked() {
+                refresh = true;
+            }
+        });
+        ui.add_space(8.0);
+    }
+    for dir in &folders {
+        let (name, parent) = folder_label(dir);
+        let heading = ui
+            .horizontal(|ui| {
+                let title = egui::Label::new(RichText::new(&name).size(13.0).strong().color(p.text))
+                    .selectable(false)
+                    .sense(Sense::click());
+                let r = ui
+                    .add(title)
+                    .on_hover_text("Right-click to open this folder or take it off the list");
+                ui.add(
+                    egui::Label::new(RichText::new(&parent).size(11.5).color(p.text_muted))
+                        .selectable(false)
+                        .truncate(),
+                );
+                r
+            })
+            .inner;
+        menus::context_menu(&heading, |ui| {
+            if ui.button("Open folder in file manager").clicked() {
+                crate::render_queue::open_path(dir);
+                ui.close();
+            }
+            if ui.button("Remove from list").clicked() {
+                remove = Some(dir.clone());
+                ui.close();
+            }
+        });
+        ui.add_space(4.0);
+
+        let found: Option<Vec<Found>> = shell.ui.your_files.files(dir).map(|f| f.to_vec());
+        match found {
+            None => {
+                ui.label(RichText::new("Looking for projects…").color(p.text_muted));
+            }
+            Some(files) if files.is_empty() => {
+                ui.label(
+                    RichText::new("No Fanimate projects in this folder yet. Projects you save here show up.")
+                        .color(p.text_muted),
+                );
+            }
+            Some(files) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+                    for file in files.iter().take(limit) {
+                        let preview = shell.ui.thumbs.file(&file.path).cloned();
+                        let detail = yourfiles::edited(file.modified, now);
+                        let r = card(ui, shell, &file.name, &detail, None, preview.as_ref());
+                        if r.clicked() {
+                            open = Some(file.path.clone());
+                        }
+                        menus::context_menu(&r, |ui| {
+                            if ui.button("Open").clicked() {
+                                open = Some(file.path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Show in folder").clicked() {
+                                crate::render_queue::show_in_folder(&file.path);
+                                ui.close();
+                            }
+                            if ui.button("Copy path").clicked() {
+                                ui.ctx().copy_text(file.path.display().to_string());
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+                if files.len() > limit
+                    && ui
+                        .link(format!("Show all {} projects in this folder", files.len()))
+                        .clicked()
+                {
+                    shell.ui.home_section = Section::YourFiles;
+                }
+            }
+        }
+        ui.add_space(14.0);
+    }
+
+    if add && let Some(dir) = yourfiles::pick_folder(shell.places.latest()) {
+        shell.ui.your_files.add(dir);
+    }
+    if refresh {
+        shell.ui.your_files.refresh();
+    }
+    if let Some(dir) = remove {
+        shell.ui.your_files.remove(&dir);
+    }
+    if let Some(path) = open {
+        shell.open_path(&path);
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +536,34 @@ mod tests {
         assert!(folder.contains("shows"), "{folder}");
         let (name, _) = describe(Path::new("scene.fnm"));
         assert_eq!(name, "scene");
+    }
+
+    #[test]
+    fn every_template_is_a_sound_project_that_saves_and_opens_whole() {
+        let dir = std::env::temp_dir().join(format!("fanimate-templates-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut names = std::collections::HashSet::new();
+        for (i, sample) in Sample::ALL.into_iter().enumerate() {
+            assert!(names.insert(sample.name()), "{} is listed twice", sample.name());
+            assert!(!sample.detail().is_empty());
+            let doc = sample.document();
+            assert_eq!(doc.start, 1, "{} starts on frame 1", sample.name());
+            let report = fanimate_fnm::validate(&doc);
+            let errors: Vec<_> = report
+                .issues
+                .iter()
+                .filter(|i| i.severity == fanimate_fnm::Severity::Error)
+                .collect();
+            assert!(errors.is_empty(), "{}:\n{report}", sample.name());
+
+            let path = dir.join(format!("template-{i}.fnm"));
+            fanimate_fnm::save(&doc, &path).unwrap();
+            let (back, loaded) = fanimate_fnm::load(&path).unwrap();
+            assert_eq!(back, doc, "{}", sample.name());
+            assert_eq!(loaded.unresolved_errors().count(), 0, "{}", sample.name());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -47,6 +47,7 @@ ALLOWED = {
 # Shipped beside the code, not through Cargo.
 BESIDE = [
     ("Inter (UI font)", "OFL-1.1", "brand/fonts"),
+    ("JetBrains Mono (frame numbers)", "OFL-1.1", "brand/fonts"),
     ("Lucide icons", "ISC", "crates/fanimate-app/icons/lucide"),
     ("Rhubarb Lip Sync 1.14.0 (separate program)", "MIT", "scripts/fetch-rhubarb.sh"),
 ]

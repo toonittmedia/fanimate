@@ -242,7 +242,8 @@ pub struct Settings {
     /// Picture size in pixels; the canvas is fitted to it.
     pub width: u32,
     pub height: u32,
-    /// First and last frame, inclusive.
+    /// First and last frame, inclusive, in the document's own numbering
+    /// (its first frame is `doc.start`, 1 for a new project; 0 is the rest pose).
     pub start: Frame,
     pub end: Frame,
     /// The FFmpeg program chosen in Preferences, for formats that need it;

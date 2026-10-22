@@ -1,0 +1,8 @@
+<!-- Fanimate camera tool icon, drawn on Lucide's 24 px grid with 2 px round strokes. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="2" y="3" width="12" height="9" rx="2" />
+  <path d="m14 6.5 5-3v8l-5-3" />
+  <path d="M3 19h18" />
+  <path d="m6 16-3 3 3 3" />
+  <path d="m18 16 3 3-3 3" />
+</svg>

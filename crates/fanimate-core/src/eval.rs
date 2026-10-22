@@ -166,7 +166,17 @@ impl Evaluator {
         rig: Option<(Rig<'a>, Affine2)>,
         out: &mut Vec<DrawItem<'a>>,
     ) {
-        for layer in layers {
+        // Siblings are drawn in list order unless one has Order keys. The
+        // common case allocates nothing: the sorted slots exist only then.
+        let keyed = layers.len() > 1 && layers.iter().any(|l| l.order.is_animated());
+        let slots = if keyed {
+            draw_order(layers, frame)
+        } else {
+            Vec::new()
+        };
+        let index_at = |n: usize| if keyed { slots[n].1 } else { n };
+        for n in 0..layers.len() {
+            let layer = &layers[index_at(n)];
             if !layer.visible {
                 continue;
             }
@@ -347,6 +357,28 @@ impl Evaluator {
     }
 }
 
+/// Each sibling's slot on `frame` with its index in the list, in the order
+/// to draw them: a layer with Order keys sits at the value they hold (they
+/// hold between keys, as the editor writes them), any other at its place in
+/// the list. A stable sort, so layers in the same slot keep the list order,
+/// and `total_cmp`, so a damaged value cannot panic it.
+fn draw_order(layers: &[Layer], frame: f32) -> Vec<(f32, usize)> {
+    let mut slots: Vec<(f32, usize)> = layers
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let slot = if l.order.is_animated() {
+                l.order.sample(frame.floor())
+            } else {
+                i as f32
+            };
+            (slot, i)
+        })
+        .collect();
+    slots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    slots
+}
+
 /// The mesh's border as a closed shape filled with nothing visible, so
 /// clicking inside an image picks it.
 fn image_outline(vertices: &[(glam::Vec2, glam::Vec2)], [cols, rows]: [u32; 2]) -> Shape {
@@ -377,13 +409,16 @@ fn morph(
     index: usize,
 ) {
     for (act, &f) in actions.iter().zip(frames) {
-        // at rest an action changes nothing, so the shape is not copied
-        if f.is_nan() || f == 0.0 {
+        if f.is_nan() {
             continue;
         }
         let Some(keys) = act.shape_keys(layer, index) else {
             continue;
         };
+        // at its first key an action changes nothing, so the shape is not copied
+        if keys.first().is_none_or(|first| f <= first.frame as f32) {
+            continue;
+        }
         let (Some(from), Some(to)) = (
             crate::actions::sample_keys(keys, 0.0),
             crate::actions::sample_keys(keys, f),
@@ -456,6 +491,7 @@ fn at_frame(shape: &Shape, frame: f32) -> Cow<'_, Shape> {
         stroke_keys: Vec::new(),
         trim: shape.trim_at(frame),
         trim_keys: Vec::new(),
+        hidden_edge_flags: shape.hidden_edge_flags.clone(),
     })
 }
 
@@ -843,5 +879,139 @@ mod tests {
         doc.layers.push(rig);
         let items = evaluate(&doc, 0.0);
         assert_eq!(items[0].transform, Affine2::IDENTITY);
+    }
+
+    /// Three layers a, b, c in the list, one square each, and their ids.
+    fn three() -> (Document, [crate::scene::LayerId; 3]) {
+        let mut doc = Document::new("t", 100.0, 100.0, 24.0);
+        let layers: Vec<_> = ["a", "b", "c"]
+            .into_iter()
+            .map(|n| doc.new_layer(n, LayerKind::vector(vec![square()])))
+            .collect();
+        let ids = [layers[0].id, layers[1].id, layers[2].id];
+        doc.layers = layers;
+        (doc, ids)
+    }
+
+    fn drawn(doc: &Document, frame: f32) -> Vec<crate::scene::LayerId> {
+        evaluate(doc, frame).iter().map(|i| i.layer).collect()
+    }
+
+    #[test]
+    fn siblings_are_drawn_in_list_order_until_one_has_order_keys() {
+        let (mut doc, [a, b, c]) = three();
+        for f in [0.0, 40.0] {
+            assert_eq!(drawn(&doc, f), [a, b, c]);
+        }
+        // a sits at its own place until frame 40, then jumps in front of the rest
+        doc.layers[0].order.set_key(0, 0.0, Interpolation::Step);
+        doc.layers[0].order.set_key(40, 5.0, Interpolation::Step);
+        assert_eq!(drawn(&doc, 0.0), [a, b, c]);
+        assert_eq!(drawn(&doc, 39.0), [a, b, c]);
+        assert_eq!(drawn(&doc, 39.9), [a, b, c], "a step holds until its frame");
+        assert_eq!(drawn(&doc, 40.0), [b, c, a]);
+        assert_eq!(drawn(&doc, 99.0), [b, c, a]);
+        // and the list itself is untouched
+        assert_eq!(doc.layers.iter().map(|l| l.id).collect::<Vec<_>>(), [a, b, c]);
+    }
+
+    #[test]
+    fn layers_in_the_same_slot_keep_the_list_order() {
+        let (mut doc, [a, b, c]) = three();
+        // a keyed to slot 1 ties with b, which is at 1 by its place in the
+        // list, and the list order breaks the tie
+        doc.layers[0].order.set_key(0, 1.0, Interpolation::Step);
+        assert_eq!(drawn(&doc, 5.0), [a, b, c]);
+        doc.layers[2].order.set_key(0, 1.0, Interpolation::Step);
+        assert_eq!(drawn(&doc, 5.0), [a, b, c]);
+        // c below slot 0 goes behind everything
+        doc.layers[2].order.set_key(0, -1.0, Interpolation::Step);
+        assert_eq!(drawn(&doc, 5.0), [c, a, b]);
+        // a value that is not a number cannot break the sort or lose a layer
+        doc.layers[1].order.set_key(0, f32::NAN, Interpolation::Step);
+        assert_eq!(drawn(&doc, 5.0).len(), 3);
+    }
+
+    #[test]
+    fn the_children_of_a_group_are_ordered_too() {
+        let (mut doc, [a, b, c]) = three();
+        doc.layers[0].order.set_key(10, 5.0, Interpolation::Step);
+        let children = std::mem::take(&mut doc.layers);
+        let group = doc.new_layer("g", LayerKind::Group { children });
+        doc.layers.push(group);
+        // a's only key is on 10, held before it, so it is already in front
+        assert_eq!(drawn(&doc, 0.0), [b, c, a]);
+        assert_eq!(drawn(&doc, 20.0), [b, c, a]);
+    }
+
+    #[test]
+    fn order_keys_are_listed_as_a_channel_and_looked_up_by_id() {
+        use crate::scene::ChannelId;
+        let (mut doc, _) = three();
+        let layer = &mut doc.layers[0];
+        assert!(!layer.channels().contains(&ChannelId::Order));
+        assert!(!layer.is_animated());
+        layer.order.set_key(3, 1.0, Interpolation::Step);
+        assert!(layer.channels().contains(&ChannelId::Order));
+        assert_eq!(layer.channel_label(ChannelId::Order), "Order");
+        assert_eq!(layer.key_frames(), [3]);
+        assert!(layer.is_animated());
+        assert_eq!(
+            layer.channel_keys(ChannelId::Order).unwrap().interp_at(3),
+            Some(Interpolation::Step)
+        );
+        assert!(layer.channel_keys_mut(ChannelId::Order).unwrap().delete_key(3));
+        assert!(!layer.is_animated());
+        // a layer with no order keys writes nothing about order
+        let json = serde_json::to_string(&doc.layers[1]).unwrap();
+        assert!(!json.contains("order"));
+        doc.layers[1].order.set_key(3, 1.0, Interpolation::Step);
+        let json = serde_json::to_string(&doc.layers[1]).unwrap();
+        let back: Layer = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, doc.layers[1]);
+    }
+
+    #[test]
+    fn loops_are_reached_without_knowing_the_value_type() {
+        use crate::LoopMode;
+        use crate::scene::ChannelId;
+        let (mut doc, _) = three();
+        let layer = &mut doc.layers[0];
+        assert_eq!(layer.channel_loop(ChannelId::Position), LoopMode::Off);
+        // a channel with a single key cannot repeat, so it has no span yet
+        layer
+            .transform
+            .position
+            .set_key(2, Vec2::ZERO, Interpolation::Linear);
+        assert!(layer.set_channel_loop(ChannelId::Position, LoopMode::Relative));
+        assert_eq!(layer.channel_loop(ChannelId::Position), LoopMode::Relative);
+        assert_eq!(layer.loop_span(ChannelId::Position), None);
+        layer
+            .transform
+            .position
+            .set_key(8, Vec2::X, Interpolation::Linear);
+        assert_eq!(layer.loop_span(ChannelId::Position), Some((2, 8)));
+        assert_eq!(layer.loop_span(ChannelId::Rotation), None);
+        // point, colour and switch keys are not plain channels
+        assert!(!layer.set_channel_loop(ChannelId::Shape(0), LoopMode::Absolute));
+        assert!(!layer.set_channel_loop(ChannelId::Switch, LoopMode::Absolute));
+        assert!(!layer.set_channel_loop(ChannelId::Bone(0), LoopMode::Absolute));
+        assert!(!layer.set_channel_loop(ChannelId::CameraZoom, LoopMode::Absolute));
+        assert_eq!(layer.channel_loop(ChannelId::Shape(0)), LoopMode::Off);
+        // the camera's three channels
+        assert!(
+            doc.camera
+                .set_channel_loop(ChannelId::CameraZoom, LoopMode::Absolute)
+        );
+        assert_eq!(doc.camera.channel_loop(ChannelId::CameraZoom), LoopMode::Absolute);
+        assert_eq!(doc.camera.channel_loop(ChannelId::CameraRoll), LoopMode::Off);
+        assert!(
+            !doc.camera
+                .set_channel_loop(ChannelId::Position, LoopMode::Absolute)
+        );
+        doc.camera.zoom.set_key(0, 1.0, Interpolation::Linear);
+        doc.camera.zoom.set_key(6, 2.0, Interpolation::Linear);
+        assert_eq!(doc.camera.loop_span(ChannelId::CameraZoom), Some((0, 6)));
+        assert_eq!(doc.camera.loop_span(ChannelId::CameraRoll), None);
     }
 }

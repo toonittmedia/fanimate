@@ -1,5 +1,5 @@
 //! Phase E tool implementations: Curvature, shape tools (Line, Polygon, Star,
-//! Triangle), editing tools (Delete Edge, Magnet, Scale Points, Rotate Points),
+//! Triangle), editing tools (Delete Edge, Magnet),
 //! fill/stroke tools (Draw Shape, Freehand Width, Line Width, Stroke Exposure)
 //! and Shape Builder.
 
@@ -380,12 +380,61 @@ impl Editor {
         let Some(s) = self.point_shape_mut(shape) else {
             return false;
         };
+        // a deleted segment becomes a move, and a deleted closing edge is gone
+        if s.hidden_edge_flags.len() == cmds_clone.len() {
+            if matches!(cmds_clone[cmd_idx], PathCmd::Close) {
+                s.hidden_edge_flags.remove(cmd_idx);
+            } else {
+                s.hidden_edge_flags[cmd_idx] = false;
+            }
+            if s.hidden_edge_flags.iter().all(|h| !h) {
+                s.hidden_edge_flags.clear();
+            }
+        }
         s.path.cmds = new_cmds;
         s.rect = None; // no longer a parametric rect
         // clear point selection on this shape since indices changed
         self.points.retain(|r| r.layer != shape.0 || r.shape != shape.1);
         self.set_status(StatusKind::Info, "Edge deleted");
         true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hide Edge
+// ---------------------------------------------------------------------------
+
+impl Editor {
+    /// Hide Edge: toggle the stroke of the segment at `at` (document space):
+    /// a drawn edge is hidden, a hidden one is shown. With `show_only` it
+    /// only ever shows (the Alt click), so a stray second click cannot hide
+    /// what was just shown. The points and the fill stay. One undo step.
+    /// Returns whether anything changed.
+    pub fn toggle_edge_at(&mut self, at: Vec2, tolerance: f32, show_only: bool) -> bool {
+        use fanimate_core::PathCmd;
+        let Some((shape, cmd, _)) = self.segment_at(at, tolerance) else {
+            return false;
+        };
+        let hide = {
+            let Some(s) = self.point_shape(shape) else {
+                return false;
+            };
+            if matches!(s.path.cmds.get(cmd), None | Some(PathCmd::MoveTo(_))) {
+                return false;
+            }
+            let hidden = s.hidden_edge_flags.len() == s.path.cmds.len() && s.hidden_edge_flags[cmd];
+            if show_only && !hidden {
+                return false;
+            }
+            !hidden
+        };
+        self.checkpoint(if hide { "Hide edge" } else { "Show edge" });
+        let Some(s) = self.point_shape_mut(shape) else {
+            return false;
+        };
+        let changed = s.set_edge_hidden(cmd, hide);
+        self.set_status(StatusKind::Info, if hide { "Edge hidden" } else { "Edge shown" });
+        changed
     }
 }
 
@@ -439,87 +488,10 @@ impl Editor {
 }
 
 // ---------------------------------------------------------------------------
-// Scale Points / Rotate Points
+// Selected points
 // ---------------------------------------------------------------------------
 
 impl Editor {
-    /// Scale the selected points around their centroid. `factor_x` and
-    /// `factor_y` are scale multipliers (1.0 = unchanged). Modifies the
-    /// path in place (no undo step; call [`checkpoint`] before first call).
-    pub fn scale_selected_points(&mut self, factor_x: f32, factor_y: f32) {
-        let centre = self.selected_points_centroid();
-        let Some(layer) = self.point_layer() else { return };
-        let pts_snapshot: Vec<PointRef> = self.points.iter().cloned().collect();
-        let frame = self.current_frame() as f32;
-        let Some(shapes) = self.layer_shapes(layer) else {
-            return;
-        };
-
-        // collect (shape_idx, point_idx, current_position)
-        let moves: Vec<(usize, usize, Vec2)> = pts_snapshot
-            .iter()
-            .filter_map(|r| {
-                if r.layer != layer {
-                    return None;
-                }
-                let s = shapes.get(r.shape)?;
-                let pts = s.path_at(frame).on_curve_points();
-                let p = pts.get(r.point).copied()?;
-                let delta = p - centre;
-                let new_p = centre + Vec2::new(delta.x * factor_x, delta.y * factor_y);
-                Some((r.shape, r.point, new_p))
-            })
-            .collect();
-
-        let Some(shapes) = self.layer_shapes_mut(layer) else {
-            return;
-        };
-        for (si, pi, new_p) in moves {
-            if let Some(s) = shapes.get_mut(si) {
-                set_on_curve_point(&mut s.path, pi, new_p);
-                s.rect = None;
-            }
-        }
-    }
-
-    /// Rotate the selected points around their centroid by `angle` radians.
-    pub fn rotate_selected_points(&mut self, angle: f32) {
-        let centre = self.selected_points_centroid();
-        let Some(layer) = self.point_layer() else { return };
-        let pts_snapshot: Vec<PointRef> = self.points.iter().cloned().collect();
-        let frame = self.current_frame() as f32;
-        let Some(shapes) = self.layer_shapes(layer) else {
-            return;
-        };
-
-        let cos_a = angle.cos();
-        let sin_a = angle.sin();
-        let moves: Vec<(usize, usize, Vec2)> = pts_snapshot
-            .iter()
-            .filter_map(|r| {
-                if r.layer != layer {
-                    return None;
-                }
-                let s = shapes.get(r.shape)?;
-                let pts = s.path_at(frame).on_curve_points();
-                let p = pts.get(r.point).copied()?;
-                let d = p - centre;
-                let rotated = Vec2::new(d.x * cos_a - d.y * sin_a, d.x * sin_a + d.y * cos_a);
-                Some((r.shape, r.point, centre + rotated))
-            })
-            .collect();
-
-        let Some(shapes) = self.layer_shapes_mut(layer) else {
-            return;
-        };
-        for (si, pi, new_p) in moves {
-            if let Some(s) = shapes.get_mut(si) {
-                set_on_curve_point(&mut s.path, pi, new_p);
-                s.rect = None;
-            }
-        }
-    }
-
     /// Centroid of selected point positions (document space), or origin.
     pub fn selected_points_centroid(&self) -> Vec2 {
         let Some(layer) = self.point_layer() else {
@@ -547,35 +519,6 @@ impl Editor {
             return Vec2::ZERO;
         }
         positions.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / positions.len() as f32
-    }
-}
-
-/// Set the `n`-th on-curve point's coordinates in `path` (0-based). Off-curve
-/// control points for cubics are moved by the same delta so the curve shape
-/// stays the same.
-fn set_on_curve_point(path: &mut Path, n: usize, new_p: Vec2) {
-    let mut on_curve_idx = 0;
-    for cmd in &mut path.cmds {
-        match cmd {
-            fanimate_core::PathCmd::MoveTo(p) | fanimate_core::PathCmd::LineTo(p) => {
-                if on_curve_idx == n {
-                    *p = new_p;
-                    return;
-                }
-                on_curve_idx += 1;
-            }
-            fanimate_core::PathCmd::CubicTo(c1, c2, p) => {
-                if on_curve_idx == n {
-                    let delta = new_p - *p;
-                    *c1 += delta;
-                    *c2 += delta;
-                    *p = new_p;
-                    return;
-                }
-                on_curve_idx += 1;
-            }
-            fanimate_core::PathCmd::Close => {}
-        }
     }
 }
 
@@ -825,25 +768,36 @@ fn segments_intersect(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Freehand with Width (variable-width brush strokes)
+// Tools by layer type
 // ---------------------------------------------------------------------------
 
 impl Editor {
-    /// Freehand with Width: like Freehand but prompts the user to drag the
-    /// width during the stroke. For now, delegates to the regular stroke but
-    /// applies the drag-width to each segment as the pointer moves.
-    /// Uses `begin_stroke`, `continue_stroke`, `finish_stroke` with the same
-    /// draw settings; width adjustment is done by `continue_stroke_width`.
-    pub fn continue_stroke_width(&mut self, at: Vec2, drag_y: f32) {
-        // pressure analogue: drag up → narrower, drag down → wider
-        let pressure = (1.0 - drag_y / 200.0).clamp(0.1, 2.0);
-        self.continue_stroke(at, pressure);
+    /// The tool groups the Tools panel shows for the active layer.
+    pub fn tool_groups(&self) -> Vec<crate::action::ToolGroup> {
+        let id = self.primary();
+        let kind = id.and_then(|id| self.doc.find(id)).map(|l| &l.kind);
+        let in_rig = id.is_some_and(|id| self.enclosing_rig(id).is_some());
+        crate::action::tool_groups_in(kind, in_rig)
+    }
+
+    /// If the active layer no longer has the active tool's group, switch to
+    /// Transform Layer and say why. The camera and workspace tools are never
+    /// switched away. Cheap enough to call every frame. Returns whether the
+    /// tool changed.
+    pub fn fit_tool_to_layer(&mut self) -> bool {
+        let (was, group) = (self.tool, self.tool.group());
+        if self.tool_groups().contains(&group) {
+            return false;
+        }
+        self.set_tool(Tool::TransformLayer);
+        let needs = group.needs().unwrap_or("another layer");
+        self.set_status(
+            StatusKind::Info,
+            format!("{} needs {needs}. Switched to Transform Layer.", was.label()),
+        );
+        true
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -857,6 +811,67 @@ mod tests {
             LayerKind::Vector { shapes } => shapes.clone(),
             _ => panic!("not a vector layer"),
         }
+    }
+
+    #[test]
+    fn hide_edge_toggles_one_segment_alt_only_shows_and_each_change_undoes() {
+        use fanimate_core::Color;
+        let mut ed = Editor::untitled();
+        let id = ed.primary().unwrap();
+        // commands: move, top, right, bottom, close (the left side)
+        if let Some(LayerKind::Vector { shapes }) = ed.doc.find_mut(id).map(|l| &mut l.kind) {
+            shapes.push(Shape::new(
+                "r",
+                Path::rect(Vec2::ZERO, Vec2::new(100.0, 40.0), 0.0),
+                Style::fill(Color::WHITE).with_stroke(Color::BLACK, 2.0),
+            ));
+        }
+        let right_side = Vec2::new(100.0, 20.0);
+        // Alt only shows, and nothing is hidden yet
+        assert!(!ed.toggle_edge_at(right_side, 4.0, true));
+        assert!(shapes(&ed)[0].hidden_edges().is_none());
+        // a click hides the segment it is on, and nothing else
+        assert!(ed.toggle_edge_at(right_side, 4.0, false));
+        assert_eq!(
+            shapes(&ed)[0].hidden_edges(),
+            Some(&[false, false, true, false, false][..])
+        );
+        // clicking it again shows it
+        assert!(ed.toggle_edge_at(right_side, 4.0, false));
+        assert!(shapes(&ed)[0].hidden_edges().is_none());
+        // hide it again; Alt shows it
+        assert!(ed.toggle_edge_at(right_side, 4.0, false));
+        assert!(ed.toggle_edge_at(right_side, 4.0, true));
+        assert!(shapes(&ed)[0].hidden_edges().is_none());
+        // a click away from every segment does nothing
+        assert!(!ed.toggle_edge_at(Vec2::new(50.0, 20.0), 4.0, false));
+        // every change was one undo step
+        ed.run(crate::Action::Undo);
+        assert!(shapes(&ed)[0].hidden_edges().is_some());
+        ed.run(crate::Action::Undo);
+        assert!(shapes(&ed)[0].hidden_edges().is_none());
+        ed.run(crate::Action::Undo);
+        assert!(shapes(&ed)[0].hidden_edges().is_some());
+    }
+
+    #[test]
+    fn deleting_an_edge_keeps_the_other_hidden_edges_in_step() {
+        use fanimate_core::Color;
+        let mut ed = Editor::untitled();
+        let id = ed.primary().unwrap();
+        if let Some(LayerKind::Vector { shapes }) = ed.doc.find_mut(id).map(|l| &mut l.kind) {
+            shapes.push(Shape::new(
+                "r",
+                Path::rect(Vec2::ZERO, Vec2::new(100.0, 40.0), 0.0),
+                Style::fill(Color::WHITE).with_stroke(Color::BLACK, 2.0),
+            ));
+        }
+        assert!(ed.toggle_edge_at(Vec2::new(100.0, 20.0), 4.0, false));
+        // deleting the closing (left) edge removes a command, so the flags shorten with it
+        assert!(ed.delete_edge_at(Vec2::new(0.0, 20.0), 4.0));
+        let shape = &shapes(&ed)[0];
+        assert_eq!(shape.path.cmds.len(), shape.hidden_edge_flags.len());
+        assert_eq!(shape.hidden_edges(), Some(&[false, false, true, false][..]));
     }
 
     #[test]
@@ -1027,30 +1042,59 @@ mod tests {
     }
 
     #[test]
-    fn scale_selected_points_moves_them() {
+    fn a_tool_whose_group_a_layer_hides_gives_way_to_transform_layer() {
+        use crate::action::{Action, ToolGroup};
         let mut ed = Editor::untitled();
-        ed.tool = Tool::SelectPoints;
-        // draw a line from (0,0) to (100,0)
-        let _ = ed.begin_add_point(Vec2::ZERO, 2.0);
-        ed.drag_points(Vec2::new(100.0, 0.0));
-        ed.end_add_point(2.0);
-        // select both points
-        ed.run(crate::action::Action::SelectAll);
-        // scale x by 2
-        ed.checkpoint("test scale");
-        ed.scale_selected_points(2.0, 1.0);
-        let layer = ed.primary().unwrap();
-        let shapes = match &ed.doc.find(layer).unwrap().kind {
-            LayerKind::Vector { shapes } => shapes.clone(),
-            _ => panic!(),
-        };
-        let pts = shapes[0].path.on_curve_points();
-        // After scaling 2×, the second point should move from 100 to ~200
-        // (centroid is at 50, so new distance from centroid doubles)
-        assert!(
-            (pts[1].x - 150.0).abs() < 1.0 || (pts[1].x - 200.0).abs() < 5.0,
-            "pt1.x={}",
-            pts[1].x
+        // a vector layer is selected: drawing tools stay
+        ed.set_tool(Tool::Freehand);
+        assert!(!ed.fit_tool_to_layer());
+        assert_eq!(ed.tool, Tool::Freehand);
+        // a group has no drawing or bone tools
+        ed.run(Action::NewGroupLayer);
+        assert!(ed.fit_tool_to_layer());
+        assert_eq!(ed.tool, Tool::TransformLayer);
+        let (_, message) = ed.status.clone().unwrap();
+        assert!(message.contains("Freehand"), "{message}");
+        assert!(message.contains("a vector layer"), "{message}");
+        // already there: nothing more happens
+        assert!(!ed.fit_tool_to_layer());
+        // a bone layer keeps the bone tools and loses the drawing ones
+        ed.run(Action::NewBoneLayer);
+        ed.set_tool(Tool::AddBone);
+        assert!(!ed.fit_tool_to_layer());
+        ed.set_tool(Tool::Pen);
+        assert!(ed.fit_tool_to_layer());
+        assert_eq!(
+            ed.tool_groups(),
+            vec![
+                ToolGroup::Layer,
+                ToolGroup::Camera,
+                ToolGroup::Bone,
+                ToolGroup::Workspace
+            ]
         );
+        // nothing selected: the bone tools go too
+        ed.set_tool(Tool::AddBone);
+        ed.selection.clear();
+        assert!(ed.fit_tool_to_layer());
+        assert_eq!(ed.tool, Tool::TransformLayer);
+    }
+
+    #[test]
+    fn camera_and_workspace_tools_are_never_switched_away() {
+        let mut ed = Editor::untitled();
+        ed.selection.clear();
+        for tool in [
+            Tool::TrackCamera,
+            Tool::ZoomCamera,
+            Tool::RollCamera,
+            Tool::Pan,
+            Tool::Zoom,
+            Tool::TransformLayer,
+        ] {
+            ed.set_tool(tool);
+            assert!(!ed.fit_tool_to_layer(), "{tool:?}");
+            assert_eq!(ed.tool, tool);
+        }
     }
 }

@@ -6,7 +6,7 @@
 
 use eframe::egui::{self, RichText};
 use fanimate_core::Stroke;
-use fanimate_editor::{Action, Tool};
+use fanimate_editor::{Action, StatusKind, Tool};
 
 use crate::app::Shell;
 use crate::icons::{self, Icon};
@@ -29,11 +29,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
 fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
     let muted = shell.palette.text_muted;
     ui.label(
-        RichText::new("Brush and new shapes")
+        RichText::new("Brushes and new shapes")
             .strong()
             .color(shell.palette.text),
     );
     ui.add_space(2.0);
+    style_line(ui, shell);
+    ui.add_space(4.0);
     let d = &mut shell.editor.draw;
     egui::Grid::new("draw-style")
         .num_columns(2)
@@ -96,6 +98,12 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
                 .on_hover_text("Length of the thin ends of a brush stroke, in canvas pixels");
             ui.end_row();
 
+            ui.label(RichText::new("Pen pressure").color(muted));
+            ui.checkbox(&mut d.pressure, "").on_hover_text(
+                "A pen's pressure sets the width of a brush stroke. Off draws an even width. A mouse has no pressure, so it draws at full width either way.",
+            );
+            ui.end_row();
+
             ui.label(RichText::new("Eraser").color(muted));
             ui.add(egui::DragValue::new(&mut d.eraser).range(1.0..=1000.0).speed(0.5))
                 .on_hover_text("Eraser size, in canvas pixels");
@@ -111,6 +119,171 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.end_row();
         });
     ui.add_space(4.0);
+}
+
+/// A name being asked for on the style line: a new style's, or the chosen
+/// one's new name.
+#[derive(Clone)]
+struct Naming {
+    rename: bool,
+    text: String,
+    focus: bool,
+}
+
+/// Choosing, saving and managing styles on one line: the chosen style, a
+/// save button, and a menu for the rest. Asking for a name takes the place of
+/// the line, so it never grows taller.
+fn style_line(ui: &mut egui::Ui, shell: &mut Shell) {
+    let id = egui::Id::new("style-naming");
+    if let Some(mut naming) = ui.data(|d| d.get_temp::<Naming>(id)) {
+        let mut output = egui::TextEdit::singleline(&mut naming.text)
+            .hint_text(if naming.rename {
+                "New name"
+            } else {
+                "Name for the new style"
+            })
+            .desired_width(ui.available_width())
+            .show(ui);
+        let edit = output.response.clone();
+        if std::mem::take(&mut naming.focus) {
+            // asked for once, with the suggestion selected so typing replaces it
+            edit.request_focus();
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(naming.text.chars().count()),
+            );
+            output.state.cursor.set_char_range(Some(all));
+            output.state.store(ui.ctx(), edit.id);
+        }
+        if edit.lost_focus() {
+            // Enter or a click elsewhere keeps the name; Esc drops it
+            let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            ui.data_mut(|d| d.remove::<Naming>(id));
+            if !cancelled {
+                finish_naming(shell, &naming);
+            }
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, naming));
+        }
+        return;
+    }
+
+    let p = shell.palette;
+    let edited = shell.styles.is_edited(&shell.editor.draw);
+    let current = shell.styles.current().to_owned();
+    let built_in = shell.styles.current_is_built_in();
+    let shown = if edited {
+        format!("{current} (edited)")
+    } else {
+        current.clone()
+    };
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing().item_spacing.x;
+        let width = (ui.available_width() - 22.0 - 20.0 - spacing * 2.0).max(60.0);
+        egui::ComboBox::from_id_salt("style-choice")
+            .selected_text(shown)
+            .width(width)
+            .show_ui(ui, |ui| {
+                let names: Vec<String> = shell.styles.all().map(|s| s.name.clone()).collect();
+                for name in names {
+                    let label = if shell.styles.default_name() == name {
+                        format!("{name} (default)")
+                    } else {
+                        name.clone()
+                    };
+                    if ui.selectable_label(name == current, label).clicked() {
+                        shell.styles.select(&name, &mut shell.editor.draw);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The style of new brush strokes and shapes");
+
+        let update = edited && !built_in;
+        let tip = if update {
+            "Update this style with the look below"
+        } else {
+            "Save the look below as a new style"
+        };
+        if icons::button(ui, Icon::Save, 22.0, false, false)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            if update {
+                update_style(shell);
+            } else {
+                begin_naming(ui, &format!("{current} copy"), false);
+            }
+        }
+
+        let more = egui::Button::new(RichText::new("…").color(p.text)).frame(false);
+        menus::menu_button(ui, more, |ui| {
+            let item = |ui: &mut egui::Ui, enabled: bool, text: &str| {
+                let clicked = ui.add_enabled(enabled, egui::Button::new(text)).clicked();
+                if clicked {
+                    ui.close();
+                }
+                clicked
+            };
+            if item(ui, true, "Save as new style…") {
+                begin_naming(ui, &format!("{current} copy"), false);
+            }
+            if item(ui, update, &format!("Update \"{current}\"")) {
+                update_style(shell);
+            }
+            if item(ui, !built_in, "Rename…") {
+                begin_naming(ui, &current, true);
+            }
+            if item(ui, !built_in, "Delete") {
+                match shell.styles.delete(&mut shell.editor.draw) {
+                    Ok(()) => shell.editor.set_status(StatusKind::Info, "Style deleted"),
+                    Err(e) => shell.editor.set_status(StatusKind::Warning, e.message()),
+                }
+            }
+            ui.separator();
+            if item(ui, shell.styles.default_name() != current, "Set as default") {
+                shell.styles.set_default();
+                shell
+                    .editor
+                    .set_status(StatusKind::Info, format!("\"{current}\" is the default style"));
+            }
+            if item(ui, true, "Reset to default") {
+                shell.styles.reset(&mut shell.editor.draw);
+            }
+        })
+        .on_hover_text("More");
+    });
+}
+
+fn begin_naming(ui: &egui::Ui, text: &str, rename: bool) {
+    let naming = Naming {
+        rename,
+        text: text.to_owned(),
+        focus: true,
+    };
+    ui.data_mut(|d| d.insert_temp(egui::Id::new("style-naming"), naming));
+}
+
+fn update_style(shell: &mut Shell) {
+    match shell.styles.update(&shell.editor.draw) {
+        Ok(()) => shell.editor.set_status(StatusKind::Info, "Style updated"),
+        Err(e) => shell.editor.set_status(StatusKind::Warning, e.message()),
+    }
+}
+
+fn finish_naming(shell: &mut Shell, naming: &Naming) {
+    let result = if naming.rename {
+        shell.styles.rename(&naming.text).map(|()| "Style renamed")
+    } else {
+        shell
+            .styles
+            .save_as(&naming.text, &shell.editor.draw)
+            .map(|_| "Style saved")
+    };
+    match result {
+        Ok(done) => shell.editor.set_status(StatusKind::Info, done),
+        Err(e) => shell.editor.set_status(StatusKind::Warning, e.message()),
+    }
 }
 
 /// One shape's name in the list: click to select the shape on the canvas

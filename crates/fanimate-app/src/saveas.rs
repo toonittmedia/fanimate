@@ -169,6 +169,7 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
         match shell.editor.save_to(&path) {
             Ok(()) => {
                 shell.remember(&path);
+                shell.ui.thumbs.after_save(&path, &shell.editor.doc);
                 // saved: a crash now would lose nothing
                 crate::recovery::record(shell);
             }

@@ -422,6 +422,14 @@ pub struct Shape {
     pub trim: Vec2,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trim_keys: Vec<Key<Vec2>>,
+    /// Version 6: hidden edges. One flag per command of `path` (and so of every
+    /// point key, which has the same commands): `true` leaves that segment's
+    /// stroke undrawn while its points and the fill stay. Empty when no edge
+    /// is hidden. It counts only while it has one flag for every command (see
+    /// [`hidden_edges`](Self::hidden_edges)), so a path edit that is not kept
+    /// in step shows the edges again instead of hiding the wrong ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_edge_flags: Vec<bool>,
 }
 
 fn shown() -> bool {
@@ -457,7 +465,36 @@ impl Shape {
             stroke_keys: Vec::new(),
             trim: full_trim(),
             trim_keys: Vec::new(),
+            hidden_edge_flags: Vec::new(),
         }
+    }
+
+    /// The hidden edges, one flag per command of the path, when there are any
+    /// and they still match the path; `None` when every edge is drawn.
+    pub fn hidden_edges(&self) -> Option<&[bool]> {
+        let flags = self.hidden_edge_flags.as_slice();
+        (flags.len() == self.path.cmds.len() && flags.iter().any(|h| *h)).then_some(flags)
+    }
+
+    /// Hide or show the stroke of the segment drawn by `path.cmds[cmd]`. A
+    /// `MoveTo` draws nothing, so it is refused. Returns whether anything
+    /// changed. Showing the last hidden edge clears the flags.
+    pub fn set_edge_hidden(&mut self, cmd: usize, hidden: bool) -> bool {
+        if matches!(self.path.cmds.get(cmd), None | Some(PathCmd::MoveTo(_))) {
+            return false;
+        }
+        if self.hidden_edge_flags.len() != self.path.cmds.len() {
+            // flags that do not match the path are stale: start afresh
+            self.hidden_edge_flags = vec![false; self.path.cmds.len()];
+        }
+        if self.hidden_edge_flags[cmd] == hidden {
+            return false;
+        }
+        self.hidden_edge_flags[cmd] = hidden;
+        if !hidden && self.hidden_edge_flags.iter().all(|h| !h) {
+            self.hidden_edge_flags.clear();
+        }
+        true
     }
 
     /// A rectangle whose corner radius stays editable.

@@ -4,7 +4,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::Color;
-use crate::anim::{Channel, Frame, KeyList};
+use crate::anim::{Channel, Frame, KeyList, LoopMode};
 use crate::bones::Skeleton;
 use crate::path::Shape;
 use crate::transform::AnimTransform;
@@ -81,6 +81,40 @@ impl Camera {
         }
     }
 
+    /// What one of the camera's channels does after its last key (`Off` for
+    /// any other id).
+    pub fn channel_loop(&self, ch: ChannelId) -> LoopMode {
+        match ch {
+            ChannelId::CameraPosition => self.position.loop_mode,
+            ChannelId::CameraZoom => self.zoom.loop_mode,
+            ChannelId::CameraRoll => self.roll.loop_mode,
+            _ => LoopMode::Off,
+        }
+    }
+
+    /// Set the loop mode of one of the camera's channels. Returns false for
+    /// an id that is not one of them.
+    pub fn set_channel_loop(&mut self, ch: ChannelId, mode: LoopMode) -> bool {
+        match ch {
+            ChannelId::CameraPosition => self.position.loop_mode = mode,
+            ChannelId::CameraZoom => self.zoom.loop_mode = mode,
+            ChannelId::CameraRoll => self.roll.loop_mode = mode,
+            _ => return false,
+        }
+        true
+    }
+
+    /// The first and last key of a channel that repeats (see
+    /// [`Channel::loop_span`]); `None` when it does not.
+    pub fn loop_span(&self, ch: ChannelId) -> Option<(Frame, Frame)> {
+        match ch {
+            ChannelId::CameraPosition => self.position.loop_span(),
+            ChannelId::CameraZoom => self.zoom.loop_span(),
+            ChannelId::CameraRoll => self.roll.loop_span(),
+            _ => None,
+        }
+    }
+
     /// Frames with a key in any channel, sorted.
     pub fn key_frames(&self) -> Vec<Frame> {
         let mut frames = Vec::new();
@@ -103,7 +137,9 @@ pub struct Document {
     pub width: f32,
     pub height: f32,
     pub fps: f32,
-    /// Inclusive frame range that plays and renders.
+    /// Inclusive frame range that plays and renders. Frames count from 1
+    /// (version 6); frame 0 sits before `start` and shows the rest pose, so
+    /// it never plays or renders.
     pub start: Frame,
     pub end: Frame,
     pub background: Color,
@@ -117,6 +153,10 @@ pub struct Document {
     /// Version 5: the camera renders look through.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
     pub camera: Camera,
+    /// Version 6: the styles saved for brushes and new shapes (see
+    /// [`crate::styles`]), kept with the project so another computer has them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub styles: Vec<crate::StylePreset>,
     /// The action being edited, if any (see [`crate::actions`]). Never in
     /// a saved project: saving writes [`Document::mainline`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,13 +174,15 @@ impl Document {
             width,
             height,
             fps,
-            start: 0,
-            end: (fps * 4.0) as Frame - 1,
+            // four seconds, frames 1 to 96 at 24 fps; the editor picks its own default
+            start: 1,
+            end: ((fps * 4.0).round() as Frame).max(1),
             background: Color::WHITE,
             layers: Vec::new(),
             next_layer_id: 1,
             guides: Vec::new(),
             camera: Camera::default(),
+            styles: Vec::new(),
             action_edit: None,
             media: Default::default(),
         }
@@ -151,7 +193,8 @@ impl Document {
     }
 
     pub fn frame_count(&self) -> u32 {
-        (self.end - self.start + 1).max(0) as u32
+        // saturating: a damaged file can hold any two numbers
+        self.end.saturating_sub(self.start).saturating_add(1).max(0) as u32
     }
 
     /// Allocate a fresh layer id.
@@ -378,9 +421,20 @@ pub struct Layer {
     #[serde(default, skip_serializing_if = "is_false")]
     pub locked: bool,
     pub opacity: Channel<f32>,
+    /// Version 6: where the layer sits among its siblings over time. Unkeyed,
+    /// a layer sits at its place in the list; with keys, the stepped value is
+    /// its place, and siblings are drawn in that order (ties keep the list
+    /// order), so a hand can pass in front of a face on frame 40 and behind
+    /// it on frame 60. Not written when it has no keys.
+    #[serde(default, skip_serializing_if = "no_order_keys")]
+    pub order: Channel<f32>,
     pub transform: AnimTransform,
     #[serde(flatten)]
     pub kind: LayerKind,
+}
+
+fn no_order_keys(order: &Channel<f32>) -> bool {
+    order.keys.is_empty()
 }
 
 fn yes() -> bool {
@@ -404,9 +458,15 @@ impl Layer {
             visible: true,
             locked: false,
             opacity: Channel::new(1.0),
+            order: Channel::new(0.0),
             transform: AnimTransform::default(),
             kind,
         }
+    }
+
+    /// Whether the layer has a key on any of its own channels.
+    pub fn is_animated(&self) -> bool {
+        !self.key_frames().is_empty()
     }
 
     /// The label colour to show: the layer's own, or the one its id picks.
@@ -419,11 +479,14 @@ impl Layer {
         self
     }
 
-    /// Every list of keys the layer holds itself: opacity, the transform,
-    /// a bone layer's bone angles and a vector layer's point keys. Not its
+    /// Every list of keys the layer holds itself: opacity, order, the
+    /// transform, a bone layer's bone angles, a vector layer's point, colour
+    /// and exposure keys, a switch's choices and the drawings of a
+    /// frame-by-frame layer. Not its
     /// children's, which are their own layers on the timeline.
     pub fn key_lists(&self, mut f: impl FnMut(&dyn KeyList)) {
         f(&self.opacity.keys);
+        f(&self.order.keys);
         f(&self.transform.position.keys);
         f(&self.transform.rotation.keys);
         f(&self.transform.scale.keys);
@@ -432,6 +495,7 @@ impl Layer {
                 f(&s.path_keys);
                 f(&s.fill_keys);
                 f(&s.stroke_keys);
+                f(&s.trim_keys);
             }),
             LayerKind::Frames { cels } => {
                 f(cels);
@@ -440,6 +504,7 @@ impl Layer {
                         f(&s.path_keys);
                         f(&s.fill_keys);
                         f(&s.stroke_keys);
+                        f(&s.trim_keys);
                     })
                 });
             }
@@ -452,6 +517,7 @@ impl Layer {
     /// Mutable version of [`key_lists`](Self::key_lists).
     pub fn key_lists_mut(&mut self, mut f: impl FnMut(&mut dyn KeyList)) {
         f(&mut self.opacity.keys);
+        f(&mut self.order.keys);
         f(&mut self.transform.position.keys);
         f(&mut self.transform.rotation.keys);
         f(&mut self.transform.scale.keys);
@@ -460,6 +526,7 @@ impl Layer {
                 f(&mut s.path_keys);
                 f(&mut s.fill_keys);
                 f(&mut s.stroke_keys);
+                f(&mut s.trim_keys);
             }),
             LayerKind::Frames { cels } => {
                 for c in cels.iter_mut() {
@@ -467,6 +534,7 @@ impl Layer {
                         f(&mut s.path_keys);
                         f(&mut s.fill_keys);
                         f(&mut s.stroke_keys);
+                        f(&mut s.trim_keys);
                     });
                 }
                 f(cels);
@@ -496,6 +564,10 @@ impl Layer {
             ChannelId::Scale,
             ChannelId::Opacity,
         ];
+        // only once it has keys: most layers never change their place
+        if self.order.is_animated() {
+            v.push(ChannelId::Order);
+        }
         match &self.kind {
             LayerKind::Vector { shapes } => {
                 for (i, s) in shapes.iter().enumerate() {
@@ -530,6 +602,7 @@ impl Layer {
             (ChannelId::Rotation, _) => "Rotation".into(),
             (ChannelId::Scale, _) => "Scale".into(),
             (ChannelId::Opacity, _) => "Opacity".into(),
+            (ChannelId::Order, _) => "Order".into(),
             (ChannelId::Switch, _) => "Shows".into(),
             (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => skeleton
                 .bones
@@ -569,6 +642,7 @@ impl Layer {
             (ChannelId::Rotation, _) => &self.transform.rotation.keys,
             (ChannelId::Scale, _) => &self.transform.scale.keys,
             (ChannelId::Opacity, _) => &self.opacity.keys,
+            (ChannelId::Order, _) => &self.order.keys,
             (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => &skeleton.bones.get(i)?.angle.keys,
             (ChannelId::Shape(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.path_keys,
             (ChannelId::FillColor(i), LayerKind::Vector { shapes }) => &shapes.get(i)?.fill_keys,
@@ -586,6 +660,7 @@ impl Layer {
             (ChannelId::Rotation, _) => &mut self.transform.rotation.keys,
             (ChannelId::Scale, _) => &mut self.transform.scale.keys,
             (ChannelId::Opacity, _) => &mut self.opacity.keys,
+            (ChannelId::Order, _) => &mut self.order.keys,
             (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => {
                 &mut skeleton.bones.get_mut(i)?.angle.keys
             }
@@ -597,6 +672,58 @@ impl Layer {
             _ => return None,
         })
     }
+
+    /// What one property does after its last key. `Off` for a property
+    /// that cannot loop (point, colour, exposure and switch keys) or that
+    /// the layer does not have.
+    pub fn channel_loop(&self, ch: ChannelId) -> LoopMode {
+        match (ch, &self.kind) {
+            (ChannelId::Position, _) => self.transform.position.loop_mode,
+            (ChannelId::Rotation, _) => self.transform.rotation.loop_mode,
+            (ChannelId::Scale, _) => self.transform.scale.loop_mode,
+            (ChannelId::Opacity, _) => self.opacity.loop_mode,
+            (ChannelId::Order, _) => self.order.loop_mode,
+            (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => {
+                skeleton.bones.get(i).map_or(LoopMode::Off, |b| b.angle.loop_mode)
+            }
+            _ => LoopMode::Off,
+        }
+    }
+
+    /// Set what one property does after its last key. Returns false when the
+    /// property is not a plain channel of this layer (see
+    /// [`channel_loop`](Self::channel_loop)), and nothing changes.
+    pub fn set_channel_loop(&mut self, ch: ChannelId, mode: LoopMode) -> bool {
+        match (ch, &mut self.kind) {
+            (ChannelId::Position, _) => self.transform.position.loop_mode = mode,
+            (ChannelId::Rotation, _) => self.transform.rotation.loop_mode = mode,
+            (ChannelId::Scale, _) => self.transform.scale.loop_mode = mode,
+            (ChannelId::Opacity, _) => self.opacity.loop_mode = mode,
+            (ChannelId::Order, _) => self.order.loop_mode = mode,
+            (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => match skeleton.bones.get_mut(i) {
+                Some(b) => b.angle.loop_mode = mode,
+                None => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
+
+    /// The first and last key of a property that repeats (see
+    /// [`Channel::loop_span`]); `None` when it does not, or cannot.
+    pub fn loop_span(&self, ch: ChannelId) -> Option<(Frame, Frame)> {
+        match (ch, &self.kind) {
+            (ChannelId::Position, _) => self.transform.position.loop_span(),
+            (ChannelId::Rotation, _) => self.transform.rotation.loop_span(),
+            (ChannelId::Scale, _) => self.transform.scale.loop_span(),
+            (ChannelId::Opacity, _) => self.opacity.loop_span(),
+            (ChannelId::Order, _) => self.order.loop_span(),
+            (ChannelId::Bone(i), LayerKind::Bone { skeleton, .. }) => {
+                skeleton.bones.get(i).and_then(|b| b.angle.loop_span())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// One animatable property of a layer: a row on the timeline, and a key
@@ -607,6 +734,8 @@ pub enum ChannelId {
     Position,
     Rotation,
     Scale,
+    /// Version 6: where a layer sits among its siblings (see [`Layer::order`]).
+    Order,
     /// A bone's angle, by its index in the skeleton.
     Bone(usize),
     /// A vector shape's point keys, by its index.

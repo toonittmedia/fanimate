@@ -31,7 +31,20 @@ pub const FORMAT_NAME: &str = "fnm";
 ///   may be locked (`locked`) and shapes hidden (`visible: false`). Older
 ///   files need no conversion: they have no guides, and nothing locked or
 ///   hidden.
-pub const FORMAT_VERSION: u32 = 5;
+/// - 6: frames count from 1 and frame 0 is the rest pose, channels may loop
+///   (`loop_mode`), layers inside groups may be reordered over time (`order`),
+///   and a project may hold a preview picture (`thumbnail.png`). Older files
+///   are converted on load: every frame moves up by one.
+pub const FORMAT_VERSION: u32 = 6;
+
+/// The first version whose frames count from 1. Files before it start at
+/// frame 0 and are shifted up by one on load, so they look the same.
+pub(crate) const ONE_BASED_FRAMES: u32 = 6;
+
+/// The optional preview picture at the root of a project.
+pub const THUMBNAIL_NAME: &str = "thumbnail.png";
+/// The largest preview picture that is saved or read. A bigger one is ignored.
+pub const MAX_THUMBNAIL_BYTES: usize = 256 * 1024;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Manifest {
@@ -58,6 +71,9 @@ pub(crate) struct DocumentFile {
     /// Version 5: the camera.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
     camera: Camera,
+    /// Version 6: the saved brush and shape styles.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    styles: Vec<fanimate_core::StylePreset>,
     /// Top-level layer files, bottom to top, relative to the project folder.
     layers: Vec<String>,
 }
@@ -113,13 +129,7 @@ fn read_archive(path: &Path, bytes: &[u8]) -> Result<Document> {
         return Err(not_fnm());
     }
     let archive = zip::Archive::read(bytes).map_err(|e| io_err(path, std::io::Error::other(e)))?;
-    let manifest = archive
-        .names()
-        .filter(|n| n.rsplit('/').next() == Some("manifest.json") && n.matches('/').count() <= 1)
-        .min_by_key(|n| n.len())
-        .ok_or_else(not_fnm)?
-        .to_owned();
-    let prefix = manifest.trim_end_matches("manifest.json").to_owned();
+    let prefix = archive_prefix(&archive).ok_or_else(not_fnm)?;
     read_from(
         path,
         &|rel| match archive.get_checked(&format!("{prefix}{rel}")) {
@@ -128,6 +138,16 @@ fn read_archive(path: &Path, bytes: &[u8]) -> Result<Document> {
             None => Err(std::io::ErrorKind::NotFound.into()),
         },
     )
+}
+
+/// The folder inside an archive that holds the project: empty when the
+/// project is at the root, `"name/"` when it is one folder down.
+fn archive_prefix(archive: &zip::Archive) -> Option<String> {
+    let manifest = archive
+        .names()
+        .filter(|n| n.rsplit('/').next() == Some("manifest.json") && n.matches('/').count() <= 1)
+        .min_by_key(|n| n.len())?;
+    Some(manifest.trim_end_matches("manifest.json").to_owned())
 }
 
 /// Load a project held in memory, such as one uploaded in the browser:
@@ -174,9 +194,17 @@ fn read_from(base: &Path, files: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> R
         next_layer_id: file.next_layer_id,
         guides: file.guides,
         camera: file.camera,
+        styles: file.styles,
         action_edit: None,
         media: Default::default(),
     };
+    // Before version 6 the first frame was 0. Shift everything up by one so the
+    // project plays as it did and frame 0 is left free for the rest pose; no key
+    // is invented there. Only this reader shifts: the journal and the writers
+    // always write the current version, so nothing is shifted twice.
+    if manifest.version < ONE_BASED_FRAMES {
+        doc.shift_frames(1);
+    }
     // pictures used by image layers; a missing one is reported by the
     // validator and drawn as a grey placeholder, never a failed load
     for name in media_names(&doc) {
@@ -251,21 +279,78 @@ pub(crate) fn write_media(doc: &Document, dir: &Path) -> Result<()> {
 /// Either way a crash or full disk mid-save never leaves a half-written
 /// project: the new version is written beside the old one, and swapped in
 /// only once it is complete.
+///
+/// A preview picture already in the project is kept.
 pub fn save(doc: &Document, path: impl AsRef<Path>) -> Result<()> {
+    save_with_thumbnail(doc, path, None)
+}
+
+/// Like [`save`], with a preview picture (`thumbnail.png`) for the project:
+/// a PNG of at most [`MAX_THUMBNAIL_BYTES`]. A picture that is not a PNG or is
+/// too big is ignored, as is `None`; in both cases the project's existing
+/// preview, if it has one, is kept (it may be out of date, but is never lost
+/// to a save that did not make a new one).
+pub fn save_with_thumbnail(
+    doc: &Document,
+    path: impl AsRef<Path>,
+    thumbnail_png: Option<&[u8]>,
+) -> Result<()> {
     let path = path.as_ref();
+    let old;
+    let thumbnail: Option<&[u8]> = match thumbnail_png.filter(|t| is_thumbnail(t)) {
+        Some(t) => Some(t),
+        None => {
+            old = read_thumbnail(path);
+            old.as_deref()
+        }
+    };
     if path.is_dir() {
-        save_folder(doc, path)
+        save_folder_with(doc, path, thumbnail)
     } else {
-        save_file(doc, path)
+        save_file(doc, path, thumbnail)
     }
+}
+
+/// Whether `bytes` can be a project's preview: a PNG, and small.
+fn is_thumbnail(bytes: &[u8]) -> bool {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    bytes.len() <= MAX_THUMBNAIL_BYTES && bytes.starts_with(PNG)
+}
+
+/// The preview picture of the project at `path` (a file or a folder), if it
+/// has a sound one. Anything else, including a project that cannot be read,
+/// is `None`: a preview is never worth an error.
+pub fn read_thumbnail(path: impl AsRef<Path>) -> Option<Vec<u8>> {
+    let path = path.as_ref();
+    let bytes = if path.is_dir() {
+        let file = path.join(THUMBNAIL_NAME);
+        if fs::metadata(&file).ok()?.len() > MAX_THUMBNAIL_BYTES as u64 {
+            return None;
+        }
+        fs::read(file).ok()?
+    } else {
+        let bytes = fs::read(path).ok()?;
+        if !zip::is_zip(&bytes) {
+            return None;
+        }
+        let archive = zip::Archive::read(&bytes).ok()?;
+        let name = format!("{}{THUMBNAIL_NAME}", archive_prefix(&archive)?);
+        // checked before inflating, so a hostile entry cannot use up memory
+        // (a size of 0 would lift the inflater's limit, and is no picture)
+        if !(1..=MAX_THUMBNAIL_BYTES).contains(&archive.size(&name)?) {
+            return None;
+        }
+        archive.get_checked(&name)?.ok()?
+    };
+    is_thumbnail(&bytes).then_some(bytes)
 }
 
 /// Write `doc` as a single file at `path`. The finished archive is read
 /// back and checked before it replaces anything.
-fn save_file(doc: &Document, path: &Path) -> Result<()> {
+fn save_file(doc: &Document, path: &Path, thumbnail: Option<&[u8]>) -> Result<()> {
     // an action being edited is put away first, so the timeline is saved
     let doc = &*doc.mainline();
-    let files = project_files(doc)?;
+    let files = project_files(doc, thumbnail)?;
     let entries: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     let bytes = zip::write(&entries).map_err(|e| io_err(path, std::io::Error::other(e)))?;
     let written = read_archive(path, &bytes)?;
@@ -293,7 +378,7 @@ fn save_file(doc: &Document, path: &Path) -> Result<()> {
 }
 
 /// The files of a project folder: name inside the project and contents.
-fn project_files(doc: &Document) -> Result<Vec<(String, Vec<u8>)>> {
+fn project_files(doc: &Document, thumbnail: Option<&[u8]>) -> Result<Vec<(String, Vec<u8>)>> {
     let mut files = vec![
         (
             "manifest.json".to_owned(),
@@ -309,6 +394,9 @@ fn project_files(doc: &Document) -> Result<Vec<(String, Vec<u8>)>> {
         let bytes = json_bytes(Path::new(&name), layer)?;
         files.push((name, bytes));
     }
+    if let Some(png) = thumbnail {
+        files.push((THUMBNAIL_NAME.to_owned(), png.to_vec()));
+    }
     for name in media_names(doc) {
         if let Some(file) = doc.media.get(&name) {
             files.push((name, file.bytes.clone()));
@@ -322,14 +410,20 @@ fn project_files(doc: &Document) -> Result<Vec<(String, Vec<u8>)>> {
 /// The project is written to a temporary folder next to `path` and swapped
 /// into place only once every file is written.
 pub fn save_folder(doc: &Document, path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    // the folder is replaced whole, so its preview is carried over
+    let kept = read_thumbnail(path);
+    save_folder_with(doc, path, kept.as_deref())
+}
+
+fn save_folder_with(doc: &Document, path: &Path, thumbnail: Option<&[u8]>) -> Result<()> {
     // an action being edited is put away first, so the timeline is saved
     let doc = &*doc.mainline();
-    let path = path.as_ref();
     let tmp = sibling(path, "saving");
     let old = sibling(path, "old");
     let _ = fs::remove_dir_all(&tmp);
 
-    write_all(doc, &tmp)?;
+    write_all(doc, &tmp, thumbnail)?;
 
     let had_old = path.exists();
     if had_old {
@@ -349,7 +443,7 @@ pub fn save_folder(doc: &Document, path: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-fn write_all(doc: &Document, dir: &Path) -> Result<()> {
+fn write_all(doc: &Document, dir: &Path, thumbnail: Option<&[u8]>) -> Result<()> {
     let layers_dir = dir.join("layers");
     fs::create_dir_all(&layers_dir).map_err(|e| io_err(&layers_dir, e))?;
 
@@ -358,7 +452,18 @@ fn write_all(doc: &Document, dir: &Path) -> Result<()> {
     for layer in &doc.layers {
         write_json(&dir.join(layer_file(layer)), layer)?;
     }
+    if let Some(png) = thumbnail {
+        let file = dir.join(THUMBNAIL_NAME);
+        fs::write(&file, png).map_err(|e| io_err(&file, e))?;
+    }
     write_media(doc, dir)
+}
+
+/// The format version a project folder says it was written with, or `None`
+/// if its manifest cannot be read.
+pub(crate) fn folder_version(dir: &Path) -> Option<u32> {
+    let bytes = fs::read(dir.join("manifest.json")).ok()?;
+    serde_json::from_slice::<Manifest>(&bytes).ok().map(|m| m.version)
 }
 
 pub(crate) fn manifest() -> Manifest {
@@ -381,6 +486,7 @@ pub(crate) fn document_file(doc: &Document) -> DocumentFile {
         next_layer_id: doc.next_layer_id,
         guides: doc.guides.clone(),
         camera: doc.camera.clone(),
+        styles: doc.styles.clone(),
         layers: doc.layers.iter().map(layer_file).collect(),
     }
 }
@@ -561,7 +667,13 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-v0.fnm");
         let (doc, report) = load(&path).unwrap();
         assert!(report.is_clean(), "{report}");
-        assert_eq!(doc, samples::hello());
+        // the file starts at frame 0 and ends at 47; frames now count from 1
+        assert_eq!((doc.start, doc.end), (1, 48));
+        let LayerKind::Bone { skeleton, .. } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        let frames: Vec<_> = skeleton.bones[0].angle.keys.iter().map(|k| k.frame).collect();
+        assert_eq!(frames, [1, 13, 25, 37, 48]);
     }
 
     #[test]
@@ -1022,7 +1134,10 @@ mod tests {
         // the manifest says version 5, so an older reader refuses what it
         // would misread: it would show the hidden shape and lose the guides
         let manifest = fs::read_to_string(dir.join("folder.fnm").join("manifest.json")).unwrap();
-        assert!(manifest.contains("\"version\": 5"), "{manifest}");
+        assert!(
+            manifest.contains(&format!("\"version\": {FORMAT_VERSION}")),
+            "{manifest}"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1046,7 +1161,10 @@ mod tests {
         fs::write(path.join("manifest.json"), r#"{"format":"fnm","version":4}"#).unwrap();
         let (loaded, report) = load(&path).unwrap();
         assert!(report.is_clean(), "{report}");
-        assert_eq!(loaded, doc);
+        // everything else is as it was; only the frames moved up by one
+        let mut expected = doc.clone();
+        expected.shift_frames(1);
+        assert_eq!(loaded, expected);
         assert!(loaded.guides.is_empty() && loaded.layers.iter().all(|l| !l.locked));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1062,8 +1180,370 @@ mod tests {
         fs::write(path.join("manifest.json"), r#"{"format":"fnm","version":3}"#).unwrap();
         let (loaded, report) = load(&path).unwrap();
         assert!(report.is_clean(), "{report}");
-        assert_eq!(loaded, doc);
+        let mut expected = doc.clone();
+        expected.shift_frames(1);
+        assert_eq!(loaded, expected);
         assert!(loaded.layers.iter().all(|l| l.transform.pivot.is_none()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The files of a project as version 5 wrote them: frames from 0, a
+    /// range of 0 to 119, and an opacity with keys on frames 0 and 24.
+    fn version_5_files() -> Vec<(String, Vec<u8>)> {
+        let manifest = r#"{"format":"fnm","version":5,"generator":"fanimate 0.2.3"}"#;
+        let document = r##"{
+            "name": "Old", "width": 640.0, "height": 360.0, "fps": 24.0,
+            "start": 0, "end": 119, "background": "#1C0B3D", "next_layer_id": 2,
+            "layers": ["layers/0001.json"]
+        }"##;
+        let layer = r#"{
+            "id": 1, "name": "fade",
+            "opacity": {"base": 1.0, "keys": [{"frame": 0, "value": 0.0}, {"frame": 24, "value": 1.0}]},
+            "transform": {"position": {"base": [0.0, 0.0]}, "rotation": {"base": 0.0}, "scale": {"base": [1.0, 1.0]}},
+            "type": "vector", "shapes": []
+        }"#;
+        [
+            ("manifest.json", manifest),
+            ("document.json", document),
+            ("layers/0001.json", layer),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .to_vec()
+    }
+
+    fn opacity_frames(doc: &Document) -> Vec<Frame> {
+        doc.layers[0].opacity.keys.iter().map(|k| k.frame).collect()
+    }
+
+    /// Version 6 counts frames from 1. An older project is shifted up by one
+    /// when it is read, as a folder, as a single file and from memory, and
+    /// no key is made on frame 0.
+    #[test]
+    fn a_version_5_project_is_shifted_to_count_from_one() {
+        let dir = temp_dir("v5-shift");
+        let files = version_5_files();
+        let folder = dir.join("old.fnm");
+        for (name, bytes) in &files {
+            let file = folder.join(name);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, bytes).unwrap();
+        }
+        let single = dir.join("single.fnm");
+        fs::write(&single, pack(&files)).unwrap();
+
+        for path in [&folder, &single] {
+            let (doc, report) = load(path).unwrap();
+            assert!(report.is_clean(), "{report}");
+            assert_eq!((doc.start, doc.end), (1, 120));
+            assert_eq!(opacity_frames(&doc), [1, 25]);
+        }
+        let (doc, _) = load_archive("single.fnm", &fs::read(&single).unwrap()).unwrap();
+        assert_eq!((doc.start, doc.end), (1, 120));
+        assert_eq!(opacity_frames(&doc), [1, 25]);
+
+        // saved again it is a version 6 project, and reading that does not shift it again
+        let saved = dir.join("new.fnm");
+        save(&doc, &saved).unwrap();
+        let (again, report) = load(&saved).unwrap();
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(again, doc);
+        assert_eq!(opacity_frames(&again), [1, 25]);
+        let manifest = entries_of(&saved).into_iter().find(|(n, _)| n == "manifest.json");
+        let text = String::from_utf8(manifest.unwrap().1).unwrap();
+        assert!(text.contains(&format!("\"version\": {FORMAT_VERSION}")), "{text}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A project written by this version, whatever it starts at, is never shifted.
+    #[test]
+    fn a_current_project_is_not_shifted() {
+        let dir = temp_dir("no-shift");
+        let mut doc = samples::hello();
+        doc.start = 0;
+        doc.end = 10;
+        for (name, folder) in [("file.fnm", false), ("folder.fnm", true)] {
+            let path = dir.join(name);
+            if folder {
+                save_folder(&doc, &path).unwrap();
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, _) = load(&path).unwrap();
+            assert_eq!((loaded.start, loaded.end), (0, 10), "{name}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Version 6: a channel may loop and a layer may have an order. Both
+    /// come back as saved, and a project without them writes neither field.
+    #[test]
+    fn loops_and_layer_order_round_trip_in_a_file_and_a_folder() {
+        use fanimate_core::{Channel, Interpolation, LoopMode};
+        let dir = temp_dir("loop-order");
+        let mut doc = samples::hello();
+        let mut walk = Channel::new(0.0)
+            .with_key(1, 0.0, Interpolation::Linear)
+            .with_key(13, 10.0, Interpolation::Linear);
+        walk.loop_mode = LoopMode::Relative;
+        doc.layers[0].transform.rotation = walk;
+        let mut front = doc.new_layer("front", LayerKind::vector(vec![]));
+        front.order =
+            Channel::new(0.0)
+                .with_key(1, 1.0, Interpolation::Step)
+                .with_key(13, 0.0, Interpolation::Step);
+        let back = doc.new_layer("back", LayerKind::vector(vec![]));
+        let group = doc.new_layer(
+            "pair",
+            LayerKind::Group {
+                children: vec![back, front],
+            },
+        );
+        doc.layers.push(group);
+        for (name, folder) in [("file.fnm", false), ("folder.fnm", true)] {
+            let path = dir.join(name);
+            if folder {
+                save_folder(&doc, &path).unwrap();
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{name}: {report}");
+            assert_eq!(loaded, doc, "{name}");
+            assert_eq!(loaded.layers[0].transform.rotation.loop_mode, LoopMode::Relative);
+            let LayerKind::Group { children } = &loaded.layers.last().unwrap().kind else {
+                unreachable!()
+            };
+            assert_eq!(children[1].order.keys.len(), 2);
+        }
+        // an ordinary project has neither field in its files
+        let plain = dir.join("plain.fnm");
+        save_folder(&samples::hello(), &plain).unwrap();
+        for entry in fs::read_dir(plain.join("layers")).unwrap().flatten() {
+            let text = fs::read_to_string(entry.path()).unwrap();
+            assert!(
+                !text.contains("loop_mode") && !text.contains("\"order\""),
+                "{text}"
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hidden_edges_and_saved_styles_round_trip_in_a_file_and_a_folder() {
+        use fanimate_core::{Color, StylePreset};
+        let dir = temp_dir("edges-styles");
+        let mut doc = samples::hello();
+        // hide the first drawn segment of the first shape that has one
+        let mut hid = false;
+        doc.walk_mut(|layer| {
+            if let LayerKind::Vector { shapes } = &mut layer.kind {
+                for shape in shapes.iter_mut() {
+                    if !hid && shape.set_edge_hidden(1, true) {
+                        hid = true;
+                    }
+                }
+            }
+        });
+        assert!(hid, "the sample has a shape with a segment");
+        doc.styles = vec![
+            StylePreset {
+                name: "Ink".into(),
+                line: Color::BLACK,
+                width: 4.0,
+                fill: None,
+                outline: true,
+                smoothing: 0.25,
+                taper: 12.0,
+                pressure: false,
+            },
+            StylePreset {
+                name: "Paint".into(),
+                line: Color::BLACK,
+                width: 9.0,
+                fill: Some(Color::WHITE),
+                outline: false,
+                smoothing: 0.75,
+                taper: 0.0,
+                pressure: true,
+            },
+        ];
+        for (name, folder) in [("file.fnm", false), ("folder.fnm", true)] {
+            let path = dir.join(name);
+            if folder {
+                save_folder(&doc, &path).unwrap();
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{name}: {report}");
+            assert_eq!(loaded, doc, "{name}");
+            assert_eq!(loaded.styles.len(), 2);
+        }
+        // an ordinary project has neither in its files
+        let plain = dir.join("plain.fnm");
+        save_folder(&samples::hello(), &plain).unwrap();
+        let text = fs::read_to_string(plain.join("document.json")).unwrap();
+        assert!(!text.contains("styles"), "{text}");
+        for entry in fs::read_dir(plain.join("layers")).unwrap().flatten() {
+            let text = fs::read_to_string(entry.path()).unwrap();
+            assert!(!text.contains("hidden_edge_flags"), "{text}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Stands for a preview picture: the signature is what the reader checks.
+    fn preview(body: &[u8]) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(body);
+        png
+    }
+
+    #[test]
+    fn a_preview_picture_round_trips_in_a_file_and_a_folder() {
+        let dir = temp_dir("thumbnail");
+        let doc = samples::hello();
+        let picture = preview(b"first preview picture");
+        let (file, folder) = (dir.join("p.fnm"), dir.join("folder.fnm"));
+        assert_eq!(read_thumbnail(&file), None, "nothing there yet");
+        save_with_thumbnail(&doc, &file, Some(&picture)).unwrap();
+        save_folder(&doc, &folder).unwrap();
+        save_with_thumbnail(&doc, &folder, Some(&picture)).unwrap();
+        for path in [&file, &folder] {
+            assert_eq!(read_thumbnail(path), Some(picture.clone()));
+            // the extra entry does not get in the way of opening
+            let (loaded, report) = load(path).unwrap();
+            assert!(report.is_clean(), "{report}");
+            assert_eq!(loaded, doc);
+        }
+        assert!(folder.join(THUMBNAIL_NAME).is_file());
+        assert!(entries_of(&file).iter().any(|(n, _)| n == THUMBNAIL_NAME));
+
+        // saving the same project twice gives the same bytes
+        let again = dir.join("again.fnm");
+        save_with_thumbnail(&doc, &again, Some(&picture)).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), fs::read(&again).unwrap());
+
+        // a plain save keeps the preview; a new one replaces it
+        for path in [&file, &folder] {
+            save(&doc, path).unwrap();
+            assert_eq!(read_thumbnail(path), Some(picture.clone()));
+            let newer = preview(b"a newer one");
+            save_with_thumbnail(&doc, path, Some(&newer)).unwrap();
+            assert_eq!(read_thumbnail(path), Some(newer));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_preview_that_is_not_a_small_png_is_ignored() {
+        let dir = temp_dir("thumbnail-bad");
+        let doc = samples::hello();
+        let kept = preview(b"the good one");
+        let big = preview(&vec![0; MAX_THUMBNAIL_BYTES]);
+        for (name, folder) in [("file.fnm", false), ("folder.fnm", true)] {
+            let path = dir.join(name);
+            if folder {
+                save_folder(&doc, &path).unwrap();
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            // with no preview yet, a bad one leaves the project without
+            for bad in [&b"just text"[..], &big[..], &b""[..]] {
+                save_with_thumbnail(&doc, &path, Some(bad)).unwrap();
+                assert_eq!(read_thumbnail(&path), None, "{name}");
+                assert_eq!(load(&path).unwrap().0, doc);
+            }
+            // with one, a bad one does not replace it
+            save_with_thumbnail(&doc, &path, Some(&kept)).unwrap();
+            save_with_thumbnail(&doc, &path, Some(&big)).unwrap();
+            save_with_thumbnail(&doc, &path, Some(b"not a png")).unwrap();
+            assert_eq!(read_thumbnail(&path), Some(kept.clone()), "{name}");
+        }
+        // the largest allowed preview is kept
+        let largest = preview(&vec![0; MAX_THUMBNAIL_BYTES - 8]);
+        let path = dir.join("largest.fnm");
+        save_with_thumbnail(&doc, &path, Some(&largest)).unwrap();
+        assert_eq!(read_thumbnail(&path), Some(largest));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A preview read from a file somebody else made: too big, not a PNG,
+    /// damaged or one folder down. Never a panic, and never in the way of the
+    /// project opening.
+    #[test]
+    fn previews_in_files_from_elsewhere_are_checked() {
+        let dir = temp_dir("thumbnail-read");
+        let doc = samples::hello();
+        let path = dir.join("p.fnm");
+        save(&doc, &path).unwrap();
+        let entries = entries_of(&path);
+        let with = |extra: Vec<u8>| {
+            let mut all = entries.clone();
+            all.push((THUMBNAIL_NAME.to_owned(), extra));
+            pack(&all)
+        };
+
+        let odd = dir.join("odd.fnm");
+        for (what, bytes) in [
+            ("too big", preview(&vec![0; MAX_THUMBNAIL_BYTES + 1])),
+            ("not a png", b"GIF89a....".to_vec()),
+            ("empty", Vec::new()),
+        ] {
+            fs::write(&odd, with(bytes)).unwrap();
+            assert_eq!(read_thumbnail(&odd), None, "{what}");
+            assert_eq!(load(&odd).unwrap().0, doc, "{what}");
+        }
+
+        // one folder down, as a project folder zipped by hand
+        // bytes that do not repeat, so the archive stores them as they are
+        // and the test can find and change one
+        let good = preview(&(0u8..40).collect::<Vec<_>>());
+        let nested: Vec<_> = entries
+            .iter()
+            .cloned()
+            .chain([(THUMBNAIL_NAME.to_owned(), good.clone())])
+            .map(|(n, b)| (format!("my project/{n}"), b))
+            .collect();
+        fs::write(&odd, pack(&nested)).unwrap();
+        assert_eq!(read_thumbnail(&odd), Some(good.clone()));
+
+        // a changed byte fails its checksum: no preview, but the project opens
+        let mut bytes = with(good.clone());
+        let at = bytes
+            .windows(good.len())
+            .position(|w| w == good.as_slice())
+            .unwrap();
+        bytes[at + good.len() - 1] ^= 1;
+        fs::write(&odd, &bytes).unwrap();
+        assert_eq!(read_thumbnail(&odd), None);
+        assert_eq!(load(&odd).unwrap().0, doc);
+
+        // nothing, a file that is not a project, and a folder without one
+        assert_eq!(read_thumbnail(dir.join("none.fnm")), None);
+        fs::write(&odd, b"just text").unwrap();
+        assert_eq!(read_thumbnail(&odd), None);
+        assert_eq!(read_thumbnail(&dir), None);
+        for cut in (0..bytes.len()).step_by(11) {
+            fs::write(&odd, &bytes[..cut]).unwrap();
+            let _ = read_thumbnail(&odd);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A save that fails leaves the old file, and its preview, as they were.
+    #[test]
+    fn a_failed_save_with_a_preview_leaves_the_old_file_untouched() {
+        let dir = temp_dir("thumbnail-fail");
+        let path = dir.join("p.fnm");
+        let hello = samples::hello();
+        let picture = preview(b"old preview");
+        save_with_thumbnail(&hello, &path, Some(&picture)).unwrap();
+        let before = fs::read(&path).unwrap();
+        fs::create_dir(sibling(&path, "saving")).unwrap();
+        assert!(save_with_thumbnail(&samples::benchmark(40), &path, Some(&preview(b"new"))).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(read_thumbnail(&path), Some(picture));
+        assert_eq!(load(&path).unwrap().0, hello);
         fs::remove_dir_all(dir).unwrap();
     }
 }

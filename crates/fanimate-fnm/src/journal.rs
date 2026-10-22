@@ -277,6 +277,13 @@ impl Recoverable {
     /// repairs is left out rather than risk undoing into a broken state;
     /// the project itself is unaffected.
     pub fn load_history(&self) -> Option<HistoryRecord> {
+        // The project is shifted to 1-based frames when it is loaded, but the
+        // history's states hold frames as written; a journal left by a build
+        // before version 6 would put the two out of step, so its history is
+        // left out (the project is unaffected).
+        if crate::io::folder_version(&self.dir.join(PROJECT))? < crate::io::ONE_BASED_FRAMES {
+            return None;
+        }
         let mut record = history::read(&self.dir.join(HISTORY)).ok()?;
         // pictures are not in the history's own files; every picture the
         // session used is kept in the copy's media folder
@@ -427,6 +434,44 @@ mod tests {
         drop(journal); // ends without close(), as in a crash
         assert!(find_recoverable(&root).is_empty());
         assert!(fs::read_dir(&root).unwrap().next().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A journal left by a build before version 6 holds frames counted from
+    /// 0. The project is shifted when it is read, so its history, which is
+    /// not, is left out rather than put out of step with it.
+    #[test]
+    fn a_history_from_before_one_based_frames_is_left_out() {
+        let root = temp_root("old-history");
+        let journal = Journal::start(&root).unwrap();
+        let mut record = HistoryRecord::default();
+        record
+            .states
+            .push(crate::HistoryState::capture(&edited(1), &[], None));
+        journal.record(&edited(1), None, true, Some(record));
+        journal.flush();
+        assert!(journal.error().is_none());
+        let recoverable = Recoverable {
+            dir: journal.dir().to_path_buf(),
+            info: SessionInfo {
+                name: "old".into(),
+                path: None,
+                unsaved: true,
+                updated: 0,
+            },
+        };
+        // written by this version: nothing is shifted, and the history comes back
+        let (doc, _) = recoverable.load().unwrap();
+        assert_eq!(doc, edited(1));
+        assert!(recoverable.load_history().is_some());
+
+        // the same journal as version 5 wrote it
+        let manifest = journal.dir().join(PROJECT).join("manifest.json");
+        fs::write(&manifest, r#"{"format":"fnm","version":5}"#).unwrap();
+        let (old, _) = recoverable.load().unwrap();
+        assert_eq!(old.start, doc.start + 1);
+        assert!(recoverable.load_history().is_none());
+        journal.close();
         fs::remove_dir_all(root).unwrap();
     }
 

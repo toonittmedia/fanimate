@@ -264,16 +264,31 @@ impl Path {
     /// The path without the points in `remove` (twins already included),
     /// and the numbers of the points kept, in order.
     fn without(&self, remove: &BTreeSet<usize>) -> (Path, Vec<usize>) {
+        let (path, kept, _) = self.without_flags(remove, &[]);
+        (path, kept)
+    }
+
+    /// [`without`](Self::without), also carrying hidden-edge `flags` (one per
+    /// command, or none) across: a segment keeps its flag only when the point
+    /// before it was kept too, so a segment that joins up over a removed
+    /// point is drawn.
+    fn without_flags(&self, remove: &BTreeSet<usize>, flags: &[bool]) -> (Path, Vec<usize>, Vec<bool>) {
         let at = self.point_cmds();
+        let valid = flags.len() == self.cmds.len();
+        let flag = |i: usize| valid && flags[i];
         let mut cmds = Vec::new();
         let mut kept_all = Vec::new();
+        let mut out_flags = Vec::new();
         for (range, closed) in self.subpaths() {
-            let kept: Vec<usize> = range.filter(|k| !remove.contains(k)).collect();
+            let kept: Vec<usize> = range.clone().filter(|k| !remove.contains(k)).collect();
             if kept.len() < 2 {
                 continue;
             }
+            let mut prev: Option<usize> = None;
             for (n, &k) in kept.iter().enumerate() {
                 let cmd = self.cmds[at[k]];
+                out_flags.push(n > 0 && k > 0 && prev == Some(k - 1) && flag(at[k]));
+                prev = Some(k);
                 cmds.push(if n == 0 {
                     // a subpath starts with a move to its first kept point
                     match cmd {
@@ -291,9 +306,13 @@ impl Path {
             }
             if closed && kept.len() > 2 {
                 cmds.push(PathCmd::Close);
+                // the closing edge is still the one it was only if both ends stayed
+                let close = at[range.end - 1] + 1;
+                let intact = kept.first() == Some(&range.start) && kept.last() == Some(&(range.end - 1));
+                out_flags.push(intact && matches!(self.cmds.get(close), Some(PathCmd::Close)) && flag(close));
             }
         }
-        (Path { cmds }, kept_all)
+        (Path { cmds }, kept_all, out_flags)
     }
 }
 
@@ -307,11 +326,16 @@ impl Shape {
         let count = self.path.on_curve_count();
         let widths = self.widths.take().filter(|w| w.len() == count);
         let skin = self.skin.take().filter(|w| w.len() == count);
-        let (path, kept) = self.path.without(&remove);
+        let (path, kept, flags) = self.path.without_flags(&remove, &self.hidden_edge_flags);
         for key in &mut self.path_keys {
             key.value = key.value.without(&remove).0;
         }
         self.path = path;
+        self.hidden_edge_flags = if flags.iter().any(|h| *h) {
+            flags
+        } else {
+            Vec::new()
+        };
         self.widths = widths.map(|w| kept.iter().map(|&k| w[k]).collect());
         self.skin = skin.map(|w| kept.iter().map(|&k| w[k].clone()).collect());
         !self.path.cmds.is_empty()
@@ -322,12 +346,18 @@ impl Shape {
     /// shape. Returns the new point's number.
     pub fn insert_point(&mut self, cmd: usize, t: f32) -> Option<usize> {
         let count = self.path.on_curve_count();
+        let flagged = self.hidden_edge_flags.len() == self.path.cmds.len();
         let mut path = self.path.clone();
         let number = path.split(cmd, t)?;
         for key in &mut self.path_keys {
             key.value.split(cmd, t);
         }
         self.path = path;
+        if flagged {
+            // both halves of a split edge are as hidden as the edge was
+            let hidden = self.hidden_edge_flags[cmd];
+            self.hidden_edge_flags.insert(cmd, hidden);
+        }
         if let Some(w) = self.widths.as_mut().filter(|w| w.len() == count) {
             // the new point sits between its neighbours, so is its width
             let before = w[number - 1];
@@ -382,6 +412,12 @@ impl Shape {
         // a lone point is extended forwards
         let at_start = point == range.start && range.len() > 1;
         let count = self.path.on_curve_count();
+        if self.hidden_edge_flags.len() == self.path.cmds.len() {
+            let at = self.path.point_cmds();
+            // the new segment is drawn; the old first move becomes a line that is too
+            let index = if at_start { at[point] } else { at[point] + 1 };
+            self.hidden_edge_flags.insert(index, false);
+        }
         let extend = |path: &mut Path| {
             let at = path.point_cmds();
             let pts = path.on_curve_points();
@@ -418,6 +454,10 @@ impl Shape {
         else {
             return false;
         };
+        if self.hidden_edge_flags.len() == self.path.cmds.len() {
+            let at = self.path.point_cmds();
+            self.hidden_edge_flags.insert(at[range.end - 1] + 1, false);
+        }
         let close = |path: &mut Path| {
             let at = path.point_cmds();
             path.cmds.insert(at[range.end - 1] + 1, PathCmd::Close);
@@ -644,6 +684,64 @@ mod tests {
         assert_eq!(shape.path.cmds.last(), Some(&PathCmd::Close));
         assert!(shape.remove_points(&set(&[1])));
         assert_ne!(shape.path.cmds.last(), Some(&PathCmd::Close));
+    }
+
+    #[test]
+    fn hidden_edges_keep_step_when_points_are_added_removed_or_the_path_closed() {
+        // an open line with four points: segments are commands 1, 2 and 3
+        let mut shape = Shape::new(
+            "h",
+            Path::new()
+                .move_to(Vec2::ZERO)
+                .line_to(Vec2::new(10.0, 0.0))
+                .line_to(Vec2::new(20.0, 0.0))
+                .line_to(Vec2::new(30.0, 0.0)),
+            Style::default().with_stroke(Color::BLACK, 1.0),
+        );
+        assert!(shape.hidden_edges().is_none());
+        assert!(!shape.set_edge_hidden(0, true), "a move draws nothing");
+        assert!(!shape.set_edge_hidden(9, true), "no such command");
+        assert!(shape.set_edge_hidden(2, true));
+        assert!(!shape.set_edge_hidden(2, true), "already hidden");
+        assert_eq!(shape.hidden_edges(), Some(&[false, false, true, false][..]));
+
+        // splitting the hidden edge hides both halves; the others stay drawn
+        assert_eq!(shape.insert_point(2, 0.5), Some(2));
+        assert_eq!(shape.hidden_edges(), Some(&[false, false, true, true, false][..]));
+        // extending the end draws the new segment
+        assert!(shape.extend_from(4, Vec2::new(5.0, 0.0)).is_some());
+        assert_eq!(
+            shape.hidden_edges(),
+            Some(&[false, false, true, true, false, false][..])
+        );
+        // removing a point beside a hidden edge draws the joined segment, but
+        // a hidden edge that did not touch it stays hidden
+        assert!(shape.remove_points(&set(&[1])));
+        assert_eq!(
+            shape.hidden_edges(),
+            Some(&[false, false, true, false, false][..])
+        );
+        // closing adds a drawn closing edge
+        assert!(shape.close_subpath(0));
+        assert_eq!(
+            shape.hidden_edges(),
+            Some(&[false, false, true, false, false, false][..])
+        );
+        // showing the last hidden edge clears the flags
+        assert!(shape.set_edge_hidden(2, false));
+        assert!(shape.hidden_edge_flags.is_empty());
+        assert!(shape.hidden_edges().is_none());
+    }
+
+    #[test]
+    fn hidden_edge_flags_that_no_longer_fit_the_path_are_ignored() {
+        let mut shape = line3();
+        assert!(shape.set_edge_hidden(1, true));
+        shape.path.cmds.pop();
+        assert!(shape.hidden_edges().is_none());
+        // hiding again starts from fresh flags for the path as it is now
+        assert!(shape.set_edge_hidden(1, true));
+        assert_eq!(shape.hidden_edges(), Some(&[false, true][..]));
     }
 
     fn line3() -> Shape {

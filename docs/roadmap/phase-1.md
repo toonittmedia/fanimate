@@ -18,6 +18,8 @@ Companion to the [product vision](../product-vision.md). The brand assets propos
 | M5: Bring your files | **Built and released as the public alpha (0.1.0)**; the importer corpus measurement, code signing and the clean-machine exit check are outstanding |
 | M6: Harden | **Started.** The Gate 1 tests that need no testers or reference hardware are automated or measured ([section 5.3](#53-results-so-far)); the public beta, which runs for weeks with real users, has not started |
 
+**UX pass 3 (0.3.0).** A third [UX pass](ux-pass.md#ux-pass-3) reworked the timeline (frame 0 as the rest pose, seconds, key selection, scaling and copying of keys, loop, layer order), made the tool groups follow the layer type and added a Camera group, gave points their own transform with a pivot picker, moved the clipboard shortcuts by focus, added Hide Edge, one Freehand tool with pen pressure, saved styles, "Your files" and more templates on Home, and thumbnails in the file, with format version 6. It was checked by hand on Windows; the macOS and Linux builds are made by the release workflow and have not been tried. A keyed pivot, Offset Path, Eraser snapping, Moho keys for the new tools and video import are left open.
+
 ### M0: Ground work (done)
 
 - [x] Name and trademark check: "Fanimate" passed the trademark and domain check

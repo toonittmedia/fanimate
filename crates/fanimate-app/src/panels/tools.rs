@@ -1,11 +1,10 @@
 //! The Tools panel, grouped as in Moho Pro.
 
-use eframe::egui::{self, RichText};
-use fanimate_editor::{Action, Tool, ToolGroup};
-
 use crate::app::Shell;
 use crate::icons::{self, Icon};
 use crate::menus::tool_shortcut;
+use eframe::egui::{self, RichText};
+use fanimate_editor::{Action, Tool, ToolGroup};
 
 /// The tools in rows of `columns` buttons. The column is exactly that wide
 /// (`Layout::tools_width`), so no room is left over.
@@ -15,7 +14,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, columns: usize) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add_space(4.0);
-            for group in ToolGroup::ALL {
+            // the active layer decides which groups there are: drawing tools
+            // for vector layers, bone tools for bone layers
+            for group in shell.editor.tool_groups() {
                 ui.label(RichText::new(group.label()).size(11.0).color(p.text_muted));
                 let tools: Vec<Tool> = Tool::ALL.into_iter().filter(|t| t.group() == group).collect();
                 ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);

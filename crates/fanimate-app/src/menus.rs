@@ -126,17 +126,16 @@ pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
 pub fn edit(ui: &mut egui::Ui, shell: &mut Shell) {
     items(ui, shell, &[Action::Undo, Action::Redo, Action::UndoLayer]);
     ui.separator();
+    // Cut, Copy and Paste follow the focus (points, keys); layers have their own
+    items(ui, shell, &[Action::Cut, Action::Copy, Action::Paste]);
+    ui.separator();
     items(
         ui,
         shell,
-        &[
-            Action::Cut,
-            Action::Copy,
-            Action::Paste,
-            Action::Duplicate,
-            Action::Delete,
-        ],
+        &[Action::CutLayers, Action::CopyLayers, Action::PasteLayers],
     );
+    ui.separator();
+    items(ui, shell, &[Action::Duplicate, Action::Delete]);
     ui.separator();
     items(ui, shell, &[Action::SelectAll, Action::SelectNone]);
     ui.separator();
@@ -298,6 +297,17 @@ pub fn interpolation_items(ui: &mut egui::Ui, shell: &mut Shell) {
             current == Some(interp),
         );
     }
+}
+
+/// The "Loop" submenu of a timeline row or key: what the selected keys'
+/// properties do after their last key, with `current` marked.
+pub fn loop_menu(ui: &mut egui::Ui, shell: &mut Shell, current: fanimate_core::LoopMode) {
+    ui.menu_button("Loop", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        for mode in fanimate_core::LoopMode::ALL {
+            item_checked(ui, shell, Action::SetLoop(mode), current == mode);
+        }
+    });
 }
 
 pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
@@ -484,9 +494,9 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
         ui,
         shell,
         &[
-            Action::Cut,
-            Action::Copy,
-            Action::Paste,
+            Action::CutLayers,
+            Action::CopyLayers,
+            Action::PasteLayers,
             Action::Duplicate,
             Action::Delete,
         ],

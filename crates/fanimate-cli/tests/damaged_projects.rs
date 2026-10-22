@@ -254,6 +254,14 @@ fn damaged_projects_never_crash() {
     for name in ["hello-v0.fnm", "strokes-v1.fnm"] {
         projects.push((name.into(), read_folder(&fixtures.join(name))));
     }
+    // the same project as version 5 wrote it: the loader shifts its frames up
+    // by one, which must hold for any frame a damaged file can name
+    let mut old = projects[2].1.clone();
+    old.insert(
+        "manifest.json".into(),
+        br#"{"format":"fnm","version":5}"#.to_vec(),
+    );
+    projects.push(("every-layer-v5".into(), old));
 
     // a quiet hook while panics are caught, keeping only where they were
     static WHERE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -320,6 +328,12 @@ fn damaged_single_files_never_crash() {
         fanimate_fnm::save(&doc, &path).unwrap();
         archives.push((name.into(), std::fs::read(&path).unwrap()));
     }
+    // with a preview picture in it
+    let preview = [b"\x89PNG\r\n\x1a\n".as_slice(), &[7u8; 300]].concat();
+    let path = scratch.join("with-preview.fnm");
+    fanimate_fnm::save_with_thumbnail(&every_layer(), &path, Some(&preview)).unwrap();
+    assert_eq!(fanimate_fnm::read_thumbnail(&path), Some(preview));
+    archives.push(("with-preview".into(), std::fs::read(&path).unwrap()));
 
     static WHERE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     let hook = std::panic::take_hook();
@@ -365,6 +379,12 @@ fn damaged_single_files_never_crash() {
         let result = catch_unwind(AssertUnwindSafe(|| {
             if let Ok((doc, _report)) = fanimate_fnm::load_archive("damaged.fnm", &bytes) {
                 exercise(doc, &scratch, trial % 50 == 0);
+            }
+            // the preview is read on its own, from the file, as the Home tab does
+            if trial % 10 == 0 {
+                let file = scratch.join("damaged-preview.fnm");
+                std::fs::write(&file, &bytes).unwrap();
+                let _ = fanimate_fnm::read_thumbnail(&file);
             }
         }));
         if let Err(e) = result {

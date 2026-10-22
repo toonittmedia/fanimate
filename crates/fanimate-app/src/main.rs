@@ -44,9 +44,11 @@ mod saveas;
 mod taskbar;
 mod theme;
 mod thumbs;
+mod timecode;
 mod titlebar;
 mod update;
 mod whatsnew;
+mod yourfiles;
 
 use std::path::PathBuf;
 use std::sync::Arc;

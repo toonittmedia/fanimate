@@ -1,6 +1,6 @@
 # The `.fnm` project format
 
-**Current version: 5. Status: draft.** The format may still change before Fanimate 1.0, but every change that older readers would misread bumps the version, and Fanimate always opens files written by earlier versions. See [Version history](#version-history).
+**Current version: 6. Status: draft.** The format may still change before Fanimate 1.0, but every change that older readers would misread bumps the version, and Fanimate always opens files written by earlier versions. See [Version history](#version-history).
 
 The reference implementation is the [`fanimate-fnm`](../../crates/fanimate-fnm/) crate.
 
@@ -18,6 +18,7 @@ A project is one file whose name ends in `.fnm`. The file is a ZIP archive, and 
 ```text
 manifest.json
 document.json
+thumbnail.png        (optional)
 layers/
 ├── 0002.json
 └── 0005.json
@@ -38,6 +39,10 @@ All files are UTF-8 JSON, apart from the media files. Whitespace is not signific
 - **Saving the same project twice writes the same bytes** (entries in a fixed order, a fixed timestamp), so the file works with tools that compare or deduplicate files.
 - **The file starts with `PK`** (a ZIP signature). The type is told by the `.fnm` extension and by the `manifest.json` inside. On Linux the shared MIME type is `application/x-fanimate-project` with the glob `*.fnm`; on macOS the type is `app.fanimate.project`.
 
+## The preview picture
+
+`thumbnail.png`, at the root of the project (version 6, optional), is a small picture of the project for file browsers and Fanimate's Home tab. It is a PNG of at most 262 144 bytes (256 KiB); Fanimate writes one of about 320 × 180 pixels. It is not part of the animation: nothing depends on it, a project without one is complete, and a reader that does not know it ignores the entry. A reader must ignore one that is not a PNG (it does not start with the PNG signature) or is larger than the limit, rather than load it. Like every other entry it is covered by the single file's checksums and written by the same atomic save. A save that makes no new preview keeps the one in the project, so it may show an earlier state of the animation.
+
 ## Media files
 
 Pictures used by image layers live in the `media` folder, as PNG or JPEG files, and sounds used by audio layers as WAV files. Fanimate names each file after its content (a hash and the size in bytes), so the same picture is stored once and a file never changes once written. A file no layer uses is not saved. A missing file does not stop the project opening: a picture shows as a grey placeholder and a sound is silent.
@@ -49,7 +54,7 @@ Identifies the project. A folder or archive without it is not a project.
 ```json
 {
   "format": "fnm",
-  "version": 5,
+  "version": 6,
   "generator": "fanimate 0.0.6"
 }
 ```
@@ -70,12 +75,12 @@ Canvas, timing, and the order of top-level layers.
   "width": 1280.0,
   "height": 720.0,
   "fps": 24.0,
-  "start": 0,
-  "end": 47,
+  "start": 1,
+  "end": 48,
   "background": "#1C0B3D",
   "next_layer_id": 3,
   "guides": [{ "vertical": true, "position": 640.0 }],
-  "camera": { "position": { "base": [0, 0] }, "zoom": { "base": 1.0, "keys": [{ "frame": 0, "value": 1.0 }, { "frame": 24, "value": 2.0 }] }, "roll": { "base": 0.0 } },
+  "camera": { "position": { "base": [0, 0] }, "zoom": { "base": 1.0, "keys": [{ "frame": 1, "value": 1.0 }, { "frame": 25, "value": 2.0 }] }, "roll": { "base": 0.0 } },
   "layers": ["layers/0002.json"]
 }
 ```
@@ -85,10 +90,11 @@ Canvas, timing, and the order of top-level layers.
 | `name` | string | Project name |
 | `width`, `height` | number | Canvas size in document units (pixels at 100% zoom). Positive. |
 | `fps` | number | Frames per second. Positive. |
-| `start`, `end` | integer | Inclusive frame range that plays and renders. `0 <= start <= end`. |
+| `start`, `end` | integer | Inclusive frame range that plays and renders. `0 <= start <= end`. Fanimate starts new projects at 1, so the rest pose on frame 0 is outside the range. Before version 6 the first frame was 0; see [Frames](#frames). |
 | `background` | [colour](#colours) | Canvas colour |
 | `next_layer_id` | integer | Next unused layer id. Greater than every id in the project. |
 | `guides` | array | Optional (version 5). Guides placed from the rulers: `vertical` (true for a vertical line at `position` on the x axis, false for a horizontal one on the y axis), `position` (document units) and optionally `locked` (true when it cannot be dragged). At most 1000. |
+| `styles` | array | Optional (version 6), left out when empty. The brush and shape styles saved with the project, so another computer has them. Each is `name` (1 to 60 characters, unique), `line` (a [colour](#colours)), `width` (above 0), `fill` (a colour or `null`: no fill), `outline` (boolean), `smoothing` (0 to 1), `taper` (0 or more) and `pressure` (boolean: a pen's pressure sets a brush stroke's width). At most 64. |
 | `camera` | object | Optional (version 5). The [camera](#the-camera). Left out when it looks at the whole canvas and has no keys. |
 | `layers` | array of strings | Top-level layer files relative to the project folder, **bottom to top** (the last is drawn on top). |
 
@@ -106,12 +112,19 @@ Each file in `layers/` holds one top-level layer. Child layers of groups and bon
 | `visible` | boolean | Optional, default `true` |
 | `opacity` | [channel](#channels) of number | 0 to 1. Multiplies with ancestors' opacity. |
 | `locked` | boolean | Optional (version 5), default `false`. A locked layer cannot be selected on the canvas, moved, drawn on or edited by the tools. It still draws and plays. |
+| `order` | [channel](#channels) of number | Optional (version 6), left out when it has no keys. See [Layer order](#layer-order). |
 | `transform` | object | `position` (channel of [vector](#vectors)), `rotation` (channel of number, radians), `scale` (channel of vector), and optionally (version 4) `pivot` |
 | `type` | string | `"vector"`, `"group"`, `"bone"`, `"image"`, `"frames"`, `"switch"` or `"audio"` (the last four version 3); decides the remaining fields |
 
 A layer's transform applies scale, then rotation, then position, relative to its parent, about the layer's **pivot**.
 
 `transform.pivot` (optional, version 4) is a [vector](#vectors): a point in the layer's own space that rotation and scale turn and stretch the layer about. It is not animated. A point `p` of the layer lands at `position + pivot + rotate(scale(p - pivot))` in its parent. The pivot stays put as the layer turns, and `position` moves the pivot with the layer. Without a pivot it is the layer's origin, `(0, 0)`, which is how every layer saved before version 4 turns; the field is left out when it is `(0, 0)`. A pivot that is not a finite point of at most 10 000 000 units from the origin is an error, repaired by removing it.
+
+### Layer order
+
+Layers in a list (the `children` of a group, bone or switch layer) are drawn in the order they are stored, first to last. `order` lets a layer change its place in that list over time, such as a hand that passes behind the body and then in front of it. Its keys are **slots**: whole numbers from 0 (drawn first, at the back) to the number of layers in the list minus 1 (drawn last, on top). Between keys the slot is held, as for a `"step"` key; a layer is never between two slots.
+
+At each frame the layers in a list are sorted by their slot, lowest first. Layers with the same slot keep their order in the list (the sort is stable), and a layer with no `order` keys has its place in the list as its slot. A slot outside the list is held within it. The channel is not used for the layers in `document.json`; Fanimate writes it only for layers inside a group, bone or switch layer, and the list in the file is not reordered by it.
 
 ### `"type": "vector"`
 
@@ -222,6 +235,7 @@ A skeleton. Shapes on vector layers anywhere inside `children` can bind to its b
 | `visible` | boolean | Optional (version 5), default `true`. A hidden shape is not drawn, hit or edited, and keeps its place in the layer. |
 | `trim` | `[start, end]` | Optional (version 5), default `[0, 1]`. [Stroke exposure](#stroke-exposure): the part of the stroke that is drawn. |
 | `trim_keys` | array of keys | Optional (version 5). Keys for `trim`, with `value` as `[start, end]`, like a channel's. |
+| `hidden_edge_flags` | array of booleans | Optional (version 6), left out when no edge is hidden. One flag for every command of `path`: `true` leaves that segment's stroke undrawn. See [Hidden edges](#hidden-edges). |
 | `fill_keys` | array of keys | Optional (version 5). [Colour keys](#colour-keys) for `style.fill`. |
 | `stroke_keys` | array of keys | Optional (version 5). Colour keys for `style.stroke.color`. |
 | `rect` | object | Optional (version 4). Says the shape is a rectangle: `x`, `y`, `width`, `height` and `radius` (the corner radius, 0 to half the shorter side), in the layer's space, and optionally (version 5) `radii`, four radii for the corners. See [Rectangles](#rectangles). |
@@ -239,6 +253,12 @@ Values that are not finite, a width or height of 0 or less, or a radius outside 
 ### Stroke exposure
 
 `trim` limits the stroke to the part from `trim[0]` to `trim[1]`, each a fraction (0 to 1) of the length of every subpath, measured along the path (curves by their arc length). The fill is not trimmed. A `[0, 1]` trim, the default, draws the whole stroke, and a trimmed stroke is drawn as an open path with its width profile cut to match. Equal ends draw nothing. `trim_keys` animate it like a channel (sorted, one per frame, no negative frames, `interp` as for channels); `trim` is the value when there are none.
+
+### Hidden edges
+
+`hidden_edge_flags` has one boolean for every command of `path`, in order. A `true` on a `LineTo` or `CubicTo` leaves the stroke of that segment undrawn, and on a `Close` leaves the closing edge undrawn. The points, the fill and the other segments are unchanged; the shape is still hit, selected and edited as before. A `MoveTo` draws nothing, so its flag must be `false`. A shape's point keys have the same commands as its path, so the flags apply on every frame.
+
+The stroke is drawn from the segments that are not hidden, as open pieces (a closed shape with every edge drawn keeps its corners joined); with a width profile the profile is cut to match. Stroke exposure applies to what is left. A list with the wrong length for the path is ignored and every edge is drawn, so a tool that changes the commands without updating the flags shows the edges again rather than hiding the wrong ones.
 
 ### Width profiles
 
@@ -339,9 +359,9 @@ An action is a short animation kept on a bone layer, outside the main timeline.
 {
   "name": "head",
   "driver": 0,
-  "length": 24,
-  "bones": [{"bone": 0, "angle": {"base": 0.0, "keys": [{"frame": 0, "value": 0.0}, {"frame": 24, "value": 1.57}]}}],
-  "shapes": [{"layer": 4, "shape": 0, "path_keys": [{"frame": 0, "value": []}, {"frame": 24, "value": []}]}]
+  "length": 25,
+  "bones": [{"bone": 0, "angle": {"base": 0.0, "keys": [{"frame": 1, "value": 0.0}, {"frame": 25, "value": 1.57}]}}],
+  "shapes": [{"layer": 4, "shape": 0, "path_keys": [{"frame": 1, "value": []}, {"frame": 25, "value": []}]}]
 }
 ```
 
@@ -351,7 +371,7 @@ An action is a short animation kept on a bone layer, outside the main timeline.
 |---|---|---|
 | `name` | string | Display name |
 | `driver` | integer | Optional. Makes this a **Smart Bone action**: the index of the bone whose angle plays it. |
-| `length` | integer | Last frame of the action, which starts at frame 0. Positive. |
+| `length` | integer | Last frame of the action, which starts at frame 1 (frame 0 before version 6, see [Frames](#frames)). Positive. |
 | `bones` | array | Optional. Bone angle [channels](#channels) the action animates: `bone` (index) and `angle`. |
 | `shapes` | array | Optional. [Point keys](#point-keyframes) of shapes in vector layers inside the bone layer (not inside nested bone layers): `layer` (id), `shape` (index in it) and `path_keys`. |
 
@@ -360,8 +380,8 @@ An action is a short animation kept on a bone layer, outside the main timeline.
 **Smart Bone actions** play by themselves:
 
 1. The driver's angle, as the timeline poses it, is looked up on the action's own keys for the driver, giving a frame of the action. Between two keys the frame is found by solving the channel for the angle; before the first or after the last key, the nearest end is used. An action whose driver has fewer than two keys does nothing.
-2. Every other bone in `bones` turns by its channel's value at that frame minus its value at frame 0.
-3. Every shape in `shapes` moves point by point by its keys' path at that frame minus their path at frame 0. Keys whose commands differ from the shape's path are ignored.
+2. Every other bone in `bones` turns by its channel's value at that frame minus its value at the action's first frame.
+3. Every shape in `shapes` moves point by point by its keys' path at that frame minus their path at the action's first frame. Keys whose commands differ from the shape's path are ignored.
 4. Several Smart Bone actions add up. Smart Bone actions do not move their own drivers or drive each other.
 
 ## Channels
@@ -376,11 +396,27 @@ Any animatable value is a channel:
 |---|---|---|
 | `base` | value | The value when there are no keys. For bone angles, also the rest pose. |
 | `keys` | array | Optional, default empty. Sorted by `frame`, at most one key per frame, no negative frames. |
-| `keys[].frame` | integer | Frame number |
+| `keys[].frame` | integer | Frame number. Frame 0, the rest pose, is allowed. |
 | `keys[].value` | value | Value at that frame |
 | `keys[].interp` | string | How the value moves **from this key to the next**: `"smooth"` (default, ease in and out), `"linear"` or `"step"` (hold). Optional. |
+| `loop_mode` | string | Optional (version 6), default `"off"`, left out when off. `"absolute"` or `"relative"`: what the value does after the last key. See [Looping](#looping). |
 
-Sampling: before the first key, the first key's value; after the last key, the last key's value; between keys, interpolated as set by the earlier key. Frames can be sampled fractionally.
+Sampling: before the first key, the first key's value; after the last key, the last key's value (unless the channel loops); between keys, interpolated as set by the earlier key. Frames can be sampled fractionally.
+
+### Looping
+
+With `loop_mode` set, a channel with at least two keys does not hold its last value. After the last key, time wraps back into the span from the first key to the last, and the value repeats the keys' motion for as long as the animation runs:
+
+- `"absolute"`: each repeat takes the same values as the first, so the value jumps from the last key's value back to the first key's value at the start of every cycle.
+- `"relative"`: each repeat starts where the last one ended. The net change of one cycle (last key's value minus the first key's) is added once for every cycle that has completed, so a walking character keeps moving forward and a wheel keeps turning. For a colour, the change is added to each of red, green, blue and alpha.
+
+`loop_mode` on a channel with fewer than two keys means nothing; see [Validation](#validation). Channels with keys of their own kind, such as `path_keys`, `fill_keys`, `trim_keys` and switch keys, do not loop.
+
+### Frames
+
+Frames are integers. **From version 6 the first frame of an animation is 1**, and `start` is 1 for a new project (it was 0 before). **Frame 0 is the rest pose**: the project as it is built, before any animation. It is outside the playing range of a new project, but is a frame like any other for keys: a key on frame 0 is valid, and a channel with keys sampled on frame 0 follows the sampling rule above. When Fanimate keys a value on a later frame it also keys the value on frame 0 first, so that nothing jumps when the playhead goes back to the rest pose. Bone `angle` channels keep their rest pose in `base`, as before.
+
+Files written before version 6 count from 0. Reading one shifts it: **every frame number in the project goes up by 1** (`start` and `end`, the `frame` of every key of every channel, point, colour, exposure and switch key, the `frame` of every drawing, the keys and `length` of every action, and an audio layer's `start`), so the project plays exactly as it did and frame 0 is left for the rest pose. No key is made on frame 0 for an old file. Guide `position`s are places on the canvas, not frames, and do not change.
 
 ### Colour keys
 
@@ -420,7 +456,7 @@ If step 3 fails, put the old copy back. At no point is the only copy of the proj
 
 ## Crash recovery copies
 
-While a project is open, Fanimate keeps a copy of it in its data folder, updated after every action, so a crash loses at most the action being written. The copy is an ordinary `.fnm` project folder (`project.fnm`) next to a `session.json` saying where the project is saved and whether it had unsaved changes, and a `history` folder with the undo history: an `index.json` listing each state's layers, and one file per distinct top-level layer state in `history/layers/`, so a layer unchanged between steps is stored once. Each file in the copy is replaced atomically. The copy is deleted when Fanimate closes normally. The history format is internal to Fanimate and may change between versions; a history that cannot be read is left out and the project recovered without it. Nothing else in this specification depends on it.
+While a project is open, Fanimate keeps a copy of it in its data folder, updated after every action, so a crash loses at most the action being written. The copy is an ordinary `.fnm` project folder (`project.fnm`) next to a `session.json` saying where the project is saved and whether it had unsaved changes, and a `history` folder with the undo history: an `index.json` listing each state's layers, and one file per distinct top-level layer state in `history/layers/`, so a layer unchanged between steps is stored once. Each file in the copy is replaced atomically. The copy is deleted when Fanimate closes normally. The history format is internal to Fanimate and may change between versions; a history that cannot be read is left out and the project recovered without it. So is the history of a copy written before version 6: its project is converted like any older project (see [Frames](#frames)), and a history holding the old frame numbers would no longer agree with it. Nothing else in this specification depends on it.
 
 ## Validation
 
@@ -428,7 +464,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 
 | Problem | Severity | Repair |
 |---|---|---|
-| Keyframe on a negative frame | Error | Remove the key |
+| Keyframe on a negative frame (frame 0 is valid) | Error | Remove the key |
 | Keys out of order | Error | Sort by frame |
 | Two keys on the same frame | Error | Keep the later one in the file |
 | Non-finite value or key | Error | Reset the value; remove the key |
@@ -436,10 +472,19 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | `next_layer_id` not above every id | Error | Set to highest id + 1 |
 | Bone parent not before the bone | Error | Make the bone a root |
 | Non-positive `fps`, `width` or `height`; bad frame range | Error | Reset to defaults |
+| `start` below 0 | Error | Set to 1 |
+| `end` before `start` | Error | Set to `start` |
+| `loop_mode` other than `"off"` on a channel with fewer than two keys | Warning | Turn the loop off |
+| `order` with keys that are not finite, or on negative frames, out of order or duplicated | Error | As for channel keys |
+| `order` slot outside 0 to the number of layers in the list minus 1 | Warning | None; held within the list when drawn |
 | Width profile whose length does not match the path's on-curve points | Error | Remove the profile |
 | Point keyframe whose commands differ from the shape's path | Error | Remove the key |
 | Point keyframes on negative frames, out of order, duplicated or not finite | Error | As for channel keys |
 | Negative or non-finite value in a width profile | Error | Non-finite becomes 1, negative becomes 0 |
+| Path with points that are not numbers | Error | Each such point moves to the origin, so the project can be saved |
+| `hidden_edge_flags` whose length is not the number of path commands | Warning | Remove it: every edge is drawn |
+| `hidden_edge_flags` that hides a `MoveTo` | Warning | Show it |
+| `styles` entry that is unusable (a number that is not finite, a width of 0 or less, smoothing outside 0 to 1), has no name or repeats a name, or more than 64 styles | Warning | Remove it, and the extra ones; names are trimmed |
 | Shape bound to a bone that does not exist, or outside any bone layer | Warning | Unbind the shape |
 | `skin` whose length does not match the path's on-curve points | Error | Remove the skin |
 | `skin` weight naming a missing bone, or not a finite non-negative number | Error | Remove that weight |
@@ -489,6 +534,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | 3 | Fanimate 0.0.7 | Layers may have a label colour (`label`); bones may have `limits`, `pinned` and `strength`; shapes may have a smooth binding (`skin`); bone layers may have actions and Smart Bone actions; image layers and the `media` folder; frame-by-frame, switch and audio layers | Older files need no conversion. An older reader would drop labels and draw smoothly bound artwork unbound, so the version was bumped. |
 | 4 | Development builds after Fanimate 0.2.1 | Layers may have a pivot (`transform.pivot`); shapes may say they are rectangles (`rect`) | Older files need no conversion: without a pivot a layer turns about its origin, as it always did, and without `rect` a shape is a path. An older reader would turn a layer with a pivot about its origin and show it in the wrong place, so the version was bumped. |
 | 5 | Fanimate 0.2.3 | The project may have guides (`guides` in `document.json`); layers may be locked (`locked`); shapes may be hidden (`visible: false`); the project may have a camera (`camera`); shapes may have colour keys (`fill_keys`, `stroke_keys`), stroke exposure (`trim`, `trim_keys`) and rectangles may have a radius for each corner (`rect.radii`) | Older files need no conversion: they have no guides, camera or colour keys and nothing locked or hidden. An older reader would show a hidden shape, ignore a lock, draw the colour keys' shapes in one colour, draw whole strokes that are trimmed, round all four corners alike and lose the guides and camera when it saved, so the version was bumped. |
+| 6 | Development builds after Fanimate 0.2.3 | Frames count from 1 and frame 0 is the rest pose; channels may loop (`loop_mode`); layers may change their place among their siblings over time (`order`); the project may hold a preview picture (`thumbnail.png`); shapes may hide edges (`hidden_edge_flags`); the project may hold saved brush styles (`styles`) | Files before version 6 are converted on load: every frame number goes up by 1 (`start`, `end`, every key, drawing and action frame, audio `start`), so the project plays as it did; no key is made on frame 0. Nothing else needs converting: older files have no loops, no order and no preview. An older reader would read the new frame numbers one frame late, play loops as a held last value, ignore the layer order, draw hidden edges and lose the loops, orders, hidden edges, styles and preview when it saved, so the version was bumped. |
 
 ### The single-file container
 

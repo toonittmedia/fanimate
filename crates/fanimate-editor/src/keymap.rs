@@ -3,8 +3,9 @@
 //! Two presets ship:
 //!
 //! - **Fanimate** (the default): the conventions of mainstream editing apps.
-//!   Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste whatever is selected,
-//!   including layers; Ctrl+Y and Ctrl+Shift+Z both redo; Delete deletes;
+//!   Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste what has focus (points on
+//!   the canvas, keys in the timeline) and Ctrl+Shift+C / X / V do the same
+//!   for layers; Ctrl+Y and Ctrl+Shift+Z both redo; Delete deletes;
 //!   F2 renames; tool letters follow Adobe Animate and Illustrator.
 //! - **Moho**: Moho Pro's own shortcuts, so Moho users keep their muscle
 //!   memory. Redo is Ctrl+Shift+Z only, tools use Moho's letters (M, T, G,
@@ -108,7 +109,7 @@ impl KeymapKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Fanimate => {
-                "Shortcuts like other editing apps: Ctrl+C, Ctrl+X and Ctrl+V work on layers, \
+                "Shortcuts like other editing apps: Ctrl+C, Ctrl+X and Ctrl+V work on points and keys, Ctrl+Shift+C, X and V on layers, \
                  Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes, F2 renames."
             }
             Self::Moho => {
@@ -195,6 +196,11 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Ctrl+X", Cut),
     ("Ctrl+C", Copy),
     ("Ctrl+V", Paste),
+    // layers keep their own clipboard commands, as plain Ctrl+C/X/V follow
+    // the focus (canvas points, timeline keys)
+    ("Ctrl+Shift+X", CutLayers),
+    ("Ctrl+Shift+C", CopyLayers),
+    ("Ctrl+Shift+V", PasteLayers),
     ("Ctrl+D", Duplicate),
     ("Delete", Delete),
     ("Backspace", Delete),
@@ -224,6 +230,8 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Left", PrevFrame),
     ("Home", FirstFrame),
     ("End", LastFrame),
+    // frame 0 is the rest pose; Moho has no such key, so it stays unbound there
+    ("1", GoToRestPose),
     ("Alt+Right", NextKey),
     ("Alt+Left", PrevKey),
     ("F6", AddKey),
@@ -245,7 +253,6 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Shift+P", Tool(Tool::AddPoint)),
     ("C", Tool(Tool::Curvature)),
     ("B", Tool(Tool::Freehand)),
-    ("Shift+B", Tool(Tool::FreehandWidth)),
     ("R", Tool(Tool::Rectangle)),
     ("O", Tool(Tool::Ellipse)),
     ("L", Tool(Tool::Line)),
@@ -254,9 +261,8 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Shift+R", Tool(Tool::Triangle)),
     ("E", Tool(Tool::Eraser)),
     ("Shift+E", Tool(Tool::DeleteEdge)),
+    ("Shift+H", Tool(Tool::HideEdge)),
     ("Shift+G", Tool(Tool::Magnet)),
-    ("Shift+Q", Tool(Tool::ScalePoints)),
-    ("Shift+A", Tool(Tool::RotatePoints)),
     ("K", Tool(Tool::PaintBucket)),
     ("I", Tool(Tool::Eyedropper)),
     ("Shift+K", Tool(Tool::DrawShape)),
@@ -269,6 +275,11 @@ const FANIMATE: &[(&str, Action)] = &[
     ("W", Tool(Tool::PaintWeights)),
     ("H", Tool(Tool::Pan)),
     ("Z", Tool(Tool::Zoom)),
+    // the camera tools take Shift with a letter nothing else uses; Moho's
+    // keys for them are not documented, so the Moho keymap leaves them unbound
+    ("Shift+T", Tool(Tool::TrackCamera)),
+    ("Shift+Z", Tool(Tool::ZoomCamera)),
+    ("Shift+Y", Tool(Tool::RollCamera)),
 ];
 
 const MOHO: &[(&str, Action)] = &[
@@ -292,6 +303,10 @@ const MOHO: &[(&str, Action)] = &[
     ("Ctrl+X", Cut),
     ("Ctrl+C", Copy),
     ("Ctrl+V", Paste),
+    // not in Moho, but unused there
+    ("Ctrl+Shift+X", CutLayers),
+    ("Ctrl+Shift+C", CopyLayers),
+    ("Ctrl+Shift+V", PasteLayers),
     ("Delete", Delete),
     ("Ctrl+A", SelectAll),
     ("Escape", SelectNone),
@@ -318,7 +333,6 @@ const MOHO: &[(&str, Action)] = &[
     ("A", AddPointOrBone),
     ("C", Tool(Tool::Curvature)),
     ("F", Tool(Tool::Freehand)),
-    ("Shift+F", Tool(Tool::FreehandWidth)),
     ("R", Tool(Tool::Rectangle)),
     ("O", Tool(Tool::Ellipse)),
     ("I", Tool(Tool::Line)),
@@ -328,8 +342,6 @@ const MOHO: &[(&str, Action)] = &[
     ("E", Tool(Tool::Eraser)),
     ("Shift+E", Tool(Tool::DeleteEdge)),
     ("Shift+G", Tool(Tool::Magnet)),
-    ("Shift+T", Tool(Tool::ScalePoints)),
-    ("Shift+A", Tool(Tool::RotatePoints)),
     ("P", Tool(Tool::PaintBucket)),
     ("L", Tool(Tool::Eyedropper)),
     ("Shift+P", Tool(Tool::DrawShape)),
@@ -371,8 +383,23 @@ mod tests {
         assert_eq!(map.lookup(chord("Ctrl+C")), Some(Copy));
         assert_eq!(map.lookup(chord("Ctrl+X")), Some(Cut));
         assert_eq!(map.lookup(chord("Ctrl+V")), Some(Paste));
+        assert_eq!(map.lookup(chord("Ctrl+Shift+C")), Some(CopyLayers));
+        assert_eq!(map.lookup(chord("Ctrl+Shift+X")), Some(CutLayers));
+        assert_eq!(map.lookup(chord("Ctrl+Shift+V")), Some(PasteLayers));
         assert_eq!(map.lookup(chord("Delete")), Some(Delete));
         assert_eq!(map.lookup(chord("F2")), Some(Rename));
+    }
+
+    #[test]
+    fn camera_tools_have_fanimate_letters_and_moho_leaves_them_unbound() {
+        let fanimate = Keymap::new(KeymapKind::Fanimate);
+        let moho = Keymap::new(KeymapKind::Moho);
+        for tool in [Tool::TrackCamera, Tool::ZoomCamera, Tool::RollCamera] {
+            assert!(fanimate.shortcut(Tool(tool)).is_some(), "{tool:?}");
+            assert!(moho.shortcut(Tool(tool)).is_none(), "{tool:?}");
+        }
+        assert_eq!(fanimate.lookup(chord("Z")), Some(Tool(Tool::Zoom)));
+        assert_eq!(fanimate.lookup(chord("Shift+Z")), Some(Tool(Tool::ZoomCamera)));
     }
 
     #[test]
@@ -380,6 +407,7 @@ mod tests {
         let map = Keymap::new(KeymapKind::Moho);
         assert_eq!(map.lookup(chord("Ctrl+Shift+Z")), Some(Redo));
         assert_eq!(map.lookup(chord("Ctrl+Y")), None);
+        assert_eq!(map.lookup(chord("Ctrl+Shift+C")), Some(CopyLayers));
         assert_eq!(map.lookup(chord("M")), Some(Tool(Tool::TransformLayer)));
         assert_eq!(map.lookup(chord("Z")), Some(Tool(Tool::ManipulateBones)));
         assert_eq!(map.lookup(chord("A")), Some(AddPointOrBone));

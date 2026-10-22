@@ -5,9 +5,44 @@ use serde::{Deserialize, Serialize};
 
 use crate::Color;
 
-/// A frame number on the timeline. Frame 0 is the first frame; keyframes on
-/// negative frames are invalid (see the validator in `fanimate-fnm`).
+/// A frame number on the timeline. Frame 0 is the rest pose (how a thing is
+/// drawn and set up) and frame 1 is the first frame of the animation;
+/// keyframes on negative frames are invalid (see the validator in
+/// `fanimate-fnm`).
 pub type Frame = i32;
+
+/// The frame that shows the rest pose, before the animation starts.
+pub const REST_FRAME: Frame = 0;
+
+/// What a channel does after its last key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopMode {
+    /// Hold the last value.
+    #[default]
+    Off,
+    /// Repeat the motion between the first and last key, the same values each time.
+    Absolute,
+    /// Repeat the motion, adding the change from first to last key each time
+    /// round, so a walk keeps moving forward.
+    Relative,
+}
+
+impl LoopMode {
+    pub const ALL: [LoopMode; 3] = [Self::Off, Self::Absolute, Self::Relative];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Absolute => "Repeat",
+            Self::Relative => "Repeat and offset",
+        }
+    }
+
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+}
 
 /// How a channel moves from one keyframe to the next.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,11 +84,12 @@ impl Interpolation {
 
 /// How an edit is recorded on the timeline.
 ///
-/// The **base frame** (frame 0, the first frame) is where a thing is drawn
+/// The **base frame** (frame 0, the rest pose) is where a thing is drawn
 /// and set up: editing there changes the thing itself. On any later frame an
-/// edit is animation, so it makes a keyframe, and a key holding the value it
-/// had is placed on the base frame first so the base frame does not change.
-/// `interp` is how the keys made move on to the next.
+/// edit is animation, so it makes a keyframe, and a key holding the value the
+/// channel had there is placed on the base frame first (when it has none) so
+/// the rest pose does not change. `interp` is how the keys made move on to
+/// the next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keying {
     pub base: Frame,
@@ -76,6 +112,12 @@ impl Default for Keying {
 pub trait Animatable: Copy + PartialEq {
     fn lerp(a: Self, b: Self, t: f32) -> Self;
 
+    /// Component-wise sum, used to carry a repeating motion forward.
+    fn plus(a: Self, b: Self) -> Self;
+
+    /// Component-wise difference.
+    fn minus(a: Self, b: Self) -> Self;
+
     /// Whether every component is a finite number.
     fn is_finite(&self) -> bool;
 }
@@ -83,6 +125,12 @@ pub trait Animatable: Copy + PartialEq {
 impl Animatable for f32 {
     fn lerp(a: Self, b: Self, t: f32) -> Self {
         a + (b - a) * t
+    }
+    fn plus(a: Self, b: Self) -> Self {
+        a + b
+    }
+    fn minus(a: Self, b: Self) -> Self {
+        a - b
     }
     fn is_finite(&self) -> bool {
         f32::is_finite(*self)
@@ -93,6 +141,12 @@ impl Animatable for Vec2 {
     fn lerp(a: Self, b: Self, t: f32) -> Self {
         a.lerp(b, t)
     }
+    fn plus(a: Self, b: Self) -> Self {
+        a + b
+    }
+    fn minus(a: Self, b: Self) -> Self {
+        a - b
+    }
     fn is_finite(&self) -> bool {
         Vec2::is_finite(*self)
     }
@@ -101,6 +155,12 @@ impl Animatable for Vec2 {
 impl Animatable for Color {
     fn lerp(a: Self, b: Self, t: f32) -> Self {
         Color::lerp(a, b, t)
+    }
+    fn plus(a: Self, b: Self) -> Self {
+        Color::rgba(a.r + b.r, a.g + b.g, a.b + b.b, a.a + b.a)
+    }
+    fn minus(a: Self, b: Self) -> Self {
+        Color::rgba(a.r - b.r, a.g - b.g, a.b - b.b, a.a - b.a)
     }
     fn is_finite(&self) -> bool {
         [self.r, self.g, self.b, self.a].iter().all(|c| c.is_finite())
@@ -121,11 +181,14 @@ pub struct Key<T> {
 /// `base` is the value when there are no keys. For bones it is also the rest
 /// pose. Keys are kept sorted by frame with at most one key per frame; the
 /// editing methods maintain that, and the file validator checks it on load.
+/// `loop_mode` says what happens after the last key.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Channel<T> {
     pub base: T,
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<Key<T>>,
+    #[serde(default, skip_serializing_if = "LoopMode::is_off")]
+    pub loop_mode: LoopMode,
 }
 
 impl<T: Animatable> Channel<T> {
@@ -133,11 +196,23 @@ impl<T: Animatable> Channel<T> {
         Self {
             base,
             keys: Vec::new(),
+            loop_mode: LoopMode::Off,
         }
     }
 
     pub fn is_animated(&self) -> bool {
         !self.keys.is_empty()
+    }
+
+    /// The first and last key frames when the channel repeats (looping is on
+    /// and there are at least two keys at different frames); the timeline
+    /// draws its repeat bar from this.
+    pub fn loop_span(&self) -> Option<(Frame, Frame)> {
+        if self.loop_mode.is_off() {
+            return None;
+        }
+        let (first, last) = (self.keys.first()?, self.keys.last()?);
+        (last.frame > first.frame).then_some((first.frame, last.frame))
     }
 
     /// Insert a key, replacing any existing key on the same frame.
@@ -146,10 +221,10 @@ impl<T: Animatable> Channel<T> {
     }
 
     /// Change the value at `frame` the way an edit is recorded (see
-    /// [`Keying`]): a channel that already has keys gets a key here; one
-    /// that has none changes outright on the base frame, and on a later
-    /// frame starts animating, from a key on the base frame holding the
-    /// value it had.
+    /// [`Keying`]): on a later frame than the base frame it gets a key, and
+    /// a key on the base frame holding the value the channel had there is
+    /// added first if there is none; on the base frame a channel without keys
+    /// changes outright, and one with keys gets a key.
     pub fn write(&mut self, frame: Frame, value: T, keying: Keying) {
         write_in(&mut self.base, &mut self.keys, frame, value, keying);
     }
@@ -165,9 +240,10 @@ impl<T: Animatable> Channel<T> {
         Some(self.keys.remove(i))
     }
 
-    /// The value at `frame`, which may fall between whole frames.
+    /// The value at `frame`, which may fall between whole frames, repeating
+    /// after the last key when the channel loops.
     pub fn sample(&self, frame: f32) -> T {
-        sample_in(self.base, &self.keys, frame)
+        sample_loop_in(self.base, &self.keys, self.loop_mode, frame)
     }
 }
 
@@ -188,30 +264,66 @@ pub fn sample_in<T: Animatable>(base: T, keys: &[Key<T>], frame: f32) -> T {
     let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
         return base;
     };
-    if frame <= first.frame as f32 {
+    // a NaN frame holds the first value rather than reaching the search below
+    if frame.is_nan() || frame <= first.frame as f32 {
         return first.value;
     }
     if frame >= last.frame as f32 {
         return last.value;
     }
     // index of the first key after `frame`; always 1..len here
-    let next = keys.partition_point(|k| k.frame as f32 <= frame);
+    let next = keys
+        .partition_point(|k| k.frame as f32 <= frame)
+        .clamp(1, keys.len() - 1);
     let (a, b) = (&keys[next - 1], &keys[next]);
     let t = (frame - a.frame as f32) / (b.frame - a.frame) as f32;
     T::lerp(a.value, b.value, a.interp.apply(t))
 }
 
+/// Like [`sample_in`], but after the last key the motion between the first
+/// and last key repeats according to `mode`. Needs two keys on different
+/// frames; with fewer, or for a frame that is not a finite number, it is
+/// [`sample_in`]. Frames before the first key hold the first value.
+///
+/// `Absolute` plays the same values each time round. `Relative` adds, for
+/// every completed cycle, the change from the first key to the last, so a
+/// walk keeps moving forward.
+pub fn sample_loop_in<T: Animatable>(base: T, keys: &[Key<T>], mode: LoopMode, frame: f32) -> T {
+    let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+        return base;
+    };
+    let period = (last.frame as i64 - first.frame as i64) as f32;
+    if mode.is_off() || keys.len() < 2 || period <= 0.0 || !frame.is_finite() || frame <= last.frame as f32 {
+        return sample_in(base, keys, frame);
+    }
+    let since = frame - first.frame as f32;
+    let cycles = (since / period).floor();
+    let local = first.frame as f32 + (since - cycles * period).clamp(0.0, period);
+    let value = sample_in(base, keys, local);
+    match mode {
+        LoopMode::Relative => {
+            // net * cycles, written with lerp because the trait has no scaling:
+            // lerp(first, last, n) = first + (last - first) * n
+            let carried = T::lerp(first.value, last.value, cycles);
+            T::plus(value, T::minus(carried, first.value))
+        }
+        _ => value,
+    }
+}
+
 /// Change a value at `frame` the way an edit is recorded (see [`Keying`]),
-/// for a value and its keys held apart: with keys, a key goes on `frame`;
-/// without, the value changes outright on the base frame, and on a later
-/// frame the value starts animating from a key on the base frame holding
-/// what it was.
+/// for a value and its keys held apart: on a later frame than the base frame
+/// a key goes on `frame`, after one on the base frame holding the value the
+/// channel had there (when it has none); on the base frame a channel without
+/// keys changes outright and one with keys gets a key.
 pub fn write_in<T: Animatable>(base: &mut T, keys: &mut Vec<Key<T>>, frame: Frame, value: T, keying: Keying) {
-    if !keys.is_empty() {
+    if frame > keying.base {
+        if keys.binary_search_by_key(&keying.base, |k| k.frame).is_err() {
+            let seed = sample_in(*base, keys, keying.base as f32);
+            set_key_in(keys, keying.base, seed, keying.interp);
+        }
         set_key_in(keys, frame, value, keying.interp);
-    } else if frame > keying.base {
-        let before = *base;
-        set_key_in(keys, keying.base, before, keying.interp);
+    } else if !keys.is_empty() {
         set_key_in(keys, frame, value, keying.interp);
     } else {
         *base = value;
@@ -337,7 +449,11 @@ mod tests {
         let keying = Keying::default();
         let mut ch = ramp();
         ch.write(15, 7.0, keying);
-        assert_eq!(ch.keys.iter().map(|k| k.frame).collect::<Vec<_>>(), [10, 15, 20]);
+        // the rest pose is seeded too, holding what the channel showed there
+        assert_eq!(
+            ch.keys.iter().map(|k| (k.frame, k.value)).collect::<Vec<_>>(),
+            [(0, 0.0), (10, 0.0), (15, 7.0), (20, 100.0)]
+        );
         // an edit on the base frame of an animated channel keys it too
         ch.write(0, 3.0, keying);
         assert_eq!(ch.keys.first().map(|k| (k.frame, k.value)), Some((0, 3.0)));
@@ -345,6 +461,22 @@ mod tests {
         ch.write(15, 8.0, keying);
         assert_eq!(ch.keys.len(), 4);
         assert_eq!(ch.sample(15.0), 8.0);
+    }
+
+    #[test]
+    fn the_rest_pose_is_seeded_when_a_channel_with_keys_is_edited_later() {
+        let keying = Keying::new(REST_FRAME, Interpolation::Linear);
+        // keys start on frame 10; the value at the rest frame is the first key's
+        let mut ch = ramp();
+        ch.write(30, 50.0, keying);
+        assert_eq!(ch.keys.first().map(|k| (k.frame, k.value)), Some((0, 0.0)));
+        assert_eq!(ch.sample(0.0), 0.0);
+        assert_eq!(ch.sample(30.0), 50.0);
+        // a key already on the base frame is left alone
+        let mut ch = ramp().with_key(0, 9.0, Interpolation::Linear);
+        ch.write(30, 50.0, keying);
+        assert_eq!(ch.keys.first().map(|k| (k.frame, k.value)), Some((0, 9.0)));
+        assert_eq!(ch.keys.len(), 4);
     }
 
     #[test]
@@ -359,6 +491,108 @@ mod tests {
             ch.keys.iter().map(|k| (k.frame, k.value)).collect::<Vec<_>>(),
             [(24, 2.0), (30, 4.0)]
         );
+    }
+
+    fn looped(mode: LoopMode) -> Channel<f32> {
+        let mut c = ramp();
+        c.loop_mode = mode;
+        c
+    }
+
+    #[test]
+    fn an_absolute_loop_repeats_the_same_values() {
+        let c = looped(LoopMode::Absolute);
+        assert_eq!(c.sample(20.0), 100.0);
+        assert_eq!(c.sample(25.0), 50.0);
+        assert_eq!(c.sample(35.0), 50.0);
+        assert_eq!(c.sample(30.0), 0.0);
+        // before the first key the first value still holds
+        assert_eq!(c.sample(3.0), 0.0);
+    }
+
+    #[test]
+    fn a_relative_loop_keeps_moving_forward() {
+        let c = looped(LoopMode::Relative);
+        assert_eq!(c.sample(20.0), 100.0);
+        assert_eq!(c.sample(25.0), 150.0);
+        assert_eq!(c.sample(30.0), 200.0);
+        assert_eq!(c.sample(35.0), 250.0);
+        assert_eq!(c.sample(40.0), 300.0);
+        let mut previous = c.sample(20.0);
+        for f in 21..80 {
+            let v = c.sample(f as f32);
+            assert!(v >= previous, "frame {f}: {v} fell below {previous}");
+            previous = v;
+        }
+    }
+
+    #[test]
+    fn a_relative_loop_works_for_vectors_and_colours() {
+        let mut v = Channel::new(Vec2::ZERO)
+            .with_key(0, Vec2::ZERO, Interpolation::Linear)
+            .with_key(10, Vec2::new(4.0, -2.0), Interpolation::Linear);
+        v.loop_mode = LoopMode::Relative;
+        assert_eq!(v.sample(15.0), Vec2::new(6.0, -3.0));
+        let mut c = Channel::new(Color::BLACK)
+            .with_key(0, Color::rgba(0.0, 0.0, 0.0, 1.0), Interpolation::Linear)
+            .with_key(10, Color::rgba(0.5, 0.0, 0.0, 1.0), Interpolation::Linear);
+        c.loop_mode = LoopMode::Relative;
+        assert!((c.sample(20.0).r - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn looping_needs_two_keys_on_different_frames() {
+        let mut one = Channel::new(0.0_f32).with_key(5, 3.0, Interpolation::Linear);
+        one.loop_mode = LoopMode::Relative;
+        assert_eq!(one.sample(50.0), 3.0);
+        assert_eq!(one.loop_span(), None);
+        let mut none = Channel::new(7.0_f32);
+        none.loop_mode = LoopMode::Absolute;
+        assert_eq!(none.sample(50.0), 7.0);
+        assert_eq!(none.loop_span(), None);
+    }
+
+    #[test]
+    fn loop_span_is_the_first_and_last_key_when_looping() {
+        assert_eq!(ramp().loop_span(), None);
+        assert_eq!(looped(LoopMode::Absolute).loop_span(), Some((10, 20)));
+        assert_eq!(looped(LoopMode::Relative).loop_span(), Some((10, 20)));
+    }
+
+    #[test]
+    fn looping_survives_damaged_input() {
+        for mode in LoopMode::ALL {
+            let c = looped(mode);
+            for f in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30] {
+                let _ = c.sample(f);
+            }
+            // keys that share a frame or hold NaN must not panic either
+            let mut bad = Channel::new(0.0_f32)
+                .with_key(5, f32::NAN, Interpolation::Linear)
+                .with_key(9, 1.0, Interpolation::Linear);
+            bad.loop_mode = mode;
+            bad.keys.push(Key {
+                frame: 9,
+                value: f32::INFINITY,
+                interp: Interpolation::Linear,
+            });
+            for f in [0.0, 5.0, 7.0, 9.0, 40.0, f32::NAN] {
+                let _ = bad.sample(f);
+            }
+            let _ = sample_in(0.0_f32, &bad.keys, f32::NAN);
+        }
+    }
+
+    #[test]
+    fn loop_mode_is_only_written_when_on() {
+        let off = serde_json::to_string(&ramp()).unwrap_or_default();
+        assert!(!off.contains("loop_mode"));
+        let on = serde_json::to_string(&looped(LoopMode::Relative)).unwrap_or_default();
+        assert!(on.contains("\"loop_mode\":\"relative\""));
+        let back: Result<Channel<f32>, _> = serde_json::from_str(&on);
+        assert_eq!(back.ok().map(|c| c.loop_mode), Some(LoopMode::Relative));
+        let old: Result<Channel<f32>, _> = serde_json::from_str(&off);
+        assert_eq!(old.ok().map(|c| c.loop_mode), Some(LoopMode::Off));
     }
 
     #[test]

@@ -694,7 +694,7 @@ fn folder(path: &Path) -> String {
 }
 
 /// Open a file or folder with the system's default app.
-fn open_path(path: &Path) {
+pub(crate) fn open_path(path: &Path) {
     let program = if cfg!(windows) {
         "explorer"
     } else if cfg!(target_os = "macos") {
@@ -709,7 +709,7 @@ fn open_path(path: &Path) {
 
 /// Open the folder holding `file` with the file selected, where the system
 /// can (Explorer, Finder); elsewhere just open the folder.
-fn show_in_folder(file: &Path) {
+pub(crate) fn show_in_folder(file: &Path) {
     let mut cmd;
     #[cfg(windows)]
     {

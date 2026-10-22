@@ -29,6 +29,7 @@ pub enum Icon {
     Expand,
     Collapse,
     FirstFrame,
+    RestPose,
     PrevFrame,
     Play,
     Pause,
@@ -60,6 +61,10 @@ pub enum Icon {
     Lock,
     Unlock,
     Align,
+    /// The pivot picker: a target to click where the pivot goes.
+    Pivot,
+    /// Save a style in the Style panel.
+    Save,
 }
 
 macro_rules! lucide {
@@ -84,7 +89,6 @@ impl Icon {
                 Tool::Pen => lucide!("pen-tool"),
                 Tool::Curvature => own!("curvature"),
                 Tool::Freehand => lucide!("pencil"),
-                Tool::FreehandWidth => own!("freehand-width"),
                 Tool::Rectangle => lucide!("square"),
                 Tool::Ellipse => lucide!("circle"),
                 Tool::Line => own!("line"),
@@ -93,9 +97,8 @@ impl Icon {
                 Tool::Triangle => own!("triangle"),
                 Tool::Eraser => lucide!("eraser"),
                 Tool::DeleteEdge => own!("delete-edge"),
+                Tool::HideEdge => own!("hide-edge"),
                 Tool::Magnet => own!("magnet"),
-                Tool::ScalePoints => own!("scale-points"),
-                Tool::RotatePoints => own!("rotate-points"),
                 Tool::PaintBucket => lucide!("paint-bucket"),
                 Tool::Eyedropper => lucide!("pipette"),
                 Tool::DrawShape => own!("draw-shape"),
@@ -103,6 +106,9 @@ impl Icon {
                 Tool::StrokeExposure => own!("stroke-exposure"),
                 Tool::ShapeBuilder => own!("shape-builder"),
                 Tool::TransformLayer => lucide!("scaling"),
+                Tool::TrackCamera => own!("camera-track"),
+                Tool::ZoomCamera => own!("camera-zoom"),
+                Tool::RollCamera => own!("camera-roll"),
                 Tool::SelectBone => own!("bone-select"),
                 Tool::AddBone => own!("bone-plus"),
                 Tool::ManipulateBones => own!("bone-rotate"),
@@ -123,6 +129,7 @@ impl Icon {
             Self::Expand => lucide!("chevron-right"),
             Self::Collapse => lucide!("chevron-down"),
             Self::FirstFrame => lucide!("skip-back"),
+            Self::RestPose => own!("rest-pose"),
             Self::PrevFrame => lucide!("step-back"),
             Self::Play => lucide!("play"),
             Self::Pause => lucide!("pause"),
@@ -154,6 +161,8 @@ impl Icon {
             Self::Lock => lucide!("lock"),
             Self::Unlock => lucide!("lock-open"),
             Self::Align => lucide!("align-center-vertical"),
+            Self::Pivot => lucide!("crosshair"),
+            Self::Save => lucide!("save"),
         }
     }
 }
@@ -278,6 +287,7 @@ mod tests {
             Icon::Expand,
             Icon::Collapse,
             Icon::FirstFrame,
+            Icon::RestPose,
             Icon::PrevFrame,
             Icon::Play,
             Icon::Pause,
@@ -309,6 +319,8 @@ mod tests {
             Icon::Lock,
             Icon::Unlock,
             Icon::Align,
+            Icon::Pivot,
+            Icon::Save,
         ]);
         icons
     }

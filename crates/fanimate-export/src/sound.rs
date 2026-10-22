@@ -91,7 +91,9 @@ pub fn voices(doc: &Document) -> Vec<Voice> {
 }
 
 /// The sound of frames `start..=end`, as stereo samples at `rate`, or
-/// `None` when nothing is heard there.
+/// `None` when nothing is heard there. Frame numbers are the document's own;
+/// a sound is placed by its distance from `start`, so the first exported
+/// frame is time zero whatever it is numbered.
 pub fn mix(doc: &Document, start: Frame, end: Frame, rate: u32) -> Option<Vec<f32>> {
     let fps = doc.fps.max(1.0) as f64;
     let sounds: Vec<(Decoded, f64, f32)> = voices(doc)

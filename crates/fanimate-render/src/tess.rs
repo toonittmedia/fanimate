@@ -193,15 +193,27 @@ impl Tessellator {
                     log::warn!("stroke of \"{}\" has no usable width", item.shape.name);
                     continue;
                 }
-                // stroke exposure: only part of the stroke is drawn, so it is
-                // stroked from a cut of the path (the fill used the whole one)
+                // hidden edges and stroke exposure: only part of the stroke is
+                // drawn, so it is stroked from a cut of the path (the fill
+                // used the whole one)
                 let mut widths = widths;
+                let visible = item
+                    .shape
+                    .hidden_edges()
+                    .map(|flags| item.shape.path.without_hidden_edges(flags, widths));
+                let mut source = &item.shape.path;
+                let mut rebuild = false;
+                if let Some((path, w)) = &visible {
+                    if path.cmds.is_empty() {
+                        continue;
+                    }
+                    source = path;
+                    widths = w.as_deref();
+                    rebuild = true;
+                }
                 let trimmed;
                 if item.shape.trim != Vec2::new(0.0, 1.0) {
-                    trimmed = item
-                        .shape
-                        .path
-                        .trimmed(item.shape.trim.x, item.shape.trim.y, widths);
+                    trimmed = source.trimmed(item.shape.trim.x, item.shape.trim.y, widths);
                     if trimmed.0.cmds.is_empty() {
                         continue;
                     }
@@ -209,6 +221,8 @@ impl Tessellator {
                     if !self.build_path(&trimmed.0.cmds, item.transform, widths) {
                         continue;
                     }
+                } else if rebuild && !self.build_path(&source.cmds, item.transform, widths) {
+                    continue;
                 }
                 let mut opts = StrokeOptions::tolerance(self.tolerance).with_line_width(line_width);
                 if widths.is_some() {
@@ -444,6 +458,42 @@ mod tests {
         shape.trim = Vec2::new(0.3, 0.3);
         let none = mesh_of(&shape, Affine2::IDENTITY);
         assert!(none.vertices.iter().all(|v| v[2..6] != [0.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn a_hidden_edge_loses_its_stroke_but_not_its_fill() {
+        use fanimate_core::{Path, Shape, Style};
+        // commands: move, top, right, bottom, close (the left side)
+        let path = Path::rect(Vec2::ZERO, Vec2::new(100.0, 40.0), 0.0);
+        let mut shape = Shape::new(
+            "s",
+            path,
+            Style::fill(Color::WHITE).with_stroke(Color::BLACK, 2.0),
+        );
+        let ink = [0.0, 0.0, 0.0, 1.0];
+        let right_most = |mesh: &Mesh, colour: [f32; 4]| {
+            mesh.vertices
+                .iter()
+                .filter(|v| v[2..6] == colour)
+                .map(|v| v[0])
+                .fold(f32::MIN, f32::max)
+        };
+        let whole = mesh_of(&shape, Affine2::IDENTITY);
+        assert!(right_most(&whole, ink) > 100.5, "the right edge is stroked");
+        assert!(shape.set_edge_hidden(2, true));
+        let part = mesh_of(&shape, Affine2::IDENTITY);
+        assert!(
+            right_most(&part, ink) <= 100.01,
+            "the right edge is not: {}",
+            right_most(&part, ink)
+        );
+        // the other sides and the fill are still there
+        assert!(part.vertices.iter().any(|v| v[2..6] == ink));
+        assert!(right_most(&part, [1.0, 1.0, 1.0, 1.0]) >= 99.9);
+        // flags that no longer match the path hide nothing
+        shape.path.cmds.pop();
+        let stale = mesh_of(&shape, Affine2::IDENTITY);
+        assert!(right_most(&stale, ink) > 100.5);
     }
 
     #[test]

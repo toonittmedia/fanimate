@@ -2,6 +2,7 @@
 
 mod actions;
 mod bones;
+mod camera_tools;
 pub mod canvas;
 pub mod handles;
 mod history;
@@ -131,7 +132,8 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
     let current = shell.editor.status.as_ref().map(|(_, m)| m.clone());
     match (&current, &shell.ui.status_since) {
         (Some(m), Some((seen, at))) if m == seen => {
-            if at.elapsed() > STATUS_TIMEOUT {
+            // the pivot picker's hint stays for as long as it is armed
+            if at.elapsed() > STATUS_TIMEOUT && !shell.editor.pivot_pick {
                 shell.editor.status = None;
                 shell.ui.status_since = None;
             }
@@ -234,11 +236,28 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                     }
                     if !home {
                         let doc = &shell.editor.doc;
-                        ui.label(muted(format!(
-                            "Frame {} of {}",
-                            shell.editor.current_frame(),
-                            doc.end
-                        )));
+                        let frame = shell.editor.current_frame();
+                        // Numbers in the monospace font so the text does not jitter while playing.
+                        let mut job = egui::text::LayoutJob::default();
+                        let mut part = |text: String, font: egui::FontId| {
+                            job.append(
+                                &text,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: font,
+                                    color: p.text_muted,
+                                    ..Default::default()
+                                },
+                            );
+                        };
+                        let prose = egui::FontId::proportional(12.0);
+                        part("Frame ".into(), prose.clone());
+                        part(frame.to_string(), crate::theme::mono(12.0));
+                        part(" of ".into(), prose.clone());
+                        part(doc.end.to_string(), crate::theme::mono(12.0));
+                        part(" | ".into(), prose);
+                        part(crate::timecode::clock(frame, doc.fps), crate::theme::mono(12.0));
+                        ui.label(job).on_hover_text("Frame, and seconds:frames");
                         ui.separator();
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {

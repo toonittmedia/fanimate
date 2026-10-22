@@ -261,7 +261,18 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                     }
                 });
             });
-            ui.label("");
+            // click where the pivot should go, on the canvas
+            let pick = crate::icons::button(
+                ui,
+                crate::icons::Icon::Pivot,
+                24.0,
+                shell.editor.pivot_pick,
+                false,
+            )
+            .on_hover_text("Set pivot by clicking on the canvas");
+            if pick.clicked() {
+                shell.pending.push(Action::PickPivot);
+            }
             ui.end_row();
             if let Some((r, p)) = pivot_edit {
                 begin_edit(shell, &r, "Move pivot");
@@ -280,15 +291,15 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
         }
         ui.spacing_mut().item_spacing.x = 4.0;
         let frame = shell.editor.current_frame();
-        let first = shell.editor.doc.start;
-        let text = if frame <= first {
+        let rest = fanimate_core::REST_FRAME;
+        let text = if frame <= rest {
             format!(
-                "Frame {frame} is for drawing and setting up: edits here change the layer itself. \
-                 Click a diamond to key a value."
+                "Frame {rest} is the rest pose, for drawing and setting up: edits here change the layer \
+                 itself. Click a diamond to key a value."
             )
         } else {
             format!(
-                "Edits on frame {frame} are animation: they make keyframes, and frame {first} keeps \
+                "Edits on frame {frame} are animation: they make keyframes, and frame {rest} keeps \
                  what it had. Click a diamond to key a value without changing it."
             )
         };
@@ -664,6 +675,7 @@ fn rectangle(ui: &mut egui::Ui, shell: &mut Shell) {
 
 fn project(ui: &mut egui::Ui, shell: &mut Shell) {
     heading(ui, shell, "Project");
+    let muted = shell.palette.text_muted;
     let doc = &shell.editor.doc;
     let (mut name, mut w, mut h, mut fps, mut start, mut end, mut bg) = (
         doc.name.clone(),
@@ -713,15 +725,28 @@ fn project(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.end_row();
             ui.label("Frames");
             ui.horizontal(|ui| {
-                let r = ui.add(egui::DragValue::new(&mut start).range(0..=end).speed(0.2));
+                // Frame 0 is the rest pose, so the range starts at 1.
+                let first = fanimate_core::REST_FRAME + 1;
+                ui.style_mut().override_font_id = Some(crate::theme::mono(13.0));
+                let r = ui.add(
+                    egui::DragValue::new(&mut start)
+                        .range(first..=end.max(first))
+                        .speed(0.2),
+                );
                 if r.changed() {
                     edits.push((r, "Change frame range"));
                 }
-                ui.label("to");
+                ui.label(RichText::new("to").font(egui::FontId::proportional(13.0)));
                 let r = ui.add(egui::DragValue::new(&mut end).range(start..=100_000).speed(0.2));
                 if r.changed() {
                     edits.push((r, "Change frame range"));
                 }
+                ui.label(
+                    RichText::new(crate::timecode::clock(end - start + 1, fps))
+                        .color(muted)
+                        .size(12.0),
+                )
+                .on_hover_text("Length in seconds:frames");
             });
             ui.end_row();
             ui.label("Background");

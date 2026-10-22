@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use fanimate_core::anim::Animatable;
-use fanimate_core::{Channel, Document, Key, Layer, LayerId, LayerKind};
+use fanimate_core::{Channel, Document, Key, Layer, LayerId, LayerKind, LoopMode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -124,8 +124,9 @@ impl Checker {
         self.layer_ids(doc);
         let end = doc.end;
         let mut layers = std::mem::take(&mut doc.layers);
+        let siblings = layers.len();
         for layer in &mut layers {
-            self.layer(layer, end, None);
+            self.layer(layer, end, None, siblings);
         }
         doc.layers = layers;
         self.report
@@ -164,7 +165,8 @@ impl Checker {
                 true,
             );
             if self.repair {
-                doc.start = 0;
+                // frames count from 1; frame 0 is the rest pose, not part of the range
+                doc.start = 1;
             }
         }
         if doc.end < doc.start {
@@ -220,6 +222,36 @@ impl Checker {
         if self.repair {
             doc.guides.retain(|g| g.position.is_finite());
             doc.guides.truncate(MAX_GUIDES);
+        }
+        // saved styles: usable numbers, a name each, no repeats, not too many
+        let mut names = HashSet::new();
+        let mut kept: Vec<fanimate_core::StylePreset> = Vec::new();
+        for style in &doc.styles {
+            let name = fanimate_core::StylePreset::tidy_name(&style.name);
+            if style.is_sound()
+                && !name.is_empty()
+                && kept.len() < fanimate_core::MAX_STYLES
+                && names.insert(name.clone())
+            {
+                kept.push(fanimate_core::StylePreset {
+                    name,
+                    ..style.clone()
+                });
+            }
+        }
+        if kept != doc.styles {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!(
+                    "{} saved style(s) are unusable, repeated or too many; they are removed or renamed",
+                    doc.styles.len().saturating_sub(kept.len()).max(1)
+                ),
+                true,
+            );
+            if self.repair {
+                doc.styles = kept;
+            }
         }
     }
 
@@ -283,10 +315,12 @@ impl Checker {
         }
     }
 
-    /// `bones`: bone count of the enclosing bone layer, if any.
-    fn layer(&mut self, layer: &mut Layer, end: i32, bones: Option<usize>) {
+    /// `bones`: bone count of the enclosing bone layer, if any. `siblings`:
+    /// how many layers share the list this one is in, counting itself.
+    fn layer(&mut self, layer: &mut Layer, end: i32, bones: Option<usize>, siblings: usize) {
         let loc = format!("layer {} \"{}\"", layer.id.0, layer.name);
         self.channel(&mut layer.opacity, &loc, "opacity", end);
+        self.order(layer, &loc, end, siblings);
         if layer.opacity.base < 0.0 || layer.opacity.base > 1.0 {
             self.issue(
                 Severity::Warning,
@@ -344,15 +378,17 @@ impl Checker {
                 *cels = cels_keys;
             }
             LayerKind::Group { children } => {
+                let siblings = children.len();
                 for child in children {
-                    self.layer(child, end, bones);
+                    self.layer(child, end, bones, siblings);
                 }
             }
             LayerKind::Image(img) => self.image(img, &loc, bones),
             LayerKind::Switch { children, switch } => {
                 self.keys(switch, |_| true, &format!("{loc} > switch keys"), end);
+                let siblings = children.len();
                 for child in children {
-                    self.layer(child, end, bones);
+                    self.layer(child, end, bones, siblings);
                 }
             }
             LayerKind::Audio(audio) => {
@@ -441,8 +477,9 @@ impl Checker {
                     actions.retain(|act| act.driver.is_none_or(|d| d < n));
                 }
                 skeleton.actions = actions;
+                let siblings = children.len();
                 for child in children {
-                    self.layer(child, end, Some(n));
+                    self.layer(child, end, Some(n), siblings);
                 }
             }
         }
@@ -507,7 +544,26 @@ impl Checker {
             }
         }
         if shape.path.points().any(|p| !p.is_finite()) {
-            self.issue(Severity::Error, sloc, "path has non-finite points".into(), false);
+            // an infinite coordinate would be written as null and the project
+            // could never be saved, so it moves to the origin
+            self.issue(
+                Severity::Error,
+                sloc,
+                "path has points that are not numbers; they move to the origin".into(),
+                true,
+            );
+            if self.repair {
+                use fanimate_core::{PathCmd, Vec2};
+                let fix = |p: Vec2| if p.is_finite() { p } else { Vec2::ZERO };
+                for cmd in &mut shape.path.cmds {
+                    *cmd = match *cmd {
+                        PathCmd::MoveTo(p) => PathCmd::MoveTo(fix(p)),
+                        PathCmd::LineTo(p) => PathCmd::LineTo(fix(p)),
+                        PathCmd::CubicTo(a, b, p) => PathCmd::CubicTo(fix(a), fix(b), fix(p)),
+                        PathCmd::Close => PathCmd::Close,
+                    };
+                }
+            }
         }
         if let Some(rect) = shape.rect
             && !rect.is_valid()
@@ -522,11 +578,57 @@ impl Checker {
                 shape.rect = None;
             }
         }
+        self.hidden_edges(shape, sloc);
         self.widths(shape, sloc);
         self.path_keys(shape, sloc, end);
         self.color_keys(shape, sloc, end);
         self.exposure(shape, sloc, end);
         self.skin(shape, sloc, bones);
+    }
+
+    /// Hidden edges: one flag for every command of the path, and none on a
+    /// move, which draws nothing. Flags that do not fit show every edge.
+    fn hidden_edges(&mut self, shape: &mut fanimate_core::Shape, loc: &str) {
+        use fanimate_core::PathCmd;
+        if shape.hidden_edge_flags.is_empty() {
+            return;
+        }
+        if shape.hidden_edge_flags.len() != shape.path.cmds.len() {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!(
+                    "{} hidden-edge flags for {} path commands; every edge is shown",
+                    shape.hidden_edge_flags.len(),
+                    shape.path.cmds.len()
+                ),
+                true,
+            );
+            if self.repair {
+                shape.hidden_edge_flags.clear();
+            }
+            return;
+        }
+        let on_a_move = shape
+            .hidden_edge_flags
+            .iter()
+            .zip(&shape.path.cmds)
+            .any(|(hidden, cmd)| *hidden && matches!(cmd, PathCmd::MoveTo(_)));
+        if on_a_move {
+            self.issue(
+                Severity::Warning,
+                loc,
+                "a hidden edge is on a move, which draws nothing; it is shown".into(),
+                true,
+            );
+            if self.repair {
+                for (hidden, cmd) in shape.hidden_edge_flags.iter_mut().zip(&shape.path.cmds) {
+                    if matches!(cmd, PathCmd::MoveTo(_)) {
+                        *hidden = false;
+                    }
+                }
+            }
+        }
     }
 
     /// Colour keys: ordered, on frames that are not negative, finite, and
@@ -848,6 +950,47 @@ impl Checker {
             }
         }
         self.keys(&mut ch.keys, T::is_finite, &loc, end);
+
+        // a loop repeats the span between the first and last key, so it
+        // needs two; checked after the keys were, as repairs may remove some
+        if !matches!(ch.loop_mode, LoopMode::Off) && ch.keys.len() < 2 {
+            self.issue(
+                Severity::Warning,
+                &loc,
+                format!(
+                    "loops but has {} key(s); a loop needs two, so the loop is turned off",
+                    ch.keys.len()
+                ),
+                true,
+            );
+            if self.repair {
+                ch.loop_mode = LoopMode::Off;
+            }
+        }
+    }
+
+    /// A layer's order channel: keys like any other, whose values are a slot
+    /// among the layers that share its list. A slot outside the list is
+    /// held within it when drawn, so it needs no repair.
+    fn order(&mut self, layer: &mut Layer, loc: &str, end: i32, siblings: usize) {
+        self.channel(&mut layer.order, loc, "order", end);
+        let last = siblings.saturating_sub(1) as f32;
+        let beyond = layer
+            .order
+            .keys
+            .iter()
+            .filter(|k| k.value.is_finite() && !(0.0..=last).contains(&k.value))
+            .count();
+        if beyond > 0 {
+            self.issue(
+                Severity::Warning,
+                &format!("{loc} > order"),
+                format!(
+                    "{beyond} slot(s) are outside the {siblings} layer(s) in the list; they are held within"
+                ),
+                false,
+            );
+        }
     }
 
     fn keys<T>(&mut self, keys: &mut Vec<Key<T>>, finite: impl Fn(&T) -> bool, loc: &str, end: i32) {
@@ -1033,6 +1176,94 @@ mod tests {
         assert!(report.issues[0].repaired);
         assert_eq!(widths_of(&doc), None);
         assert!(validate(&doc).is_clean());
+    }
+
+    #[test]
+    fn points_that_are_not_numbers_move_to_the_origin_so_the_project_can_be_saved() {
+        use fanimate_core::{PathCmd, Vec2};
+        let mut doc = stroke_doc(vec![1.0, 1.0]);
+        let LayerKind::Vector { shapes } = &mut doc.layers[0].kind else {
+            unreachable!()
+        };
+        shapes[0].path.cmds[1] = PathCmd::LineTo(Vec2::new(f32::INFINITY, 4.0));
+        assert_eq!(validate(&doc).issues.len(), 1);
+        let report = repair(&mut doc);
+        assert!(report.issues.iter().all(|i| i.repaired), "{report}");
+        assert!(validate(&doc).is_clean());
+        let LayerKind::Vector { shapes } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        assert_eq!(shapes[0].path.cmds[1], PathCmd::LineTo(Vec2::ZERO));
+        // the point that was a number is kept
+        assert_eq!(shapes[0].path.cmds[0], PathCmd::MoveTo(Vec2::ZERO));
+    }
+
+    #[test]
+    fn hidden_edge_flags_must_fit_the_path_and_stay_off_moves() {
+        let mut doc = stroke_doc(vec![1.0, 1.0]);
+        let flags = |doc: &mut Document, f: Vec<bool>| {
+            let LayerKind::Vector { shapes } = &mut doc.layers[0].kind else {
+                unreachable!()
+            };
+            shapes[0].hidden_edge_flags = f;
+        };
+        let read = |doc: &Document| {
+            let LayerKind::Vector { shapes } = &doc.layers[0].kind else {
+                unreachable!()
+            };
+            shapes[0].hidden_edge_flags.clone()
+        };
+        // the path is a move and a line: two commands
+        flags(&mut doc, vec![false, true]);
+        assert!(validate(&doc).is_clean());
+        flags(&mut doc, vec![false, true, true]);
+        assert_eq!(validate(&doc).issues.len(), 1);
+        repair(&mut doc);
+        assert!(read(&doc).is_empty());
+        assert!(validate(&doc).is_clean());
+        flags(&mut doc, vec![true, true]);
+        assert_eq!(validate(&doc).issues.len(), 1);
+        repair(&mut doc);
+        assert_eq!(read(&doc), [false, true]);
+        assert!(validate(&doc).is_clean());
+    }
+
+    #[test]
+    fn saved_styles_are_checked() {
+        use fanimate_core::{Color, StylePreset};
+        let style = |name: &str, width: f32| StylePreset {
+            name: name.into(),
+            line: Color::BLACK,
+            width,
+            fill: None,
+            outline: true,
+            smoothing: 0.5,
+            taper: 10.0,
+            pressure: true,
+        };
+        let mut doc = Document::new("s", 100.0, 100.0, 24.0);
+        doc.styles = vec![style("Ink", 4.0), style("Paint", 8.0)];
+        assert!(validate(&doc).is_clean());
+        // a repeat, a name with nothing in it, an unusable number, and a name with spaces
+        doc.styles = vec![
+            style("Ink", 4.0),
+            style("Ink", 5.0),
+            style("   ", 4.0),
+            style("Bad", f32::NAN),
+            style("  Paint  ", 8.0),
+        ];
+        assert_eq!(validate(&doc).issues.len(), 1);
+        let report = repair(&mut doc);
+        assert!(report.issues.iter().all(|i| i.repaired), "{report}");
+        let names: Vec<_> = doc.styles.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Ink", "Paint"]);
+        assert!(validate(&doc).is_clean());
+        // too many are cut
+        doc.styles = (0..fanimate_core::MAX_STYLES + 5)
+            .map(|i| style(&format!("s{i}"), 4.0))
+            .collect();
+        repair(&mut doc);
+        assert_eq!(doc.styles.len(), fanimate_core::MAX_STYLES);
     }
 
     #[test]
@@ -1419,5 +1650,100 @@ mod tests {
         layer.transform.pivot = Some(Vec2::new(5.0, 5.0));
         doc.layers.push(layer);
         assert!(validate(&doc).is_clean());
+    }
+
+    fn key(frame: i32, value: f32) -> Key<f32> {
+        Key {
+            frame,
+            value,
+            interp: Interpolation::Linear,
+        }
+    }
+
+    /// A group of two layers, to put order keys on.
+    fn grouped() -> Document {
+        let mut doc = Document::new("g", 100.0, 100.0, 24.0);
+        let kids = ["a", "b"].map(|n| doc.new_layer(n, LayerKind::vector(vec![])));
+        let group = doc.new_layer(
+            "group",
+            LayerKind::Group {
+                children: kids.to_vec(),
+            },
+        );
+        doc.layers.push(group);
+        doc
+    }
+
+    fn kids(doc: &mut Document) -> &mut Vec<Layer> {
+        let LayerKind::Group { children } = &mut doc.layers[0].kind else {
+            unreachable!()
+        };
+        children
+    }
+
+    /// Frame 0 is the rest pose: a key there is sound, and so is a project
+    /// that starts there. Only a negative start is a problem.
+    #[test]
+    fn frame_zero_is_valid_and_a_negative_start_is_not() {
+        let mut doc = rigged();
+        let ch = arm_angle(&mut doc);
+        ch.keys = vec![key(0, 0.0), key(12, 1.0)];
+        doc.start = 0;
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        doc.start = -3;
+        let report = validate(&doc);
+        assert_eq!(report.unresolved_errors().count(), 1, "{report}");
+        repair(&mut doc);
+        assert_eq!(doc.start, 1);
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+    }
+
+    #[test]
+    fn a_loop_needs_two_keys() {
+        let mut doc = rigged();
+        arm_angle(&mut doc).keys = vec![key(1, 0.5)];
+        arm_angle(&mut doc).loop_mode = LoopMode::Relative;
+        let report = validate(&doc);
+        assert_eq!(report.issues.len(), 1, "{report}");
+        assert_eq!(report.issues[0].severity, Severity::Warning);
+        assert!(report.issues[0].message.contains("loop"));
+        repair(&mut doc);
+        assert_eq!(arm_angle(&mut doc).loop_mode, LoopMode::Off);
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        // two keys are enough, and a channel that does not loop is left alone
+        arm_angle(&mut doc).keys = vec![key(1, 0.5), key(9, 1.5)];
+        arm_angle(&mut doc).loop_mode = LoopMode::Absolute;
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        // a repair that removes keys can leave a loop with too few
+        arm_angle(&mut doc).keys.push(key(20, f32::NAN));
+        arm_angle(&mut doc).keys.remove(0);
+        let report = repair(&mut doc);
+        assert_eq!(report.repaired_count(), 2, "{report}");
+        assert_eq!(arm_angle(&mut doc).loop_mode, LoopMode::Off);
+    }
+
+    #[test]
+    fn order_keys_are_checked() {
+        let mut doc = grouped();
+        kids(&mut doc)[0].order.keys = vec![key(1, 1.0), key(8, 0.0)];
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+
+        // a slot past the end of the list is a warning, kept as it is
+        kids(&mut doc)[1].order.keys = vec![key(1, 7.0)];
+        let report = validate(&doc);
+        assert_eq!(report.issues.len(), 1, "{report}");
+        assert_eq!(report.issues[0].severity, Severity::Warning);
+        assert!(!report.issues[0].repaired);
+        let report = repair(&mut doc);
+        assert_eq!(report.repaired_count(), 0, "{report}");
+        assert_eq!(kids(&mut doc)[1].order.keys, vec![key(1, 7.0)]);
+
+        // a slot that is not a number is an error, repaired by removing the key
+        kids(&mut doc)[1].order.keys = vec![key(1, 1.0), key(4, f32::NAN)];
+        let report = validate(&doc);
+        assert_eq!(report.unresolved_errors().count(), 1, "{report}");
+        repair(&mut doc);
+        assert_eq!(kids(&mut doc)[1].order.keys, vec![key(1, 1.0)]);
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
     }
 }

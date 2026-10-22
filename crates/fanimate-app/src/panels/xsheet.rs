@@ -168,7 +168,7 @@ fn row(
         rect.left_center() + vec2(6.0, 0.0),
         egui::Align2::LEFT_CENTER,
         f.to_string(),
-        egui::FontId::proportional(11.0),
+        crate::theme::mono(11.0),
         if current { p.text } else { p.text_muted },
     );
     for (c, col) in columns.iter().enumerate() {
@@ -198,7 +198,7 @@ fn row(
                     cell.center(),
                     egui::Align2::CENTER_CENTER,
                     n.to_string(),
-                    egui::FontId::proportional(12.0),
+                    crate::theme::mono(12.0),
                     p.text,
                 );
             }
@@ -232,7 +232,14 @@ fn row(
             }
         }
         menus::context_menu(&resp, |ui| {
-            ui.label(RichText::new(format!("Frame {f}")).color(p.text_muted));
+            ui.label(
+                RichText::new(format!(
+                    "Frame {f} | {}",
+                    crate::timecode::clock(f, shell.editor.doc.fps)
+                ))
+                .font(crate::theme::mono(12.0))
+                .color(p.text_muted),
+            );
             menus::item(ui, shell, Action::NewDrawing);
             menus::item(ui, shell, Action::AddKey);
             menus::item(ui, shell, Action::DeleteKey);

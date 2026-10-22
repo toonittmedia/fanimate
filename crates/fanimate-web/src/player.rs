@@ -103,10 +103,11 @@ impl Player {
             mesh: Mesh::new(),
             target: None,
         });
+        let doc = samples::hello();
         Self {
             palette,
-            doc: samples::hello(),
-            frame: 0.0,
+            frame: doc.start as f32,
+            doc,
             playing: true,
             notes: Vec::new(),
             error: None,

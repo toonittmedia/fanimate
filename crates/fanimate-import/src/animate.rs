@@ -37,6 +37,9 @@ use crate::Imported;
 use crate::notes::{Kind, Notes};
 use crate::zip::{Archive, is_zip};
 
+/// Fanimate's first animation frame; Animate's timeline index 0 lands here.
+const FIRST_FRAME: i32 = 1;
+
 const BITMAP_FILL: Kind = ("picture fill became grey", "picture fills became grey");
 const BLEND: Kind = ("blend mode drawn as normal", "blend modes drawn as normal");
 const COLOR_EFFECT: Kind = (
@@ -162,11 +165,12 @@ fn read(name: &str, files: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Imported,
     let length = timeline_length(*scene);
     // a project drawn by scripts has nothing on its timeline: it opens
     // empty, and the notes say why
-    let layers = reader.timeline(*scene, 0, length);
+    // Animate counts from 0 and Fanimate from 1, so every frame moves up one
+    let layers = reader.timeline(*scene, FIRST_FRAME, length);
     let mut doc = reader.doc;
     doc.layers = layers;
-    doc.start = 0;
-    doc.end = (length as i32 - 1).max(0);
+    doc.start = FIRST_FRAME;
+    doc.end = (length as i32 + FIRST_FRAME - 1).max(FIRST_FRAME);
     Ok(Imported {
         doc,
         notes: reader.notes.phrases(),
@@ -411,7 +415,7 @@ impl Reader<'_> {
         for k in &keys {
             let mut cel = Cel::new(k.index as i32 + offset);
             self.flatten(&k.elements(), Affine2::IDENTITY, 1.0, &mut cel.line);
-            if cel.frame >= 0 {
+            if cel.frame >= FIRST_FRAME {
                 cels.push(cel);
             }
         }
@@ -496,12 +500,12 @@ impl Reader<'_> {
             angle_before = Some(angle);
             alpha_keys.push((frame, alpha(*el), interp));
             let t = &mut layer.transform;
-            if n == 0 || !animated || frame < 0 {
+            if n == 0 || !animated || frame < FIRST_FRAME {
                 t.position.base = pos;
                 t.rotation.base = angle;
                 t.scale.base = scale;
             }
-            if animated && frame >= 0 {
+            if animated && frame >= FIRST_FRAME {
                 t.position.set_key(frame, pos, interp);
                 t.rotation.set_key(frame, angle, interp);
                 t.scale.set_key(frame, scale, interp);
@@ -520,11 +524,15 @@ impl Reader<'_> {
             .unwrap_or((0, 1.0, Interpolation::Step));
         layer.opacity.base = first_alpha;
         if varies || keys.first().is_some_and(|k| k.index > 0) {
-            if keys.first().is_some_and(|k| k.index as i32 + offset > 0) {
-                layer.opacity.set_key(0, 0.0, Interpolation::Step);
+            // hidden until its first keyframe, when that is after the first frame
+            if keys
+                .first()
+                .is_some_and(|k| k.index as i32 + offset > FIRST_FRAME)
+            {
+                layer.opacity.set_key(FIRST_FRAME, 0.0, Interpolation::Step);
             }
             for (frame, a, interp) in alpha_keys {
-                if frame >= 0 {
+                if frame >= FIRST_FRAME {
                     layer.opacity.set_key(frame, a, interp);
                 }
             }
@@ -1132,7 +1140,8 @@ mod tests {
         ));
         let im = import_xfl("Test", &files(main, vec![])).unwrap();
         let d = &im.doc;
-        assert_eq!((d.width, d.height, d.fps, d.end), (400.0, 300.0, 12.0, 9));
+        assert_eq!((d.width, d.height, d.fps, d.end), (400.0, 300.0, 12.0, 10));
+        assert_eq!(d.start, 1);
         assert_eq!(d.background, Color::from_hex("#336699").unwrap());
         let LayerKind::Vector { shapes } = &d.layers[0].kind else {
             panic!("not vector")
@@ -1163,8 +1172,9 @@ mod tests {
             panic!("not frames")
         };
         let frames: Vec<_> = cels.iter().map(|c| (c.frame, c.line.len())).collect();
-        // the layer ends on frame 6, before the timeline's 8
-        assert_eq!(frames, [(0, 2), (2, 0), (4, 2), (6, 0)]);
+        // Animate's frame 0 is Fanimate's frame 1; the layer ends before the
+        // timeline's 8 frames do
+        assert_eq!(frames, [(1, 2), (3, 0), (5, 2), (7, 0)]);
         assert!(im.notes.contains(&"1 shape tween held still".to_owned()));
     }
 
@@ -1207,14 +1217,14 @@ mod tests {
         assert_eq!(
             keys,
             [
-                (0, Vec2::new(10.0, 20.0), Interpolation::Linear),
-                (10, Vec2::new(50.0, 20.0), Interpolation::Step)
+                (1, Vec2::new(10.0, 20.0), Interpolation::Linear),
+                (11, Vec2::new(50.0, 20.0), Interpolation::Step)
             ]
         );
         assert!((t.rotation.keys[1].value - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
         assert_eq!(t.scale.keys[1].value, Vec2::new(2.0, 2.0));
         let alpha: Vec<_> = mover.opacity.keys.iter().map(|k| (k.frame, k.value)).collect();
-        assert_eq!(alpha, [(0, 0.5), (10, 1.0)]);
+        assert_eq!(alpha, [(1, 0.5), (11, 1.0)]);
     }
 
     #[test]
@@ -1292,7 +1302,7 @@ mod tests {
         );
         let im = import_xfl("Test", &files(main, vec![])).unwrap();
         assert!(im.doc.layers.is_empty());
-        assert_eq!((im.doc.width, im.doc.end), (400.0, 4));
+        assert_eq!((im.doc.width, im.doc.end), (400.0, 5));
         assert!(
             im.notes.contains(&"1 script left out".to_owned()),
             "{:?}",

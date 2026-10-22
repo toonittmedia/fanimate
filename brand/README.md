@@ -15,7 +15,7 @@ Brand assets and guidelines for Fanimate. The reasoning behind these choices is 
 | [`file-icon/`](file-icon/) | Icon for `.fnm` project files (SVG, PNG, `.ico`, `.icns`) |
 | [`social/`](social/) | GitHub social preview card (1280 × 640 PNG) |
 | [`tokens/`](tokens/) | Design tokens: `tokens.json` (source) and generated `themes.css` |
-| [`fonts/`](fonts/) | Inter, used for the UI and the social card, with its licence |
+| [`fonts/`](fonts/) | Inter, used for the UI and the social card, and JetBrains Mono, used for frame numbers, each with its licence |
 | [`scripts/`](scripts/) | `build_brand.py`, which regenerates everything above |
 
 ## The mark

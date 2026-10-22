@@ -663,6 +663,10 @@ fn prefs_interface(ui: &mut egui::Ui, shell: &mut Shell) {
         }
     });
     kit::section(ui, &p, "Theme", |ui| theme_choice(ui, shell));
+    kit::section(ui, &p, "Timeline", |ui| {
+        ui.checkbox(&mut shell.hide_unanimated_layers, "Hide layers with no keys")
+            .on_hover_text("The timeline lists only layers that have keys. Selected layers always show.");
+    });
 }
 
 fn prefs_canvas(ui: &mut egui::Ui, shell: &mut Shell) {

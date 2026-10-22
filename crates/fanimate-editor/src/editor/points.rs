@@ -72,6 +72,7 @@ impl Editor {
     /// Click on a point: replace the selection, or with Ctrl or Shift add it
     /// (Ctrl-clicking a selected point removes it).
     pub fn select_point(&mut self, point: PointRef, mode: SelectMode) {
+        self.points_pivot = None;
         match mode {
             SelectMode::Replace => self.points = BTreeSet::from([point]),
             SelectMode::Toggle if self.points.contains(&point) => {
@@ -87,6 +88,7 @@ impl Editor {
     /// they join the current selection.
     pub fn select_points_in(&mut self, a: Vec2, b: Vec2, add: bool) {
         let (lo, hi) = (a.min(b), a.max(b));
+        self.points_pivot = None;
         if !add {
             self.points.clear();
         }
@@ -98,6 +100,7 @@ impl Editor {
     }
 
     pub fn select_all_points(&mut self) {
+        self.points_pivot = None;
         self.points = self.point_positions().into_iter().map(|(r, _)| r).collect();
     }
 
@@ -149,12 +152,18 @@ impl Editor {
     /// Delete the selected points, and any shape left with too few.
     /// Returns whether anything was deleted.
     pub fn delete_points(&mut self) -> bool {
+        self.remove_chosen_points("Delete")
+    }
+
+    /// Take the selected points out, as an undo step named for what the user
+    /// did (`verb`: Delete or Cut).
+    pub(super) fn remove_chosen_points(&mut self, verb: &str) -> bool {
         self.prune_points();
         if self.points.is_empty() {
             return false;
         }
         let n = self.points.len();
-        self.checkpoint(if n == 1 { "Delete point" } else { "Delete points" });
+        self.checkpoint(&format!("{verb} point{}", plural(n)));
         // later shapes first, so removing one does not renumber the rest
         for (shape, points) in self.points_by_shape().into_iter().rev() {
             let Some(shapes) = self.layer_shapes_mut(shape.0) else {
@@ -167,6 +176,7 @@ impl Editor {
             }
         }
         self.points.clear();
+        self.points_pivot = None;
         self.set_status(StatusKind::Info, format!("Deleted {n} point{}", plural(n)));
         true
     }
@@ -175,6 +185,7 @@ impl Editor {
     pub(super) fn prune_points(&mut self) {
         let layer = self.point_layer();
         let points = std::mem::take(&mut self.points);
+        let before = points.len();
         self.points = points
             .into_iter()
             .filter(|r| {
@@ -184,6 +195,9 @@ impl Editor {
                         .is_some_and(|s| r.point < s.path.on_curve_count())
             })
             .collect();
+        if self.points.len() != before {
+            self.points_pivot = None;
+        }
     }
 
     fn points_by_shape(&self) -> BTreeMap<(LayerId, usize), BTreeSet<usize>> {

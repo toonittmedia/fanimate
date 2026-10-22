@@ -60,9 +60,10 @@ pub enum Hit {
 /// The gesture in progress.
 #[derive(Clone, Copy, Debug)]
 pub enum Gesture {
-    /// A handle of the selection frame (the editor holds the rest), and
-    /// whether it scales (the one that snaps).
-    Frame { scales: bool },
+    /// A handle of the selection frame (the editor holds the rest), whether
+    /// it scales, and whether it is the pivot. Those two snap to guides and
+    /// other shapes; turning has its own step (15 degrees).
+    Frame { scales: bool, pivot: bool },
     /// A corner radius: which corner, and how far the pointer's radius was
     /// from the real one when it was grabbed, so the rectangle does not jump.
     Radius { corner: usize, grab: f32 },
@@ -216,6 +217,7 @@ pub fn interact(
                     .begin_handle(h, screen.doc(press))
                     .then_some(Gesture::Frame {
                         scales: matches!(h, fanimate_editor::Handle::Scale { .. }),
+                        pivot: h == fanimate_editor::Handle::Pivot,
                     })
             }
             Some(Hit::Radius(corner)) => {
@@ -238,21 +240,26 @@ pub fn interact(
     {
         let mods = ctx.input(|i| i.modifiers);
         match gesture {
-            Gesture::Frame { scales } => {
+            Gesture::Frame { scales, pivot } => {
                 // a scaling handle snaps like a point being dragged: to the
-                // grid, guides, the canvas and other shapes. Turning and the
-                // pivot have their own steps (15 degrees, the nine anchors).
+                // grid, guides, the canvas and other shapes. Turning has its
+                // own step (15 degrees). The pivot snaps to the box's nine
+                // anchors first (in the editor), then to the same targets;
+                // Shift places it exactly.
                 let at = if scales {
                     crate::panels::canvas::do_snap(shell, screen.doc(pos))
                 } else {
                     screen.doc(pos)
                 };
+                let snapped =
+                    (pivot && !mods.shift).then(|| crate::panels::canvas::do_snap(shell, screen.doc(pos)));
                 shell.editor.drag_handle(
                     at,
                     HandleMods {
                         shift: mods.shift,
                         alt: mods.alt,
                         snap: SNAP / screen.zoom,
+                        snapped,
                     },
                 );
             }
@@ -275,6 +282,36 @@ pub fn interact(
         return false;
     }
     ctx.request_repaint();
+    true
+}
+
+/// The pivot picker. While it is armed the canvas does nothing else: the next
+/// click places the pivot (at a box anchor, a guide or another shape's point
+/// when one is near; Shift puts it exactly where the pointer is), and the
+/// picker goes off again. Returns whether it was armed this frame, so the
+/// click does not also select or move anything.
+pub fn pick_pivot(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    shell: &mut Shell,
+    screen: &Screen,
+) -> bool {
+    if !shell.editor.pivot_pick {
+        return false;
+    }
+    shell.editor.pivot_snap = SNAP / screen.zoom;
+    if response.clicked_by(egui::PointerButton::Primary)
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let free = ctx.input(|i| i.modifiers.shift);
+        let raw = screen.doc(pos);
+        let at = if free {
+            raw
+        } else {
+            crate::panels::canvas::do_snap(shell, raw)
+        };
+        shell.editor.set_pivot_at(at, true, free);
+    }
     true
 }
 

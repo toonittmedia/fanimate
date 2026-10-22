@@ -27,6 +27,9 @@ pub struct DrawStyle {
     pub smoothing: f32,
     /// Length of each tapered end of a brush stroke, in document units.
     pub taper: f32,
+    /// Whether a pen's pressure sets the width of a brush stroke. Off draws
+    /// an even width. A mouse has no pressure, so it draws full width either way.
+    pub pressure: bool,
     /// Eraser diameter, in document units.
     pub eraser: f32,
     /// Weight brush diameter, in document units.
@@ -42,6 +45,7 @@ impl Default for DrawStyle {
             outline: true,
             smoothing: 0.5,
             taper: 20.0,
+            pressure: true,
             eraser: 20.0,
             weight_brush: 40.0,
         }
@@ -117,7 +121,7 @@ impl Editor {
         };
         let zoom = sane_zoom(zoom);
         let mut stabiliser = Stabiliser::new(self.draw.smoothing, BRUSH_SPACING_PX / zoom);
-        stabiliser.push(BrushSample::new(at, pressure));
+        stabiliser.push(BrushSample::new(at, self.stroke_pressure(pressure)));
         self.stroke = Some(StrokeInProgress {
             target,
             stabiliser,
@@ -171,9 +175,16 @@ impl Editor {
     }
 
     pub fn continue_stroke(&mut self, at: Vec2, pressure: f32) {
+        let pressure = self.stroke_pressure(pressure);
         if let Some(stroke) = &mut self.stroke {
             stroke.stabiliser.push(BrushSample::new(at, pressure));
         }
+    }
+
+    /// The pressure a brush sample gets: the pen's, or full when pressure is
+    /// turned off in the Style panel.
+    fn stroke_pressure(&self, pressure: f32) -> f32 {
+        if self.draw.pressure { pressure } else { 1.0 }
     }
 
     pub fn is_drawing(&self) -> bool {

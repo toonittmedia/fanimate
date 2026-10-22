@@ -11,15 +11,18 @@ mod editor;
 mod history;
 mod keymap;
 pub mod snap;
+mod styles;
 mod tabs;
 
-pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search};
+pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search, tool_groups_for};
 pub use editor::{
-    AlignTo, BoneRef, ConvertTo, DrawStyle, Editor, Handle, HandleMods, Loss, MouthCue, Outcome, Placement,
-    PointRef, RadiusTarget, SOUND_EXTENSIONS, SelectMode, SelectionFrame, ShapeBuilderState, SoundInfo,
-    StatusKind, parse_rhubarb, sound_info, sound_to_wav,
+    AlignTo, BoneRef, ConvertTo, DrawStyle, Editor, Focus, Handle, HandleMods, Loss, MouthCue, Outcome,
+    Placement, PointRef, RadiusTarget, SOUND_EXTENSIONS, SelectMode, SelectionFrame, ShapeBuilderState,
+    SoundInfo, StatusKind, parse_rhubarb, sound_info, sound_to_wav,
 };
+pub use editor::{Clipboards, KeyRef, KeySelect, KeyTarget};
 pub use history::History;
 pub use keymap::{Chord, Keymap, KeymapKind};
 pub use snap::{GridSettings, Guide, SnapSettings};
+pub use styles::{BUILT_IN as BUILT_IN_STYLE, StyleBook, StyleError};
 pub use tabs::{TabInfo, Tabs};

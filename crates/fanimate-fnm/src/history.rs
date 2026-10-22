@@ -108,6 +108,7 @@ fn doc_meta(doc: &Document) -> Document {
         next_layer_id: doc.next_layer_id,
         guides: doc.guides.clone(),
         camera: doc.camera.clone(),
+        styles: doc.styles.clone(),
         action_edit: doc.action_edit.clone(),
         media: doc.media.clone(),
     }

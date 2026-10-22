@@ -19,7 +19,11 @@ usage:
   fanimate-cli export <project.fnm> -o <out.mp4|.mov|.avi|.gif|.png|.exr|...> [--format F]
                       [--width W] [--height H] [--start N] [--end N] [--ffmpeg PATH]
   fanimate-cli formats [--ffmpeg PATH]
-  fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--actions] [--gpu [--width W] [--height H]]";
+  fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--actions] [--gpu [--width W] [--height H]]
+
+Frame numbers (--frame, --start, --end) are the project's own: its first frame is 1 and
+frame 0 is the rest pose. Without them, render shows the first frame and export the whole
+animation.";
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
