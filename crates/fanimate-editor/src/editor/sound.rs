@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use fanimate_core::{Audio, Frame, Interpolation, Key, LayerId, LayerKind, MediaFile};
+use fanimate_core::{Audio, Frame, Interpolation, Key, Layer, LayerId, LayerKind, MediaFile};
 use serde::Deserialize;
 
 use super::{Editor, StatusKind, labelled};
@@ -186,6 +186,42 @@ fn mouth_names(shape: &str) -> &'static [&'static str] {
     }
 }
 
+/// The switch keys for mouth cues of a sound that starts on frame `start`,
+/// and how many cues had no matching child. Two cues on one frame: the later
+/// wins.
+pub(crate) fn mouth_keys(
+    children: &[Layer],
+    cues: &[MouthCue],
+    start: Frame,
+    fps: f32,
+) -> (Vec<Key<String>>, usize) {
+    let mut keys: Vec<Key<String>> = Vec::new();
+    let mut unmatched = 0;
+    for cue in cues {
+        let child = mouth_names(&cue.value)
+            .iter()
+            .find_map(|n| children.iter().find(|c| c.name.eq_ignore_ascii_case(n)));
+        let Some(child) = child else {
+            unmatched += 1;
+            continue;
+        };
+        let frame = start + (cue.start * fps).round() as Frame;
+        if frame < 0 {
+            continue;
+        }
+        let key = Key {
+            frame,
+            value: child.name.clone(),
+            interp: Interpolation::Step,
+        };
+        match keys.last_mut() {
+            Some(last) if last.frame == frame => *last = key,
+            _ => keys.push(key),
+        }
+    }
+    (keys, unmatched)
+}
+
 impl Editor {
     /// Import a sound file as an audio layer starting on the current frame:
     /// a WAV as it is, an MP3, Ogg, FLAC or AAC file turned into WAV first
@@ -287,32 +323,7 @@ impl Editor {
         let LayerKind::Switch { children, .. } = &layer.kind else {
             return Err("lip sync needs a switch layer with a mouth shape in each child".into());
         };
-        let fps = self.doc.fps;
-        let mut keys: Vec<Key<String>> = Vec::new();
-        let mut unmatched = 0;
-        for cue in cues {
-            let child = mouth_names(&cue.value)
-                .iter()
-                .find_map(|n| children.iter().find(|c| c.name.eq_ignore_ascii_case(n)));
-            let Some(child) = child else {
-                unmatched += 1;
-                continue;
-            };
-            let frame = start + (cue.start * fps).round() as Frame;
-            if frame < 0 {
-                continue;
-            }
-            let key = Key {
-                frame,
-                value: child.name.clone(),
-                interp: Interpolation::Step,
-            };
-            // two cues on one frame: the later wins
-            match keys.last_mut() {
-                Some(last) if last.frame == frame => *last = key,
-                _ => keys.push(key),
-            }
-        }
+        let (keys, unmatched) = mouth_keys(children, cues, start, self.doc.fps);
         if keys.is_empty() {
             return Err(
                 "no mouth shape matched a layer: name the switch layer's children A to H and X, or MBP, etc, E, AI, O, U, FV, L and rest"

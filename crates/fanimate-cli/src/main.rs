@@ -11,7 +11,9 @@ use fanimate_render::{Gpu, Mesh, Offscreen, Tessellator, render_to_rgba};
 
 const USAGE: &str = "\
 usage:
-  fanimate-cli sample <hello|benchmark|episode> <out.fnm> [--bones N] [--seconds S]
+  fanimate-cli sample <hello|benchmark|episode|template> <out.fnm> [--bones N] [--seconds S]
+                      (a template is its menu name in lower case with dashes: bouncing-ball,
+                       scene-dressing-room, ...)
   fanimate-cli validate <project.fnm> [--repair]
   fanimate-cli import <file.moho|.mohoproj|.fla|.xfl> -o <out.fnm>
   fanimate-cli corpus <folder>
@@ -111,11 +113,34 @@ fn sample(args: &[String]) -> CmdResult {
             a.get("--bones")?.unwrap_or(40),
             a.get("--seconds")?.unwrap_or(300),
         ),
-        other => return Err(format!("unknown sample {other}; use hello, benchmark or episode")),
+        other => match fanimate_editor::Sample::ALL
+            .iter()
+            .find(|s| slug(s.name()) == other)
+        {
+            Some(template) => template.document(),
+            None => {
+                return Err(format!(
+                    "unknown sample {other}; use hello, benchmark, episode or a template"
+                ));
+            }
+        },
     };
     fanimate_fnm::save(&doc, out).map_err(|e| e.to_string())?;
     println!("wrote {out}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// A template's name as typed on the command line: "Scene: Dressing room" is `scene-dressing-room`.
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
 }
 
 fn validate(args: &[String]) -> CmdResult {

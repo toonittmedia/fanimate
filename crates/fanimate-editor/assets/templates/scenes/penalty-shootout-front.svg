@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<g id="Ball">
+<path id="ball" d="M794 1010C794 1028.78 778.78 1044 760 1044C741.22 1044 726 1028.78 726 1010C726 991.22 741.22 976 760 976C778.78 976 794 991.22 794 1010Z" fill="#ffffff" stroke="#2a2230" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="patch" d="M760 990L778 1004L771 1026L749 1026L742 1004Z" fill="#2a2230"/>
+</g>
+</svg>

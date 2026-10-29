@@ -73,63 +73,10 @@ impl Editor {
     /// Import an SVG file as vector layers, centred on the canvas. One
     /// undo step. Returns the new layer.
     pub fn import_svg(&mut self, name: &str, bytes: &[u8]) -> Result<LayerId, String> {
-        let text = std::str::from_utf8(bytes).map_err(|_| "not an SVG file Fanimate can read".to_owned())?;
-        let options = usvg::Options {
-            // an SVG file may point at any file on disk; pictures are not
-            // imported, so nothing outside the file is ever read
-            image_href_resolver: usvg::ImageHrefResolver {
-                resolve_data: Box::new(|_, _, _| None),
-                resolve_string: Box::new(|_, _| None),
-            },
-            ..Default::default()
-        };
-        let tree = usvg::Tree::from_str(text, &options)
-            .map_err(|e| format!("the SVG file could not be read: {e}"))?;
-        let (labels, mut notes) = scan(text);
-
-        // the file's layers: its top-level groups, under any wrapper usvg
-        // adds for the view box
-        let mut root = tree.root();
-        while let [usvg::Node::Group(only)] = root.children()
-            && only.id().is_empty()
-        {
-            root = only;
-        }
-        let mut pieces: Vec<(String, Vec<Shape>)> = Vec::new();
-        let mut loose = Vec::new();
-        for node in root.children() {
-            match node {
-                usvg::Node::Group(g) => {
-                    let mut shapes = Vec::new();
-                    collect(g, 1.0, &mut shapes, &mut notes);
-                    if !shapes.is_empty() {
-                        let id = g.id();
-                        let name = labels
-                            .get(id)
-                            .cloned()
-                            .filter(|l| !l.trim().is_empty())
-                            .or_else(|| (!id.is_empty()).then(|| id.to_owned()))
-                            .unwrap_or_else(|| format!("Layer {}", pieces.len() + 1));
-                        pieces.push((name, shapes));
-                    }
-                }
-                other => collect_node(other, 1.0, &mut loose, &mut notes),
-            }
-        }
-        if !loose.is_empty() {
-            pieces.insert(0, (stem(name), loose));
-        }
-        if pieces.is_empty() {
-            let mut why = "the SVG file has no shapes Fanimate can import".to_owned();
-            if let Some(first) = notes.phrases().first() {
-                why = format!("{why}: {first}");
-            }
-            return Err(why);
-        }
+        let (pieces, size, notes) = read(name, bytes)?;
 
         self.checkpoint("Import SVG file");
-        let size = tree.size();
-        let offset = (self.doc.size() - Vec2::new(size.width(), size.height())) / 2.0;
+        let offset = (self.doc.size() - size) / 2.0;
         let mut layers: Vec<Layer> = pieces
             .into_iter()
             .map(|(name, mut shapes)| {
@@ -159,6 +106,82 @@ impl Editor {
             );
         }
         Ok(id)
+    }
+}
+
+/// The layers of an SVG file: a name and the shapes of each.
+pub(crate) type Pieces = Vec<(String, Vec<Shape>)>;
+
+/// What an SVG file holds as layers: its top-level groups, each with its
+/// shapes (named by id, or by Inkscape label), the size of its page and what
+/// could not come through.
+fn read(name: &str, bytes: &[u8]) -> Result<(Pieces, Vec2, Notes), String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "not an SVG file Fanimate can read".to_owned())?;
+    let options = usvg::Options {
+        // an SVG file may point at any file on disk; pictures are not
+        // imported, so nothing outside the file is ever read
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    };
+    let tree =
+        usvg::Tree::from_str(text, &options).map_err(|e| format!("the SVG file could not be read: {e}"))?;
+    let (labels, mut notes) = scan(text);
+
+    // the file's layers: its top-level groups, under any wrapper usvg
+    // adds for the view box
+    let mut root = tree.root();
+    while let [usvg::Node::Group(only)] = root.children()
+        && only.id().is_empty()
+    {
+        root = only;
+    }
+    let mut pieces: Pieces = Vec::new();
+    let mut loose = Vec::new();
+    for node in root.children() {
+        match node {
+            usvg::Node::Group(g) => {
+                let mut shapes = Vec::new();
+                collect(g, 1.0, &mut shapes, &mut notes);
+                if !shapes.is_empty() {
+                    let id = g.id();
+                    let name = labels
+                        .get(id)
+                        .cloned()
+                        .filter(|l| !l.trim().is_empty())
+                        .or_else(|| (!id.is_empty()).then(|| id.to_owned()))
+                        .unwrap_or_else(|| format!("Layer {}", pieces.len() + 1));
+                    pieces.push((name, shapes));
+                }
+            }
+            other => collect_node(other, 1.0, &mut loose, &mut notes),
+        }
+    }
+    if !loose.is_empty() {
+        pieces.insert(0, (stem(name), loose));
+    }
+    if pieces.is_empty() {
+        let mut why = "the SVG file has no shapes Fanimate can import".to_owned();
+        if let Some(first) = notes.phrases().first() {
+            why = format!("{why}: {first}");
+        }
+        return Err(why);
+    }
+    let size = tree.size();
+    Ok((pieces, Vec2::new(size.width(), size.height()), notes))
+}
+
+/// The layers of an SVG file that ships with Fanimate (a template's mouths,
+/// characters and sets): each top-level group with its shapes, and the size
+/// of the page. Unlike an import it makes no document change and says
+/// nothing; the files are checked by tests, so a file that fails to read
+/// shows as missing artwork rather than stopping the template.
+pub(crate) fn bundled(name: &str, svg: &str) -> (Pieces, Vec2) {
+    match read(name, svg.as_bytes()) {
+        Ok((layers, size, _)) => (layers, size),
+        Err(_) => (Vec::new(), Vec2::ZERO),
     }
 }
 

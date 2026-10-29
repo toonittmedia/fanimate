@@ -13,6 +13,7 @@ mod keymap;
 pub mod snap;
 mod styles;
 mod tabs;
+mod templates;
 
 pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search, tool_groups_for};
 pub use editor::{

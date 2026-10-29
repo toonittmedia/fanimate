@@ -269,6 +269,14 @@ impl Action {
             OpenSample(Sample::WalkCycle) => "Open Template: Walk Cycle Rig",
             OpenSample(Sample::LipSync) => "Open Template: Lip Sync",
             OpenSample(Sample::FrameByFrame) => "Open Template: Frame by Frame",
+            OpenSample(Sample::BouncingBall) => "Open Template: Bouncing Ball",
+            OpenSample(Sample::CharacterRig) => "Open Template: Character Rig",
+            OpenSample(Sample::TalkingHead) => "Open Template: Talking Head",
+            OpenSample(Sample::MouthStyles) => "Open Template: Mouth Styles",
+            OpenSample(Sample::DressingRoom) => "Open Template: Scene, Dressing Room",
+            OpenSample(Sample::PressConference) => "Open Template: Scene, Press Conference",
+            OpenSample(Sample::PenaltyShootout) => "Open Template: Scene, Penalty Shootout",
+            OpenSample(Sample::Pundits) => "Open Template: Scene, Studio Pundits",
             OpenFolder => "Open Project Folder…",
             CloseDocument => "Close",
             CloseOtherDocuments => "Close Other Tabs",
@@ -671,14 +679,38 @@ pub enum Sample {
     LipSync,
     /// A frame-by-frame layer with twelve empty drawings.
     FrameByFrame,
+    /// A ball that bounces with squash and stretch.
+    BouncingBall,
+    /// A cartoon character on bones, breathing and blinking.
+    CharacterRig,
+    /// A character saying a line, lip synced.
+    TalkingHead,
+    /// Five styles of mouth shapes lip syncing the same line.
+    MouthStyles,
+    /// A full football parody scene: the manager at half time.
+    DressingRoom,
+    /// A full scene: a press conference.
+    PressConference,
+    /// A full scene: a striker and a keeper at a penalty.
+    PenaltyShootout,
+    /// A full scene: two pundits in the studio.
+    Pundits,
 }
 
 impl Sample {
-    pub const ALL: [Sample; 7] = [
+    pub const ALL: [Sample; 15] = [
         Self::Blank,
         Self::WalkCycle,
         Self::LipSync,
         Self::FrameByFrame,
+        Self::BouncingBall,
+        Self::CharacterRig,
+        Self::TalkingHead,
+        Self::MouthStyles,
+        Self::DressingRoom,
+        Self::PressConference,
+        Self::PenaltyShootout,
+        Self::Pundits,
         Self::Hello,
         Self::Benchmark,
         Self::StressTest,
@@ -694,6 +726,14 @@ impl Sample {
             Self::WalkCycle => "Walk cycle rig",
             Self::LipSync => "Lip sync",
             Self::FrameByFrame => "Frame by frame",
+            Self::BouncingBall => "Bouncing ball",
+            Self::CharacterRig => "Character rig",
+            Self::TalkingHead => "Talking head",
+            Self::MouthStyles => "Mouth styles",
+            Self::DressingRoom => "Scene: Dressing room",
+            Self::PressConference => "Scene: Press conference",
+            Self::PenaltyShootout => "Scene: Penalty shootout",
+            Self::Pundits => "Scene: Studio pundits",
         }
     }
 
@@ -707,10 +747,19 @@ impl Sample {
             Self::WalkCycle => "A stick figure with a walk",
             Self::LipSync => "A face and nine mouth shapes",
             Self::FrameByFrame => "Twelve empty drawings",
+            Self::BouncingBall => "Squash and stretch, keyed",
+            Self::CharacterRig => "A cartoon on six bones",
+            Self::TalkingHead => "Spoken line, lip synced",
+            Self::MouthStyles => "Five mouth styles, one voice",
+            Self::DressingRoom => "Football parody with voices",
+            Self::PressConference => "Football parody with voices",
+            Self::PenaltyShootout => "Football parody with voices",
+            Self::Pundits => "Football parody with voices",
         }
     }
 
     pub fn document(self) -> fanimate_core::Document {
+        use crate::templates;
         use fanimate_core::samples;
         match self {
             Self::Hello => samples::hello(),
@@ -720,6 +769,14 @@ impl Sample {
             Self::WalkCycle => samples::walk_cycle(),
             Self::LipSync => samples::lip_sync(),
             Self::FrameByFrame => samples::frame_by_frame(),
+            Self::BouncingBall => templates::bouncing_ball(),
+            Self::CharacterRig => templates::character_rig(),
+            Self::TalkingHead => templates::talking_head(),
+            Self::MouthStyles => templates::mouth_styles(),
+            Self::DressingRoom => templates::dressing_room(),
+            Self::PressConference => templates::press_conference(),
+            Self::PenaltyShootout => templates::penalty_shootout(),
+            Self::Pundits => templates::pundits(),
         }
     }
 }

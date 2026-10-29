@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180">
+<g id="mouth G">
+<path id="mouth" d="M72 90C96 86 144 86 168 90C144 112.66 96 112.66 72 90Z" fill="none" stroke="#25222c" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="teeth" d="M83.36 102.56C104.8 100.48 135.2 100.48 156.64 102.56" fill="none" stroke="#25222c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="lower lip" d="M79.87 91.12C102.53 105.62 137.47 105.62 160.13 91.12" fill="none" stroke="#25222c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180">
+<g id="mouth A">
+<path id="lips" d="M74 90C97 79 143 79 166 90C143 103 97 103 74 90Z" fill="#8c2431" stroke="#16131a" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="seam" d="M74 90C101.6 93 138.4 93 166 90" fill="none" stroke="#16131a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>
