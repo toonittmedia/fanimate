@@ -33,7 +33,7 @@ cargo run --release -p fanimate-app -- --bench # 10-second performance benchmark
 
 On first launch Fanimate asks which keyboard shortcuts you want:
 
-- **Fanimate (standard):** shortcuts like other editing apps. Ctrl+C, Ctrl+X and Ctrl+V work on layers, Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes, F2 renames.
+- **Fanimate (standard):** shortcuts like other editing apps. Ctrl+C, Ctrl+X and Ctrl+V work on layers, Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes keys, points and shapes, Ctrl+Delete deletes layers, F2 renames.
 - **Moho:** Moho Pro's own shortcuts, for Moho users.
 
 Switch any time in **Edit › Keyboard Shortcuts**. The menus live in the title bar, every panel has right-click menus, and **Space** plays and pauses. **File › Open Sample** has the hello rig, the 40-bone benchmark and a 400-bone stress test.

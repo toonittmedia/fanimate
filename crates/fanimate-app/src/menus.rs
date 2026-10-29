@@ -135,7 +135,11 @@ pub fn edit(ui: &mut egui::Ui, shell: &mut Shell) {
         &[Action::CutLayers, Action::CopyLayers, Action::PasteLayers],
     );
     ui.separator();
-    items(ui, shell, &[Action::Duplicate, Action::Delete]);
+    items(
+        ui,
+        shell,
+        &[Action::Duplicate, Action::Delete, Action::DeleteLayers],
+    );
     ui.separator();
     items(ui, shell, &[Action::SelectAll, Action::SelectNone]);
     ui.separator();
@@ -498,7 +502,7 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
             Action::CopyLayers,
             Action::PasteLayers,
             Action::Duplicate,
-            Action::Delete,
+            Action::DeleteLayers,
         ],
     );
     ui.separator();

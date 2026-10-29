@@ -550,7 +550,9 @@ impl QueueApp {
                         );
                         ui.add(
                             egui::Label::new(RichText::new(detail.clone()).size(11.0).color(p.text_muted))
-                                .truncate(),
+                                .truncate()
+                                // the tooltip below says more, so not two
+                                .show_tooltip_when_elided(false),
                         )
                         .on_hover_text(format!("{detail}\nfrom the project \"{}\"", e.job.name));
                     });

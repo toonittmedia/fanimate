@@ -1045,39 +1045,39 @@ mod tests {
     fn a_tool_whose_group_a_layer_hides_gives_way_to_transform_layer() {
         use crate::action::{Action, ToolGroup};
         let mut ed = Editor::untitled();
-        // a vector layer is selected: drawing tools stay
+        // drawing tools stay whatever is selected: drawing with no vector
+        // layer selected makes a new one
         ed.set_tool(Tool::Freehand);
         assert!(!ed.fit_tool_to_layer());
-        assert_eq!(ed.tool, Tool::Freehand);
-        // a group has no drawing or bone tools
         ed.run(Action::NewGroupLayer);
-        assert!(ed.fit_tool_to_layer());
-        assert_eq!(ed.tool, Tool::TransformLayer);
-        let (_, message) = ed.status.clone().unwrap();
-        assert!(message.contains("Freehand"), "{message}");
-        assert!(message.contains("a vector layer"), "{message}");
-        // already there: nothing more happens
         assert!(!ed.fit_tool_to_layer());
-        // a bone layer keeps the bone tools and loses the drawing ones
+        ed.selection.clear();
+        assert!(!ed.fit_tool_to_layer());
+        assert_eq!(ed.tool, Tool::Freehand);
+        // a bone layer has the bone tools, and the others do not
         ed.run(Action::NewBoneLayer);
         ed.set_tool(Tool::AddBone);
         assert!(!ed.fit_tool_to_layer());
-        ed.set_tool(Tool::Pen);
-        assert!(ed.fit_tool_to_layer());
         assert_eq!(
             ed.tool_groups(),
             vec![
+                ToolGroup::Draw,
+                ToolGroup::Fill,
                 ToolGroup::Layer,
                 ToolGroup::Camera,
                 ToolGroup::Bone,
                 ToolGroup::Workspace
             ]
         );
-        // nothing selected: the bone tools go too
-        ed.set_tool(Tool::AddBone);
+        // nothing selected: the bone tools go, and say why
         ed.selection.clear();
         assert!(ed.fit_tool_to_layer());
         assert_eq!(ed.tool, Tool::TransformLayer);
+        let (_, message) = ed.status.clone().unwrap();
+        assert!(message.contains("Add Bone"), "{message}");
+        assert!(message.contains("a bone layer"), "{message}");
+        // already there: nothing more happens
+        assert!(!ed.fit_tool_to_layer());
     }
 
     #[test]

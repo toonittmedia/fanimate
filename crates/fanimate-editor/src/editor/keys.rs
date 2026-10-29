@@ -896,6 +896,9 @@ impl Editor {
     /// Start moving the picked keys along the timeline, or copying them with
     /// `copy`. Returns false when no key is picked.
     pub fn begin_selected_key_drag(&mut self, copy: bool) -> bool {
+        if self.playing {
+            return false;
+        }
         match self.begin_gesture(copy) {
             Some(g) => {
                 self.sel_drag = Some(g);
@@ -935,6 +938,9 @@ impl Editor {
     /// Start stretching or squeezing the picked keys about the frame `anchor`.
     /// Returns false when no key is picked.
     pub fn begin_key_scale(&mut self, anchor: Frame) -> bool {
+        if self.playing {
+            return false;
+        }
         match self.begin_gesture(false) {
             Some(mut g) => {
                 g.anchor = anchor;
@@ -1572,7 +1578,7 @@ mod tests {
         ed.select_all_keys();
         assert!(ed.selected_keys().iter().any(|k| k.layer == Some(b)));
         ed.select(b, SelectMode::Replace);
-        ed.run(Action::Delete);
+        ed.run(Action::DeleteLayers);
         assert!(ed.selected_keys().iter().all(|k| k.layer == Some(a)));
         assert!(ed.has_selected_keys());
         // deleting the picked key unpicks it, and undo brings the key back

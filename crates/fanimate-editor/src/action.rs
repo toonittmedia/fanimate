@@ -59,7 +59,12 @@ pub enum Action {
     CopyLayers,
     PasteLayers,
     Duplicate,
+    /// Delete what the focus is on: the picked keys, points, shapes or
+    /// bone. Never a layer: Backspace and Delete are too easy to press by
+    /// accident for that.
     Delete,
+    /// Delete the selected layers (Ctrl+Delete).
+    DeleteLayers,
     SelectAll,
     SelectNone,
     Rename,
@@ -89,6 +94,8 @@ pub enum Action {
     SetLabel(fanimate_core::Label),
     /// Bind shapes rigidly to the selected bone.
     BindToBone,
+    /// Delete the selected bone: its children join its parent.
+    DeleteBone,
     /// Bind shapes to the bones around them, with automatic weights.
     BindSmoothly,
     /// Stop shapes following bones.
@@ -181,6 +188,73 @@ pub enum Action {
 }
 
 impl Action {
+    /// Whether the command changes the document or its history. These do
+    /// nothing while the animation plays: an edit made at a moving playhead
+    /// would key a different frame each time, and sprays keyframes.
+    pub fn edits_document(self) -> bool {
+        use Action::*;
+        matches!(
+            self,
+            Undo | Redo
+                | UndoLayer
+                | GoToHistory(_)
+                | Cut
+                | Paste
+                | CutLayers
+                | PasteLayers
+                | Duplicate
+                | Delete
+                | DeleteLayers
+                | Rename
+                | FinishPath
+                | Union
+                | Subtract
+                | Intersect
+                | ExpandShape
+                | NewVectorLayer
+                | NewGroupLayer
+                | NewBoneLayer
+                | NewFramesLayer
+                | NewSwitchLayer
+                | GroupLayers
+                | Ungroup
+                | MoveLayerUp
+                | MoveLayerDown
+                | ToggleVisibility
+                | SetLabel(_)
+                | BindToBone
+                | DeleteBone
+                | BindSmoothly
+                | Unbind
+                | NewAction
+                | NewSmartBoneAction
+                | EditAction(_)
+                | FinishAction
+                | InsertAction(_)
+                | DeleteAction(_)
+                | SetLoop(_)
+                | AddKey
+                | DeleteKey
+                | NewDrawing
+                | SetSwitch(_)
+                | LipSync
+                | SetInterpolation(_)
+                | AddChannelKey(_)
+                | DeleteChannelKey(_)
+                | SetChannelInterpolation(..)
+                | ToggleLock
+                | Align(_)
+                | SetShapeVisible(..)
+                | DeleteShapes
+                | DuplicateShapes
+                | RenameShape(..)
+                | ResetCamera
+                | ConvertLayerType(_)
+                | ConfirmConvertLayerType(_)
+                | PickPivot
+        )
+    }
+
     pub fn label(self) -> &'static str {
         use Action::*;
         match self {
@@ -224,6 +298,7 @@ impl Action {
             PasteLayers => "Paste Layers",
             Duplicate => "Duplicate",
             Delete => "Delete",
+            DeleteLayers => "Delete Layer",
             SelectAll => "Select All Layers",
             SelectNone => "Select None",
             Rename => "Rename Layer",
@@ -256,6 +331,7 @@ impl Action {
             LayerProperties => "Layer Properties",
             SetLabel(l) => l.name(),
             BindToBone => "Bind to Selected Bone",
+            DeleteBone => "Delete Bone",
             BindSmoothly => "Bind Smoothly",
             Unbind => "Release from Bones",
             NewAction => "New Action",
@@ -335,8 +411,10 @@ impl Action {
             | SaveAsFolder | Import | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates
             | InstallUpdate | Quit => "File",
             Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
-            | PasteLayers | Duplicate | Delete | SelectAll | SelectNone | Rename | FinishPath | Union
-            | Subtract | Intersect | ExpandShape | Preferences | CommandPalette => "Edit",
+            | PasteLayers | Duplicate | Delete | DeleteLayers | SelectAll | SelectNone | Rename
+            | FinishPath | Union | Subtract | Intersect | ExpandShape | Preferences | CommandPalette => {
+                "Edit"
+            }
             NewVectorLayer
             | NewGroupLayer
             | NewBoneLayer
@@ -359,6 +437,7 @@ impl Action {
             | ConvertLayerType(_)
             | ConfirmConvertLayerType(_)
             | BindToBone
+            | DeleteBone
             | BindSmoothly
             | Unbind
             | NewAction
@@ -428,6 +507,7 @@ impl Action {
             PasteLayers,
             Duplicate,
             Delete,
+            DeleteLayers,
             SelectAll,
             SelectNone,
             Rename,
@@ -451,6 +531,7 @@ impl Action {
             LayerProperties,
             PickPivot,
             BindToBone,
+            DeleteBone,
             BindSmoothly,
             Unbind,
             NewAction,
@@ -737,20 +818,20 @@ impl ToolGroup {
 
     /// What kind of layer the group's tools need, for the status message when
     /// a layer change takes the active tool away. `None` for the groups that
-    /// work on any layer (or none).
+    /// work on any layer (or none): drawing with another kind of layer
+    /// selected, or none, makes a new vector layer instead.
     pub fn needs(self) -> Option<&'static str> {
         match self {
-            Self::Draw | Self::Fill => Some("a vector layer"),
             Self::Bone => Some("a bone layer"),
-            Self::Layer | Self::Camera | Self::Workspace => None,
+            Self::Draw | Self::Fill | Self::Layer | Self::Camera | Self::Workspace => None,
         }
     }
 }
 
 /// The tool groups the Tools panel shows for the active layer (`None` when
-/// nothing is selected). Layer, Camera and Workspace are always there; Draw
-/// and Fill need a vector layer and Bone a bone layer. Groups, pictures,
-/// frame-by-frame, switch and audio layers show only the always-there groups.
+/// nothing is selected). Draw, Fill, Layer, Camera and Workspace are always
+/// there, as in Moho: drawing with no vector layer selected makes a new one.
+/// Only Bone needs a bone layer.
 pub fn tool_groups_for(kind: Option<&fanimate_core::LayerKind>) -> Vec<ToolGroup> {
     tool_groups_in(kind, false)
 }
@@ -763,9 +844,12 @@ pub fn tool_groups_in(kind: Option<&fanimate_core::LayerKind>, in_rig: bool) -> 
     ToolGroup::ALL
         .into_iter()
         .filter(|group| match group {
-            ToolGroup::Draw | ToolGroup::Fill => matches!(kind, Some(LayerKind::Vector { .. })),
             ToolGroup::Bone => in_rig || matches!(kind, Some(LayerKind::Bone { .. })),
-            ToolGroup::Layer | ToolGroup::Camera | ToolGroup::Workspace => true,
+            ToolGroup::Draw
+            | ToolGroup::Fill
+            | ToolGroup::Layer
+            | ToolGroup::Camera
+            | ToolGroup::Workspace => true,
         })
         .collect()
 }
@@ -807,6 +891,8 @@ pub enum Tool {
     RollCamera,
     SelectBone,
     AddBone,
+    /// Drag from a bone to the bone that becomes its parent.
+    ReparentBone,
     ManipulateBones,
     PaintWeights,
     Pan,
@@ -814,7 +900,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 32] = [
+    pub const ALL: [Tool; 33] = [
         Self::SelectPoints,
         Self::TranslatePoints,
         Self::AddPoint,
@@ -843,6 +929,7 @@ impl Tool {
         Self::RollCamera,
         Self::SelectBone,
         Self::AddBone,
+        Self::ReparentBone,
         Self::ManipulateBones,
         Self::PaintWeights,
         Self::Pan,
@@ -879,6 +966,7 @@ impl Tool {
             Self::RollCamera => "Roll camera",
             Self::SelectBone => "Select Bone",
             Self::AddBone => "Add Bone",
+            Self::ReparentBone => "Reparent Bone",
             Self::ManipulateBones => "Manipulate Bones",
             Self::PaintWeights => "Paint Weights",
             Self::Pan => "Pan",
@@ -912,7 +1000,11 @@ impl Tool {
             | Self::StrokeExposure => ToolGroup::Fill,
             Self::TransformLayer => ToolGroup::Layer,
             Self::TrackCamera | Self::ZoomCamera | Self::RollCamera => ToolGroup::Camera,
-            Self::SelectBone | Self::AddBone | Self::ManipulateBones | Self::PaintWeights => ToolGroup::Bone,
+            Self::SelectBone
+            | Self::AddBone
+            | Self::ReparentBone
+            | Self::ManipulateBones
+            | Self::PaintWeights => ToolGroup::Bone,
             Self::Pan | Self::Zoom => ToolGroup::Workspace,
         }
     }
@@ -950,6 +1042,7 @@ impl Tool {
                 | Self::RollCamera
                 | Self::SelectBone
                 | Self::AddBone
+                | Self::ReparentBone
                 | Self::ManipulateBones
                 | Self::PaintWeights
                 | Self::Pan
@@ -1048,6 +1141,9 @@ impl Tool {
             Self::AddBone => {
                 "Drag to draw a bone on the selected bone layer. It joins the selected bone, so drag from its tip to build a chain."
             }
+            Self::ReparentBone => {
+                "Drag from a bone onto its new parent; drag to empty space for no parent. The bone stays where it is."
+            }
             Self::ManipulateBones => {
                 "Drag a bone to pose its chain (inverse kinematics; a pinned bone stops it). Alt-drag turns one bone only. Sets keyframes on the current frame."
             }
@@ -1115,13 +1211,12 @@ mod tests {
     #[test]
     fn tool_groups_follow_the_layer_type() {
         use ToolGroup::*;
-        let always = vec![Layer, Camera, Workspace];
+        let always = vec![Draw, Fill, Layer, Camera, Workspace];
         assert_eq!(tool_groups_for(None), always);
         for (name, kind) in every_kind() {
             let groups = tool_groups_for(Some(&kind));
             let expected = match name {
-                "vector" => vec![Draw, Fill, Layer, Camera, Workspace],
-                "bone" => vec![Layer, Camera, Bone, Workspace],
+                "bone" => vec![Draw, Fill, Layer, Camera, Bone, Workspace],
                 _ => always.clone(),
             };
             assert_eq!(groups, expected, "{name}");
@@ -1147,7 +1242,13 @@ mod tests {
     fn the_always_groups_never_leave() {
         for (name, kind) in every_kind() {
             let groups = tool_groups_for(Some(&kind));
-            for group in [ToolGroup::Layer, ToolGroup::Camera, ToolGroup::Workspace] {
+            for group in [
+                ToolGroup::Draw,
+                ToolGroup::Fill,
+                ToolGroup::Layer,
+                ToolGroup::Camera,
+                ToolGroup::Workspace,
+            ] {
                 assert!(groups.contains(&group), "{name} lost {group:?}");
                 assert_eq!(group.needs(), None);
             }
@@ -1199,13 +1300,14 @@ mod tests {
                 | Tool::RollCamera
                 | Tool::SelectBone
                 | Tool::AddBone
+                | Tool::ReparentBone
                 | Tool::ManipulateBones
                 | Tool::PaintWeights
                 | Tool::Pan
                 | Tool::Zoom => 1,
             };
         }
-        assert_eq!(Tool::ALL.len(), 32);
+        assert_eq!(Tool::ALL.len(), 33);
     }
 
     #[test]

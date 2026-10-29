@@ -96,7 +96,7 @@ fn toolbar(ui: &mut egui::Ui, shell: &mut Shell) {
         });
         for (icon, action) in [
             (Icon::Duplicate, Action::Duplicate),
-            (Icon::Delete, Action::Delete),
+            (Icon::Delete, Action::DeleteLayers),
             (Icon::Up, Action::MoveLayerUp),
             (Icon::Down, Action::MoveLayerDown),
         ] {

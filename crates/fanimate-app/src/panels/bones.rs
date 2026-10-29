@@ -1,17 +1,29 @@
-//! The Bones panel: a bone list for the selected bone layer, plus the
-//! selected bone's settings. Not in the default workspace layout; add it
+//! The Bones panel: the selected bone's settings, and the rig as a tree.
+//!
+//! Parenting works as it does on the canvas with the Reparent Bone tool: drag
+//! a row onto the bone that should be its parent (or between rows to make it
+//! a sibling, or below the list to make it a root bone), pick a parent from
+//! the Parent menu, or right-click a row. A bone keeps its place in the rest
+//! pose when it is reparented. Not in the default workspace layout; add it
 //! via the Rig workspace or Window menu.
 
 use std::sync::Arc;
 
-use eframe::egui::{self, Rect, RichText, Sense, Stroke};
+use eframe::egui::{self, CursorIcon, Id, Rect, RichText, Sense, Stroke};
 use fanimate_core::{LayerId, LayerKind};
+use fanimate_editor::{Action, BoneRef};
 
 use crate::app::Shell;
-use crate::panels::properties::{begin_edit, heading};
+use crate::icons::{self, Icon};
+use crate::menus;
+use crate::panels::properties::{begin_edit, end_edits, heading};
 
 const ROW_H: f32 = 24.0;
-const INDENT: f32 = 14.0;
+const INDENT: f32 = 16.0;
+/// The panel width from which the list and the settings sit side by side.
+const WIDE: f32 = 560.0;
+/// Room for the expand arrow at the start of a row.
+const ARROW_W: f32 = 14.0;
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.add_space(4.0);
@@ -34,247 +46,477 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         }
     };
 
-    let (names, parents): (Vec<String>, Vec<Option<usize>>) = {
-        let l = shell.editor.doc.find(layer_id).expect("just checked");
-        if let LayerKind::Bone { skeleton, .. } = &l.kind {
-            (
-                skeleton.bones.iter().map(|b| b.name.clone()).collect(),
-                skeleton.bones.iter().map(|b| b.parent).collect(),
-            )
-        } else {
-            return;
-        }
-    };
-
-    heading(ui, shell, "Bones");
-    if names.is_empty() {
+    if shell.editor.bone_rows(layer_id).is_empty() {
+        heading(ui, shell, "Bones");
         ui.label(RichText::new("No bones yet. Draw them with the Add Bone tool.").color(muted));
-    } else {
-        bone_list(ui, shell, layer_id, &names, &parents);
+        return;
     }
 
-    // Re-read names after any list mutation this frame
-    let names_now: Vec<String> = shell
-        .editor
-        .doc
-        .find(layer_id)
-        .and_then(|l| {
-            if let LayerKind::Bone { skeleton, .. } = &l.kind {
-                Some(skeleton.bones.iter().map(|b| b.name.clone()).collect())
-            } else {
-                None
+    // The list comes first and stays where it is when a bone is picked. In a
+    // wide panel (the bottom dock) the settings sit beside it; in a narrow one
+    // (the right column) they follow it.
+    let selected = shell.editor.selected_bone().filter(|b| b.layer == layer_id);
+    reveal_selected(shell, layer_id);
+    if ui.available_width() >= WIDE {
+        ui.columns(2, |cols| {
+            hierarchy(&mut cols[0], shell, layer_id);
+            if let Some(b) = selected {
+                bone_editor(&mut cols[1], shell, b);
             }
-        })
-        .unwrap_or_default();
-
-    if let Some(b) = shell.editor.selected_bone().filter(|b| b.layer == layer_id) {
-        bone_editor(ui, shell, b, &names_now);
+        });
+    } else {
+        hierarchy(ui, shell, layer_id);
+        if let Some(b) = selected {
+            ui.add_space(8.0);
+            bone_editor(ui, shell, b);
+        }
     }
 
     rig_health(ui, shell, layer_id);
 }
 
 // ---------------------------------------------------------------------------
-// Bone list
+// The tree
 // ---------------------------------------------------------------------------
 
-/// Drag payload while reordering bones.
+fn hierarchy(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId) {
+    heading(ui, shell, "Hierarchy");
+    tree(ui, shell, layer);
+    ui.label(
+        RichText::new("Drag a bone onto its new parent. The Reparent Bone tool does the same on the canvas.")
+            .size(11.0)
+            .color(shell.palette.text_muted),
+    );
+}
+
+/// Drag payload while reparenting bones.
 struct DraggedBone {
     layer: LayerId,
     index: usize,
 }
 
-fn bone_list(
-    ui: &mut egui::Ui,
-    shell: &mut Shell,
-    layer_id: LayerId,
-    names: &[String],
-    parents: &[Option<usize>],
-) {
-    let p = shell.palette;
-    let depths: Vec<usize> = (0..names.len()).map(|i| bone_depth(names, parents, i)).collect();
+/// What a row names, for drawing and dropping.
+struct Row {
+    index: usize,
+    depth: usize,
+    name: String,
+    parent: Option<usize>,
+    has_children: bool,
+    pinned: bool,
+}
+
+/// The rows of the tree, in tree order, with their details.
+fn rows_of(shell: &Shell, layer: LayerId) -> Vec<Row> {
+    let ed = &shell.editor;
+    let bone = |i: usize| ed.bone(BoneRef { layer, bone: i });
+    let all = ed.bone_rows(layer);
+    all.iter()
+        .filter_map(|&(index, depth)| {
+            let b = bone(index)?;
+            Some(Row {
+                index,
+                depth,
+                name: b.name.clone(),
+                parent: b.parent,
+                has_children: all
+                    .iter()
+                    .any(|&(c, _)| bone(c).is_some_and(|cb| cb.parent == Some(index))),
+                pinned: b.pinned,
+            })
+        })
+        .collect()
+}
+
+/// A bone picked on the canvas (or anywhere else) is shown: the bones above
+/// it are opened.
+fn reveal_selected(shell: &mut Shell, layer: LayerId) {
+    let now = shell.editor.selected_bone().filter(|b| b.layer == layer);
+    if now == shell.ui.bones_seen {
+        return;
+    }
+    shell.ui.bones_seen = now;
+    let Some(b) = now else { return };
+    let mut cur = shell.editor.bone(b).and_then(|bone| bone.parent);
+    let mut guard = 0;
+    while let Some(p) = cur {
+        shell.ui.bones_collapsed.remove(&(layer, p));
+        cur = shell
+            .editor
+            .bone(BoneRef { layer, bone: p })
+            .and_then(|bone| bone.parent);
+        guard += 1;
+        if guard > 10_000 {
+            break;
+        }
+    }
+}
+
+fn tree(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId) {
+    let rows = rows_of(shell, layer);
     let selected = shell
         .editor
         .selected_bone()
-        .filter(|b| b.layer == layer_id)
+        .filter(|b| b.layer == layer)
         .map(|b| b.bone);
+    let dragging = egui::DragAndDrop::has_payload_of_type::<DraggedBone>(ui.ctx());
 
-    egui::ScrollArea::vertical()
-        .id_salt("bones-panel-list")
-        .max_height(240.0)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, name) in names.iter().enumerate() {
-                let depth = depths[i];
-                let is_selected = selected == Some(i);
-
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
-                let painter = ui.painter_at(rect);
-                if is_selected {
-                    painter.rect_filled(rect, 2.0, p.accent.gamma_multiply(0.35));
-                } else if response.hovered() {
-                    painter.rect_filled(rect, 2.0, p.raised);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // below a closed bone its descendants are left out
+        let mut hidden_below: Option<usize> = None;
+        let mut shade = false;
+        for row in &rows {
+            if let Some(d) = hidden_below {
+                if row.depth > d {
+                    continue;
                 }
-
-                let x_name = rect.left() + 6.0 + depth as f32 * INDENT;
-
-                let renaming = shell
-                    .ui
-                    .bone_rename
-                    .as_ref()
-                    .is_some_and(|(lid, bi, _)| *lid == layer_id && *bi == i);
-
-                if renaming {
-                    let name_rect = Rect::from_min_max(
-                        egui::pos2(x_name, rect.top() + 2.0),
-                        egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
-                    );
-                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(name_rect));
-                    let (_, _, text) = shell.ui.bone_rename.as_mut().expect("checked above");
-                    let mut output = egui::TextEdit::singleline(text)
-                        .desired_width(f32::INFINITY)
-                        .show(&mut child);
-                    let edit = output.response;
-                    if std::mem::take(&mut shell.ui.bone_rename_focus) {
-                        edit.request_focus();
-                        let all = egui::text::CCursorRange::two(
-                            egui::text::CCursor::new(0),
-                            egui::text::CCursor::new(text.chars().count()),
-                        );
-                        output.state.cursor.set_char_range(Some(all));
-                        output.state.store(child.ctx(), edit.id);
-                    }
-                    if child.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        shell.ui.bone_rename = None;
-                    } else if edit.lost_focus()
-                        && let Some((lid, bi, new_name)) = shell.ui.bone_rename.take()
-                    {
-                        let b = fanimate_editor::BoneRef { layer: lid, bone: bi };
-                        shell.editor.checkpoint("Rename bone");
-                        shell.editor.edit_bone(b, |bone| bone.name = new_name.clone());
-                    }
-                } else {
-                    painter.text(
-                        egui::pos2(x_name, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        name,
-                        egui::FontId::proportional(13.0),
-                        if is_selected { p.text } else { p.text_muted },
-                    );
-                }
-
-                if response.clicked() {
-                    shell.editor.select_bone(Some(fanimate_editor::BoneRef {
-                        layer: layer_id,
-                        bone: i,
-                    }));
-                }
-                if response.double_clicked() {
-                    shell.ui.bone_rename = Some((layer_id, i, name.clone()));
-                    shell.ui.bone_rename_focus = true;
-                }
-
-                bone_drag_and_drop(ui, shell, &response, rect, layer_id, i, names, parents);
+                hidden_below = None;
             }
-        });
+            if row.has_children && shell.ui.bones_collapsed.contains(&(layer, row.index)) {
+                hidden_below = Some(row.depth);
+            }
+            bone_row(ui, shell, layer, row, selected == Some(row.index), shade);
+            shade = !shade;
+        }
+        root_drop_zone(ui, shell, layer, dragging);
+    });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn bone_drag_and_drop(
+fn bone_row(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, row: &Row, selected: bool, shade: bool) {
+    let p = shell.palette;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    if selected {
+        painter.rect_filled(rect, 3.0, p.accent.gamma_multiply(0.35));
+    } else if response.hovered() {
+        painter.rect_filled(rect, 3.0, p.raised);
+    } else if shade {
+        painter.rect_filled(rect, 0.0, p.bg.gamma_multiply(0.5));
+    }
+
+    // the lines that join a bone to the ones above it, as in a tree view
+    let level_x = |depth: usize| rect.left() + 8.0 + depth as f32 * INDENT;
+    let guide = Stroke::new(1.0, p.border);
+    for d in 1..=row.depth {
+        let x = level_x(d - 1) + ARROW_W / 2.0;
+        // the line of this bone's own level stops at its middle
+        let bottom = if d == row.depth {
+            rect.center().y
+        } else {
+            rect.bottom()
+        };
+        painter.vline(x, rect.top()..=bottom, guide);
+    }
+    if row.depth > 0 {
+        let x = level_x(row.depth - 1) + ARROW_W / 2.0;
+        let y = rect.center().y;
+        painter.hline(x..=level_x(row.depth) + ARROW_W / 2.0, y, guide);
+        // the arrow points at the parent, as the one on the canvas does
+        let head = if selected { p.accent_strong } else { p.text_muted };
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(x + 1.0, y),
+                egui::pos2(x + 6.0, y - 3.0),
+                egui::pos2(x + 6.0, y + 3.0),
+            ],
+            head,
+            Stroke::NONE,
+        ));
+    }
+
+    // the arrow that opens or closes the bones below
+    let collapsed = shell.ui.bones_collapsed.contains(&(layer, row.index));
+    let arrow_rect = Rect::from_min_size(
+        egui::pos2(level_x(row.depth), rect.top()),
+        egui::vec2(ARROW_W, ROW_H),
+    );
+    if row.has_children {
+        let arrow = ui.interact(
+            arrow_rect,
+            Id::new(("bone-arrow", layer, row.index)),
+            Sense::click(),
+        );
+        icons::paint(
+            &painter,
+            Rect::from_center_size(arrow_rect.center(), egui::vec2(14.0, 14.0)),
+            if collapsed { Icon::Expand } else { Icon::Collapse },
+            p.text_muted,
+        );
+        if arrow
+            .on_hover_text(if collapsed {
+                "Show the bones below"
+            } else {
+                "Hide the bones below"
+            })
+            .clicked()
+        {
+            if collapsed {
+                shell.ui.bones_collapsed.remove(&(layer, row.index));
+            } else {
+                shell.ui.bones_collapsed.insert((layer, row.index));
+            }
+        }
+    }
+    let icon_center = egui::pos2(arrow_rect.right() + 9.0, rect.center().y);
+    icons::paint(
+        &painter,
+        Rect::from_center_size(icon_center, egui::vec2(14.0, 14.0)),
+        Icon::BoneLayer,
+        if selected { p.accent_strong } else { p.bone },
+    );
+
+    // name, or the rename field
+    let name_left = icon_center.x + 12.0;
+    let renaming = shell
+        .ui
+        .bone_rename
+        .as_ref()
+        .is_some_and(|(lid, bi, _)| *lid == layer && *bi == row.index);
+    if renaming {
+        let name_rect = Rect::from_min_max(
+            egui::pos2(name_left, rect.top() + 2.0),
+            egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(name_rect));
+        let (_, _, text) = shell.ui.bone_rename.as_mut().expect("checked above");
+        let mut output = egui::TextEdit::singleline(text)
+            .desired_width(f32::INFINITY)
+            .show(&mut child);
+        let edit = output.response;
+        // asks for focus once, so a click elsewhere commits the name
+        if std::mem::take(&mut shell.ui.bone_rename_focus) {
+            edit.request_focus();
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(text.chars().count()),
+            );
+            output.state.cursor.set_char_range(Some(all));
+            output.state.store(child.ctx(), edit.id);
+        }
+        if child.input(|i| i.key_pressed(egui::Key::Escape)) {
+            shell.ui.bone_rename = None;
+        } else if edit.lost_focus()
+            && let Some((lid, bi, new_name)) = shell.ui.bone_rename.take()
+        {
+            let b = BoneRef { layer: lid, bone: bi };
+            shell.editor.checkpoint("Rename bone");
+            shell.editor.edit_bone(b, |bone| bone.name = new_name.clone());
+        }
+    } else {
+        painter.text(
+            egui::pos2(name_left, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            &row.name,
+            egui::FontId::proportional(13.0),
+            if selected { p.text } else { p.text_muted },
+        );
+        if row.pinned {
+            painter.text(
+                egui::pos2(rect.right() - 8.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "pinned",
+                egui::FontId::proportional(11.0),
+                p.text_muted,
+            );
+        }
+    }
+
+    let this = BoneRef {
+        layer,
+        bone: row.index,
+    };
+    if response.clicked() {
+        shell.editor.select_bone(Some(this));
+    }
+    if response.double_clicked() {
+        shell.ui.bone_rename = Some((layer, row.index, row.name.clone()));
+        shell.ui.bone_rename_focus = true;
+    }
+    // right-click picks the row first, as in the Layers panel
+    if response.secondary_clicked() && !selected {
+        shell.editor.select_bone(Some(this));
+    }
+    menus::context_menu(&response, |ui| row_menu(ui, shell, this, row));
+
+    drag_and_drop(ui, shell, &response, rect, layer, row, level_x(row.depth));
+}
+
+/// The right-click menu of a bone: parenting without dragging.
+fn row_menu(ui: &mut egui::Ui, shell: &mut Shell, b: BoneRef, row: &Row) {
+    if ui
+        .add_enabled(row.parent.is_some(), egui::Button::new("Select Parent"))
+        .clicked()
+    {
+        shell
+            .editor
+            .select_bone(row.parent.map(|bone| BoneRef { layer: b.layer, bone }));
+        ui.close();
+    }
+    let choices = shell.editor.parent_choices(b);
+    ui.add_enabled_ui(!choices.is_empty(), |ui| {
+        ui.menu_button("Parent To", |ui| parent_items(ui, shell, b, &choices));
+    });
+    if ui
+        .add_enabled(row.parent.is_some(), egui::Button::new("Make Root Bone"))
+        .on_hover_text("Take the bone out from under its parent. It stays where it is.")
+        .clicked()
+    {
+        shell.editor.set_bone_parent(b, None);
+        ui.close();
+    }
+    ui.separator();
+    if ui.button("Rename").clicked() {
+        shell.ui.bone_rename = Some((b.layer, b.bone, row.name.clone()));
+        shell.ui.bone_rename_focus = true;
+        ui.close();
+    }
+    menus::item(ui, shell, Action::DeleteBone);
+}
+
+/// The bones `b` can be put under, in tree order, indented like the tree.
+fn parent_items(ui: &mut egui::Ui, shell: &mut Shell, b: BoneRef, choices: &[usize]) {
+    for row in rows_of(shell, b.layer) {
+        if !choices.contains(&row.index) {
+            continue;
+        }
+        let label = format!("{}{}", "   ".repeat(row.depth), row.name);
+        if ui.button(label).clicked() {
+            shell.editor.set_bone_parent(b, Some(row.index));
+            ui.close();
+        }
+    }
+}
+
+/// Where a dragged bone lands on a row, from where the pointer is on it.
+#[derive(Clone, Copy, PartialEq)]
+enum Drop {
+    /// On the row's middle: becomes a child of that bone.
+    Into,
+    /// Between rows: becomes a sibling of that bone (same parent).
+    Beside { below: bool },
+}
+
+fn drag_and_drop(
     ui: &mut egui::Ui,
     shell: &mut Shell,
     response: &egui::Response,
     rect: Rect,
-    layer_id: LayerId,
-    index: usize,
-    names: &[String],
-    parents: &[Option<usize>],
+    layer: LayerId,
+    row: &Row,
+    text_x: f32,
 ) {
     if response.drag_started_by(egui::PointerButton::Primary) {
         egui::DragAndDrop::set_payload(
             ui.ctx(),
             DraggedBone {
-                layer: layer_id,
-                index,
+                layer,
+                index: row.index,
             },
         );
+    }
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
     }
     let Some(pointer) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)) else {
         return;
     };
     let t = (pointer.y - rect.top()) / rect.height();
-    #[derive(PartialEq)]
-    enum P {
-        Above,
-        Into,
-        Below,
-    }
-    let placement = if (0.25..0.75).contains(&t) {
-        P::Into
-    } else if t < 0.5 {
-        P::Above
+    let drop = if (0.25..0.75).contains(&t) {
+        Drop::Into
     } else {
-        P::Below
+        Drop::Beside { below: t >= 0.5 }
     };
-
-    if response.dnd_hover_payload::<DraggedBone>().is_some() {
-        let accent = shell.palette.accent_strong;
-        let painter = ui.painter();
-        match placement {
-            P::Into => {
-                painter.rect_stroke(
-                    rect.shrink(1.0),
-                    2.0,
-                    Stroke::new(1.5, accent),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            P::Above => {
-                painter.hline(rect.x_range(), rect.top(), Stroke::new(2.0, accent));
-            }
-            P::Below => {
-                painter.hline(rect.x_range(), rect.bottom(), Stroke::new(2.0, accent));
-            }
+    let Some(dragged) = response
+        .dnd_hover_payload::<DraggedBone>()
+        .filter(|d| d.layer == layer)
+    else {
+        return;
+    };
+    let from = BoneRef {
+        layer,
+        bone: dragged.index,
+    };
+    let choices = shell.editor.parent_choices(from);
+    let current = shell.editor.bone(from).and_then(|b| b.parent);
+    // the parent the bone would get, and whether that is allowed and a change
+    let new_parent = match drop {
+        Drop::Into => Some(row.index),
+        Drop::Beside { .. } => row.parent,
+    };
+    let allowed = match new_parent {
+        Some(p) => choices.contains(&p),
+        None => current.is_some(),
+    };
+    if !allowed {
+        ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
+        return;
+    }
+    let accent = shell.palette.accent_strong;
+    let painter = ui.painter();
+    match drop {
+        Drop::Into => {
+            painter.rect_stroke(
+                rect.shrink(1.0),
+                3.0,
+                Stroke::new(1.5, accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        Drop::Beside { below } => {
+            let y = if below { rect.bottom() } else { rect.top() };
+            painter.hline(text_x..=rect.right(), y, Stroke::new(2.0, accent));
         }
     }
-    if let Some(payload) = response.dnd_release_payload::<DraggedBone>() {
-        let payload: Arc<DraggedBone> = payload;
-        if payload.layer != layer_id {
-            return;
-        }
-        let from = payload.index;
-        match placement {
-            P::Into => {
-                if from != index {
-                    shell.editor.set_bone_parent(
-                        fanimate_editor::BoneRef {
-                            layer: layer_id,
-                            bone: from,
-                        },
-                        Some(index),
-                    );
-                }
-            }
-            P::Above => {
-                let to = if from < index {
-                    index.saturating_sub(1)
-                } else {
-                    index
-                };
-                shell.editor.reorder_bone(layer_id, from, to);
-            }
-            P::Below => {
-                let to = if from > index {
-                    (index + 1).min(names.len().saturating_sub(1))
-                } else {
-                    index
-                };
-                shell.editor.reorder_bone(layer_id, from, to);
-            }
-        }
-        let _ = parents;
+    if response.dnd_release_payload::<DraggedBone>().is_some() {
+        shell.editor.set_bone_parent(from, new_parent);
+    }
+}
+
+/// The strip under the rows: a bone let go here becomes a root bone.
+fn root_drop_zone(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, dragging: bool) {
+    let height = if dragging { 30.0 } else { 6.0 };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
+    if !dragging {
+        return;
+    }
+    let p = shell.palette;
+    let over = response.hovered();
+    let payload = response
+        .dnd_hover_payload::<DraggedBone>()
+        .filter(|d| d.layer == layer);
+    let can = payload.as_ref().is_some_and(|d| {
+        shell
+            .editor
+            .bone(BoneRef { layer, bone: d.index })
+            .is_some_and(|b| b.parent.is_some())
+    });
+    let color = if over && can { p.accent_strong } else { p.border };
+    ui.painter().rect_stroke(
+        rect.shrink2(egui::vec2(2.0, 3.0)),
+        3.0,
+        Stroke::new(1.0, color),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop here to make a root bone",
+        egui::FontId::proportional(12.0),
+        if over && can { p.text } else { p.text_muted },
+    );
+    if over && payload.is_some() && !can {
+        ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
+    }
+    if can && let Some(dropped) = response.dnd_release_payload::<DraggedBone>() {
+        let dropped: Arc<DraggedBone> = dropped;
+        shell.editor.set_bone_parent(
+            BoneRef {
+                layer,
+                bone: dropped.index,
+            },
+            None,
+        );
     }
 }
 
@@ -282,15 +524,16 @@ fn bone_drag_and_drop(
 // Selected bone editor
 // ---------------------------------------------------------------------------
 
-fn bone_editor(ui: &mut egui::Ui, shell: &mut Shell, b: fanimate_editor::BoneRef, names: &[String]) {
+fn bone_editor(ui: &mut egui::Ui, shell: &mut Shell, b: BoneRef) {
     let Some(bone) = shell.editor.bone(b).cloned() else {
         return;
     };
-    ui.add_space(6.0);
     heading(ui, shell, "Selected bone");
     let mut edited = bone.clone();
     let mut changed: Option<(egui::Response, &'static str)> = None;
     let mut new_parent: Option<Option<usize>> = None;
+    let rows = rows_of(shell, b.layer);
+    let choices = shell.editor.parent_choices(b);
     egui::Grid::new("bone-props")
         .num_columns(2)
         .spacing([8.0, 6.0])
@@ -303,31 +546,51 @@ fn bone_editor(ui: &mut egui::Ui, shell: &mut Shell, b: fanimate_editor::BoneRef
             ui.end_row();
 
             ui.label("Parent");
-            let cur = edited
-                .parent
-                .and_then(|p| names.get(p))
-                .map(|s| s.as_str())
-                .unwrap_or("(root)");
-            egui::ComboBox::from_id_salt(("bone-parent", b.bone))
-                .selected_text(cur)
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(edited.parent.is_none(), "(root)").clicked()
-                        && edited.parent.is_some()
-                    {
-                        new_parent = Some(None);
-                    }
-                    for (i, n) in names.iter().enumerate() {
-                        if i == b.bone {
-                            continue;
-                        }
-                        if ui.selectable_label(edited.parent == Some(i), n).clicked()
-                            && edited.parent != Some(i)
+            ui.horizontal(|ui| {
+                let current = edited
+                    .parent
+                    .and_then(|p| rows.iter().find(|r| r.index == p))
+                    .map_or("None (root bone)", |r| r.name.as_str());
+                egui::ComboBox::from_id_salt(("bone-parent", b.bone))
+                    .selected_text(current)
+                    .width(128.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(edited.parent.is_none(), "None (root bone)")
+                            .clicked()
+                            && edited.parent.is_some()
                         {
-                            new_parent = Some(Some(i));
+                            new_parent = Some(None);
                         }
-                    }
-                });
+                        // the tree, indented; a bone below this one would make a loop
+                        for row in &rows {
+                            if row.index == b.bone {
+                                continue;
+                            }
+                            let label = format!("{}{}", "   ".repeat(row.depth), row.name);
+                            let is_current = edited.parent == Some(row.index);
+                            let ok = is_current || choices.contains(&row.index);
+                            let clicked = ui
+                                .add_enabled_ui(ok, |ui| ui.selectable_label(is_current, label))
+                                .inner
+                                .clicked();
+                            if clicked && !is_current {
+                                new_parent = Some(Some(row.index));
+                            }
+                        }
+                    });
+                if let Some(p) = edited.parent
+                    && ui
+                        .small_button("Go to")
+                        .on_hover_text("Select the parent bone")
+                        .clicked()
+                {
+                    shell.editor.select_bone(Some(BoneRef {
+                        layer: b.layer,
+                        bone: p,
+                    }));
+                }
+            });
             ui.end_row();
 
             ui.label("Length");
@@ -399,6 +662,7 @@ fn bone_editor(ui: &mut egui::Ui, shell: &mut Shell, b: fanimate_editor::BoneRef
         begin_edit(shell, &r, label);
         shell.editor.edit_bone(b, |bone| *bone = edited);
     }
+    end_edits(ui, shell);
     if let Some(parent) = new_parent {
         shell.editor.set_bone_parent(b, parent);
     }
@@ -423,17 +687,4 @@ fn rig_health(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId) {
     for f in findings {
         ui.label(RichText::new(f).color(shell.palette.keyframe));
     }
-}
-
-fn bone_depth(names: &[String], parents: &[Option<usize>], i: usize) -> usize {
-    let mut depth = 0;
-    let mut cur = parents.get(i).copied().flatten();
-    while let Some(p) = cur {
-        depth += 1;
-        cur = parents.get(p).copied().flatten();
-        if depth > names.len() {
-            break;
-        }
-    }
-    depth
 }

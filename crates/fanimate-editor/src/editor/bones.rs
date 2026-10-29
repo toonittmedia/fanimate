@@ -36,6 +36,9 @@ pub(super) enum BoneDrag {
     },
     /// Painting weights for the selected bone.
     Paint { recorded: bool },
+    /// Dragging from a bone to the bone that will be its parent. Nothing
+    /// changes until the pointer is let go.
+    Reparent { bone: BoneRef },
 }
 
 impl Editor {
@@ -79,87 +82,184 @@ impl Editor {
         }
     }
 
-    /// Set the parent of bone `b` to `new_parent` (or to root if `None`).
-    /// Refuses cycles (a bone cannot be its own ancestor). One undo step.
-    pub fn set_bone_parent(&mut self, b: BoneRef, new_parent: Option<usize>) -> bool {
-        // refuse if new_parent is b itself or a descendant of b
-        if let Some(np) = new_parent {
-            if np == b.bone {
-                return false;
-            }
-            // walk up from np: if we reach b.bone, it's a cycle
-            let Some(sk) = self.skeleton(b.layer) else {
-                return false;
-            };
-            let mut cur = Some(np);
-            loop {
-                match cur {
-                    Some(i) if i == b.bone => return false,
-                    Some(i) => cur = sk.bones.get(i).and_then(|bn| bn.parent),
-                    None => break,
-                }
+    /// Every bone of `layer` in tree order (a bone, then its children), as
+    /// (index, depth). Roots and siblings keep the order they have in the
+    /// skeleton.
+    pub fn bone_rows(&self, layer: LayerId) -> Vec<(usize, usize)> {
+        let Some(sk) = self.skeleton(layer) else {
+            return Vec::new();
+        };
+        let n = sk.bones.len();
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut roots = Vec::new();
+        for (i, bone) in sk.bones.iter().enumerate() {
+            match bone.parent.filter(|p| *p < n && *p != i) {
+                Some(p) => children[p].push(i),
+                None => roots.push(i),
             }
         }
+        let mut rows = Vec::with_capacity(n);
+        let mut stack: Vec<(usize, usize)> = roots.into_iter().rev().map(|i| (i, 0)).collect();
+        while let Some((i, depth)) = stack.pop() {
+            rows.push((i, depth));
+            stack.extend(children[i].iter().rev().map(|c| (*c, depth + 1)));
+        }
+        rows
+    }
+
+    /// The bones under bone `b`, at any depth (not `b` itself).
+    pub fn bone_descendants(&self, b: BoneRef) -> Vec<usize> {
+        let Some(sk) = self.skeleton(b.layer) else {
+            return Vec::new();
+        };
+        let mut found = vec![b.bone];
+        // parents come before children, so one pass finds them all
+        for (i, bone) in sk.bones.iter().enumerate() {
+            if bone.parent.is_some_and(|p| found.contains(&p)) {
+                found.push(i);
+            }
+        }
+        found.remove(0);
+        found
+    }
+
+    /// The bones `b` could be given as a parent: any bone but itself and the
+    /// bones below it (that would make a loop), and not the one it already has.
+    pub fn parent_choices(&self, b: BoneRef) -> Vec<usize> {
+        let Some(sk) = self.skeleton(b.layer) else {
+            return Vec::new();
+        };
+        let below = self.bone_descendants(b);
+        let current = sk.bones.get(b.bone).and_then(|bone| bone.parent);
+        (0..sk.bones.len())
+            .filter(|i| *i != b.bone && !below.contains(i) && Some(*i) != current)
+            .collect()
+    }
+
+    /// Set the parent of bone `b` to `new_parent` (or to none, making it a
+    /// root). Refuses a loop (a bone cannot sit under itself or its own
+    /// children). The bone stays where it is in the rest pose: its joint and
+    /// angle are re-measured from the new parent, and its keys turn by the
+    /// same amount. The skeleton keeps parents ahead of children, so the bone
+    /// and the bones below it move to just after a parent that came later.
+    /// One undo step.
+    pub fn set_bone_parent(&mut self, b: BoneRef, new_parent: Option<usize>) -> bool {
+        let Some(sk) = self.skeleton(b.layer) else {
+            return false;
+        };
+        let Some(bone) = sk.bones.get(b.bone) else {
+            return false;
+        };
+        if bone.parent == new_parent {
+            return false;
+        }
+        if let Some(np) = new_parent
+            && (np >= sk.bones.len() || np == b.bone || self.bone_descendants(b).contains(&np))
+        {
+            return false;
+        }
+        let mut rest = Vec::new();
+        sk.rest_pose(&mut rest);
+        let parent_world = new_parent.map_or(Affine2::IDENTITY, |p| rest[p]);
+        let local = parent_world.inverse() * rest[b.bone];
+        let angle = local.matrix2.x_axis.y.atan2(local.matrix2.x_axis.x);
+        if !angle.is_finite() || !local.translation.is_finite() {
+            return false;
+        }
+        let name = bone.name.clone();
+        let turn = angle - bone.angle.base;
+
         self.checkpoint("Reparent bone");
         if let Some(bone) = self.skeleton_mut(b.layer).and_then(|s| s.bones.get_mut(b.bone)) {
             bone.parent = new_parent;
-            self.dirty = true;
-            true
-        } else {
-            false
+            bone.origin = local.translation;
+            bone.angle.base = angle;
+            for key in &mut bone.angle.keys {
+                key.value += turn;
+            }
+            if let Some([lo, hi]) = &mut bone.limits {
+                *lo += turn;
+                *hi += turn;
+            }
         }
+        // a parent that comes later in the list has to come first
+        if let Some(np) = new_parent
+            && np > b.bone
+        {
+            let mut moving = self.bone_descendants(b);
+            moving.insert(0, b.bone);
+            let mut order: Vec<usize> = (0..self.skeleton(b.layer).map_or(0, |s| s.bones.len()))
+                .filter(|i| !moving.contains(i))
+                .collect();
+            let after = order.iter().position(|i| *i == np).map_or(order.len(), |p| p + 1);
+            order.splice(after..after, moving);
+            self.permute_bones(b.layer, &order);
+        }
+        self.dirty = true;
+        let shown = match new_parent.and_then(|p| {
+            self.bone(BoneRef {
+                layer: b.layer,
+                bone: p,
+            })
+        }) {
+            Some(parent) => format!("\"{name}\" is now a child of \"{}\"", parent.name),
+            None => format!("\"{name}\" no longer has a parent"),
+        };
+        self.set_status(StatusKind::Info, shown);
+        true
     }
 
     /// Move bone at `from` to index `to` within its layer's skeleton, shifting
-    /// all parent indices accordingly. No-op if `from == to` or out of range.
-    /// One undo step.
+    /// all parent indices accordingly. Does nothing if `from == to`, out of
+    /// range, or the bone would come before its parent (or a child before
+    /// it). One undo step.
     pub fn reorder_bone(&mut self, layer: LayerId, from: usize, to: usize) {
-        if from == to {
+        let Some(n) = self.skeleton(layer).map(|s| s.bones.len()) else {
+            return;
+        };
+        if from == to || from >= n || to >= n {
             return;
         }
+        let mut order: Vec<usize> = (0..n).collect();
+        let moved = order.remove(from);
+        order.insert(to, moved);
+        if !self.skeleton(layer).is_some_and(|s| parents_first(s, &order)) {
+            return;
+        }
+        self.checkpoint("Reorder bone");
+        self.permute_bones(layer, &order);
+    }
+
+    /// Put the bones of `layer` in a new order: `order[new] = old`. Parent
+    /// numbers, actions, bound artwork and the selected bone follow. The
+    /// order must keep every parent ahead of its children.
+    fn permute_bones(&mut self, layer: LayerId, order: &[usize]) {
         let Some(skeleton) = self.skeleton_mut(layer) else {
             return;
         };
         let n = skeleton.bones.len();
-        if from >= n || to >= n {
+        if order.len() != n || !parents_first(skeleton, order) {
             return;
         }
-        self.checkpoint("Reorder bone");
-        // Build the renumber map: after moving `from` to `to`, each old index
-        // maps to its new position.
-        // Removing `from` shifts everything above it down by 1; then inserting
-        // at `to` shifts everything at and above `to` up by 1.
-        let map: Vec<Option<usize>> = (0..n)
-            .map(|i| {
-                Some(if i == from {
-                    to
-                } else if from < to {
-                    // e.g. move 1→3: old 0→0, 1→3, 2→1, 3→2, 4→4
-                    if i > from && i <= to { i - 1 } else { i }
-                } else {
-                    // e.g. move 3→1: old 0→0, 1→2, 2→3, 3→1, 4→4
-                    if i >= to && i < from { i + 1 } else { i }
-                })
-            })
+        // where each old bone went
+        let mut map: Vec<Option<usize>> = vec![None; n];
+        for (new, &old) in order.iter().enumerate() {
+            map[old] = Some(new);
+        }
+        let mut slots: Vec<Option<Bone>> = std::mem::take(&mut skeleton.bones)
+            .into_iter()
+            .map(Some)
             .collect();
-
-        // Reorder the bones vec
-        let skeleton = self.skeleton_mut(layer).expect("checked above");
-        let bone = skeleton.bones.remove(from);
-        skeleton.bones.insert(to, bone);
-        // Patch parent refs inside the skeleton
+        skeleton.bones = order.iter().filter_map(|&old| slots[old].take()).collect();
         for b in &mut skeleton.bones {
             b.parent = b.parent.and_then(|p| map.get(p).copied().flatten());
         }
-        // Patch any action references
         skeleton.actions.retain_mut(|a| a.renumber(&map));
-        // Patch child-layer (bound artwork) bone refs
         if let Some(layer_node) = self.doc.find_mut(layer)
             && let LayerKind::Bone { children, .. } = &mut layer_node.kind
         {
             children.iter_mut().for_each(|c| renumber_bones(c, &map));
         }
-        // Update the selected bone index
         if let Some(sel) = &mut self.bone
             && sel.layer == layer
             && let Some(Some(new_i)) = map.get(sel.bone)
@@ -259,6 +359,78 @@ impl Editor {
     }
 
     // ------------------------------------------------------------------
+    // Reparent Bone
+
+    /// Reparent Bone, drag start at `at`: pick the bone under it, the one
+    /// that will get a new parent. Nothing changes until it is let go.
+    pub fn begin_reparent(&mut self, at: Vec2, tolerance: f32) -> bool {
+        let Some(bone) = self.bone_at(at, tolerance) else {
+            return false;
+        };
+        self.bone = Some(bone);
+        self.bone_drag = Some(BoneDrag::Reparent { bone });
+        true
+    }
+
+    /// The bone being dragged to a new parent, if a Reparent Bone drag is on.
+    pub fn reparenting(&self) -> Option<BoneRef> {
+        match self.bone_drag {
+            Some(BoneDrag::Reparent { bone }) => Some(bone),
+            _ => None,
+        }
+    }
+
+    /// The bone that would become the parent if the pointer were let go at
+    /// `at`: the nearest bone within `tolerance` that is a valid choice (not
+    /// the dragged bone, nor one below it, nor its parent already).
+    pub fn reparent_target(&self, at: Vec2, tolerance: f32) -> Option<usize> {
+        let bone = self.reparenting()?;
+        let choices = self.parent_choices(bone);
+        self.bone_positions(bone.layer)
+            .into_iter()
+            .filter(|(i, _, _)| choices.contains(i))
+            .map(|(i, a, b)| (i, segment_distance(at, a, b)))
+            .filter(|(_, d)| *d <= tolerance)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
+    /// Let go of a Reparent Bone drag at `at`, as in Moho: over a bone, that
+    /// bone becomes the parent; over empty space the bone is left with no
+    /// parent. Returns whether the rig changed.
+    pub fn finish_reparent(&mut self, at: Vec2, tolerance: f32) -> bool {
+        let Some(bone) = self.reparenting() else {
+            return false;
+        };
+        let target = self.reparent_target(at, tolerance);
+        let over_a_bone = self.bone_at(at, tolerance).is_some();
+        self.bone_drag = None;
+        match target {
+            Some(parent) => self.set_bone_parent(bone, Some(parent)),
+            // let go on the bone itself, one below it, or its parent already:
+            // not a parent to give, so nothing changes (a wobble is not a drag
+            // to empty space)
+            None if over_a_bone => {
+                self.set_status(
+                    StatusKind::Info,
+                    "That bone cannot be its parent. Nothing changed",
+                );
+                false
+            }
+            None => {
+                let changed = self.set_bone_parent(bone, None);
+                if !changed {
+                    self.set_status(
+                        StatusKind::Info,
+                        "Drop it on a bone to make that bone its parent, or on empty space for no parent",
+                    );
+                }
+                changed
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Select Bone: the rest pose
 
     /// Select Bone, drag start at `at`: grab the selected bone's tip (to
@@ -318,7 +490,7 @@ impl Editor {
                 grab,
                 fk,
             } => self.pose(*bone, start, *grab, to, *fk),
-            BoneDrag::Paint { .. } => {}
+            BoneDrag::Paint { .. } | BoneDrag::Reparent { .. } => {}
         }
         self.bone_drag = Some(drag);
     }
@@ -879,6 +1051,22 @@ fn renumber_shape(s: &mut Shape, map: &[Option<usize>]) {
     }
 }
 
+/// Whether putting the bones in `order` (`order[new] = old`) keeps every
+/// bone after its parent.
+fn parents_first(skeleton: &Skeleton, order: &[usize]) -> bool {
+    let mut place = vec![usize::MAX; skeleton.bones.len()];
+    for (new, &old) in order.iter().enumerate() {
+        match place.get_mut(old) {
+            Some(slot) => *slot = new,
+            None => return false,
+        }
+    }
+    skeleton.bones.iter().enumerate().all(|(old, bone)| {
+        bone.parent
+            .is_none_or(|p| place.get(p).is_some_and(|pp| *pp < place[old]))
+    })
+}
+
 /// Renumber bone references in the shapes inside a bone layer after a bone
 /// is removed; references to the removed bone are dropped.
 fn renumber_bones(layer: &mut fanimate_core::Layer, map: &[Option<usize>]) {
@@ -1186,5 +1374,151 @@ mod tests {
         assert_eq!(w, vec![(0, 0.75), (1, 0.25)]);
         paint(&mut w, 1, 1.0, true);
         assert_eq!(w, vec![(0, 1.0)]);
+    }
+
+    /// Three bones on a row: root a (0..50), b (50..100) under a, c (100..150) under b.
+    fn chain() -> (Editor, LayerId) {
+        let (mut ed, rig, _) = rig();
+        assert!(ed.begin_add_bone(Vec2::new(200.0, 100.0)));
+        ed.drag_bone(Vec2::new(250.0, 100.0));
+        ed.end_bone_drag();
+        (ed, rig)
+    }
+
+    fn rest_tips(ed: &Editor, rig: LayerId) -> Vec<(usize, Vec2, Vec2)> {
+        ed.bone_positions(rig)
+    }
+
+    #[test]
+    fn reparenting_keeps_the_bone_where_it_is_and_is_one_undo_step() {
+        let (mut ed, rig) = chain();
+        let before = rest_tips(&ed, rig);
+        assert_eq!(ed.skeleton(rig).unwrap().bones.len(), 3);
+        // the third bone moves from under the second to be a root
+        let c = BoneRef { layer: rig, bone: 2 };
+        assert!(ed.set_bone_parent(c, None));
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, None);
+        for (a, b) in before.iter().zip(rest_tips(&ed, rig)) {
+            assert!(
+                a.1.distance(b.1) < 1e-3 && a.2.distance(b.2) < 1e-3,
+                "{a:?} {b:?}"
+            );
+        }
+        // and back under the first bone, still in place
+        assert!(ed.set_bone_parent(c, Some(0)));
+        for (a, b) in before.iter().zip(rest_tips(&ed, rig)) {
+            assert!(
+                a.1.distance(b.1) < 1e-3 && a.2.distance(b.2) < 1e-3,
+                "{a:?} {b:?}"
+            );
+        }
+        ed.run(Action::Undo);
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, None);
+        ed.run(Action::Undo);
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, Some(1));
+        // the same parent is no change, and makes no undo step
+        let revision = ed.revision();
+        assert!(!ed.set_bone_parent(c, Some(1)));
+        assert_eq!(ed.revision(), revision);
+    }
+
+    #[test]
+    fn a_bone_cannot_become_its_own_ancestor() {
+        let (mut ed, rig) = chain();
+        let a = BoneRef { layer: rig, bone: 0 };
+        assert!(!ed.set_bone_parent(a, Some(0)));
+        assert!(!ed.set_bone_parent(a, Some(1)), "a child");
+        assert!(!ed.set_bone_parent(a, Some(2)), "a grandchild");
+        assert!(!ed.set_bone_parent(a, Some(9)), "no such bone");
+        assert_eq!(ed.parent_choices(a), Vec::<usize>::new());
+        assert_eq!(ed.parent_choices(BoneRef { layer: rig, bone: 2 }), [0]);
+        assert_eq!(ed.skeleton(rig).unwrap().bones[0].parent, None);
+    }
+
+    #[test]
+    fn a_parent_that_comes_later_moves_the_bone_after_it() {
+        let (mut ed, rig) = chain();
+        ed.select_bone(Some(BoneRef { layer: rig, bone: 1 }));
+        // the root goes under the third bone: it and its children follow the parent
+        assert!(!ed.set_bone_parent(BoneRef { layer: rig, bone: 1 }, Some(2)));
+        let before = rest_tips(&ed, rig);
+        // bone 0 can go under the new bone 2 once it is not an ancestor of it: first free bone 2
+        assert!(ed.set_bone_parent(BoneRef { layer: rig, bone: 2 }, None));
+        assert!(ed.set_bone_parent(BoneRef { layer: rig, bone: 0 }, Some(2)));
+        let sk = ed.skeleton(rig).unwrap();
+        for (i, bone) in sk.bones.iter().enumerate() {
+            assert!(
+                bone.parent.is_none_or(|p| p < i),
+                "bone {i} comes before its parent"
+            );
+        }
+        assert_eq!(sk.bones.len(), 3);
+        // every bone is still in place (they were renumbered, so compare as a set)
+        let after = rest_tips(&ed, rig);
+        for (_, joint, tip) in &before {
+            assert!(
+                after
+                    .iter()
+                    .any(|(_, j, t)| j.distance(*joint) < 1e-3 && t.distance(*tip) < 1e-3),
+                "{joint:?} {tip:?} moved"
+            );
+        }
+        // the bone that was selected is still selected, under its new number
+        let sel = ed.selected_bone().unwrap();
+        assert_eq!(ed.bone(sel).unwrap().name, "Bone 2");
+    }
+
+    #[test]
+    fn bones_list_in_tree_order_with_their_depth() {
+        let (mut ed, rig) = chain();
+        // make the fourth... free the third and hang it under the first: a has two children
+        assert!(ed.set_bone_parent(BoneRef { layer: rig, bone: 2 }, Some(0)));
+        assert_eq!(ed.bone_rows(rig), [(0, 0), (1, 1), (2, 1)]);
+        // the third has a child of its own
+        assert!(ed.begin_add_bone(Vec2::new(300.0, 100.0)));
+        ed.drag_bone(Vec2::new(350.0, 100.0));
+        ed.end_bone_drag();
+        assert_eq!(ed.bone_rows(rig).len(), 4);
+        assert_eq!(ed.bone_descendants(BoneRef { layer: rig, bone: 0 }), [1, 2, 3]);
+    }
+
+    #[test]
+    fn reordering_never_puts_a_bone_before_its_parent() {
+        let (mut ed, rig) = chain();
+        let revision = ed.revision();
+        ed.reorder_bone(rig, 1, 0);
+        assert_eq!(ed.skeleton(rig).unwrap().bones[0].name, "Bone 1");
+        assert_eq!(ed.revision(), revision, "refused, so no undo step");
+    }
+
+    #[test]
+    fn dragging_from_a_bone_to_another_reparents_it() {
+        let (mut ed, rig) = chain();
+        ed.tool = Tool::ReparentBone;
+        // the third bone (200 to 250) is picked by its middle, and let go over the first (100 to 150)
+        assert!(ed.begin_reparent(Vec2::new(225.0, 100.0), 4.0));
+        assert_eq!(ed.reparenting(), Some(BoneRef { layer: rig, bone: 2 }));
+        // over the bone it is on already, or nothing, there is no target
+        assert_eq!(ed.reparent_target(Vec2::new(225.0, 100.0), 4.0), None);
+        assert_eq!(ed.reparent_target(Vec2::new(125.0, 100.0), 4.0), Some(0));
+        let revision = ed.revision();
+        assert!(ed.finish_reparent(Vec2::new(125.0, 100.0), 4.0));
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, Some(0));
+        assert_ne!(ed.revision(), revision);
+        assert!(ed.reparenting().is_none());
+        // let go on its own bone, nothing changes
+        assert!(ed.begin_reparent(Vec2::new(225.0, 100.0), 4.0));
+        assert!(!ed.finish_reparent(Vec2::new(226.0, 100.0), 4.0));
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, Some(0));
+        // let go over empty space: the bone has no parent, as in Moho
+        assert!(ed.begin_reparent(Vec2::new(225.0, 100.0), 4.0));
+        assert!(ed.finish_reparent(Vec2::new(300.0, 300.0), 4.0));
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, None);
+        // and a root bone let go over empty space stays as it is, saying so
+        let revision = ed.revision();
+        assert!(ed.begin_reparent(Vec2::new(225.0, 100.0), 4.0));
+        assert!(!ed.finish_reparent(Vec2::new(300.0, 300.0), 4.0));
+        assert_eq!(ed.revision(), revision);
+        assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, None);
     }
 }

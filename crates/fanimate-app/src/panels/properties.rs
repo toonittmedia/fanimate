@@ -118,6 +118,28 @@ fn key_button(ui: &mut egui::Ui, shell: &mut Shell, ch: ChannelId) {
     });
 }
 
+/// A line of prose whose numbers (the parts marked `true`) are in the
+/// monospace font, so frame numbers look the same in every panel.
+fn frame_text(parts: &[(String, bool)], size: f32, color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for (text, mono) in parts {
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id: if *mono {
+                    crate::theme::mono(size)
+                } else {
+                    egui::FontId::proportional(size)
+                },
+                color,
+                ..Default::default()
+            },
+        );
+    }
+    job
+}
+
 pub fn heading(ui: &mut egui::Ui, shell: &Shell, text: &str) {
     ui.label(RichText::new(text).strong().color(shell.palette.text));
     ui.add_space(2.0);
@@ -292,18 +314,31 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
         ui.spacing_mut().item_spacing.x = 4.0;
         let frame = shell.editor.current_frame();
         let rest = fanimate_core::REST_FRAME;
-        let text = if frame <= rest {
-            format!(
-                "Frame {rest} is the rest pose, for drawing and setting up: edits here change the layer \
-                 itself. Click a diamond to key a value."
-            )
+        // frame numbers are in the monospace font, here as everywhere
+        let parts: Vec<(String, bool)> = if frame <= rest {
+            vec![
+                ("Frame ".into(), false),
+                (rest.to_string(), true),
+                (
+                    " is the rest pose, for drawing and setting up: edits here change the layer \
+                     itself. Click a diamond to key a value."
+                        .into(),
+                    false,
+                ),
+            ]
         } else {
-            format!(
-                "Edits on frame {frame} are animation: they make keyframes, and frame {rest} keeps \
-                 what it had. Click a diamond to key a value without changing it."
-            )
+            vec![
+                ("Edits on frame ".into(), false),
+                (frame.to_string(), true),
+                (" are animation: they make keyframes, and frame ".into(), false),
+                (rest.to_string(), true),
+                (
+                    " keeps what it had. Click a diamond to key a value without changing it.".into(),
+                    false,
+                ),
+            ]
         };
-        ui.label(RichText::new(text).size(11.0).color(muted));
+        ui.label(frame_text(&parts, 11.0, muted));
     });
     if let Some(l) = shell.editor.doc.find(id)
         && let LayerKind::Frames { cels } = &l.kind
@@ -395,6 +430,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
             .spacing([8.0, 6.0])
             .show(ui, |ui| {
                 ui.label("Starts on frame");
+                ui.style_mut().override_font_id = Some(crate::theme::mono(13.0));
                 let r = ui.add(egui::DragValue::new(&mut start).speed(0.2));
                 if r.changed() {
                     changed = Some(r);
@@ -414,15 +450,17 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
         match info {
             Some(Ok(i)) => {
                 let fps = shell.editor.doc.fps;
-                ui.label(
-                    RichText::new(format!(
-                        "{:.1} seconds ({} frames), {}",
-                        i.seconds,
-                        (i.seconds * fps).ceil(),
-                        if i.channels == 1 { "mono" } else { "stereo" }
-                    ))
-                    .color(muted),
-                );
+                let frames = ((i.seconds * fps).ceil() as i64).to_string();
+                let parts = [
+                    (format!("{:.1}", i.seconds), true),
+                    (" seconds (".into(), false),
+                    (frames, true),
+                    (
+                        format!(" frames), {}", if i.channels == 1 { "mono" } else { "stereo" }),
+                        false,
+                    ),
+                ];
+                ui.label(frame_text(&parts, 13.0, muted));
             }
             Some(Err(_)) => {
                 ui.label(RichText::new("The sound file cannot be read.").color(shell.palette.error));
@@ -743,8 +781,8 @@ fn project(ui: &mut egui::Ui, shell: &mut Shell) {
                 }
                 ui.label(
                     RichText::new(crate::timecode::clock(end - start + 1, fps))
-                        .color(muted)
-                        .size(12.0),
+                        .font(crate::theme::mono(12.0))
+                        .color(muted),
                 )
                 .on_hover_text("Length in seconds:frames");
             });

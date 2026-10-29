@@ -159,6 +159,11 @@ pub struct UiState {
     pub bone_rename: Option<(fanimate_core::LayerId, usize, String)>,
     /// Give the bone rename field focus on the next frame.
     pub bone_rename_focus: bool,
+    /// Bones the Bones panel shows closed (their children are hidden).
+    pub bones_collapsed: std::collections::HashSet<(fanimate_core::LayerId, usize)>,
+    /// The bone the Bones panel last showed as picked, to open the tree to a
+    /// bone picked somewhere else.
+    pub bones_seen: Option<fanimate_editor::BoneRef>,
     pub layer_filter: String,
     pub show_preferences: bool,
     pub prefs_page: dialogs::PrefsPage,
@@ -841,6 +846,8 @@ fn handle_input(ctx: &egui::Context, shell: &mut Shell) {
             // egui turns Ctrl+C/X/V into these instead of key events
             // a paste needs a document in front, so not on Home
             egui::Event::Paste(_) if shell.docs.home_front() => {}
+            // nothing is edited while the animation plays
+            egui::Event::Paste(_) if shell.editor.editing_blocked() => {}
             // egui-winit makes these of Ctrl+Shift+C/X/V as well, without the
             // key press, so the layer commands are told apart by Shift; the
             // plain ones follow the focus (canvas points, timeline keys)
@@ -1091,6 +1098,9 @@ fn is_importable(path: &Path) -> bool {
 /// Import one file as layers of the front document. Errors say what went
 /// wrong, in the status bar.
 fn import_file(shell: &mut Shell, path: &Path) -> bool {
+    if shell.editor.editing_blocked() {
+        return false;
+    }
     let name = path.display().to_string();
     let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| {
         let ext = path
@@ -1119,6 +1129,9 @@ fn import_file(shell: &mut Shell, path: &Path) -> bool {
 }
 
 fn import_dialog(shell: &mut Shell) {
+    if shell.editor.editing_blocked() {
+        return;
+    }
     let Some(paths) = rfd::FileDialog::new()
         .set_title("Import pictures, a Photoshop or SVG file, or sound")
         .add_filter(

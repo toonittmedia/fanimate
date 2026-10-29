@@ -247,7 +247,7 @@ fn buttons(ui: &mut egui::Ui, shell: &mut Shell, push: &mut Vec<Action>) {
         button(ui, shell, push, Icon::Lock, "", Action::ToggleLock);
     }
     button(ui, shell, push, Icon::Duplicate, "", Action::Duplicate);
-    button(ui, shell, push, Icon::Delete, "", Action::Delete);
+    button(ui, shell, push, Icon::Delete, "", Action::DeleteLayers);
     menus::menu_button(
         ui,
         egui::Button::new(egui::RichText::new("…").color(shell.palette.text)).frame(false),

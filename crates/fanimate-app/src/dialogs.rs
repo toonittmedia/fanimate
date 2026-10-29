@@ -775,8 +775,8 @@ fn video_formats(ui: &mut egui::Ui, shell: &mut Shell) {
                 list(&tools.ffmpeg_adds())
             ));
             let path = f.path.display().to_string();
-            ui.add(egui::Label::new(muted(path.clone()).size(11.0)).truncate())
-                .on_hover_text(path);
+            // a truncated label shows its text on hover by itself
+            ui.add(egui::Label::new(muted(path).size(11.0)).truncate());
         }
         (None, Some(problem)) => {
             ui.label(RichText::new(format!("FFmpeg could not be used: {problem}")).color(p.error));

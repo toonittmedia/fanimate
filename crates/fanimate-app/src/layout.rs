@@ -2,8 +2,8 @@
 //! three regions around it.
 //!
 //! Tools sit left of the canvas, the inspector tabs (Properties, Style,
-//! Actions, Layers, History) in a column on the right, and the Timeline,
-//! X-Sheet and Bones along the bottom. Each region is resizable and its tabs
+//! Actions, Layers, Bones, History) in a column on the right, and the
+//! Timeline and X-Sheet along the bottom. Each region is resizable and its tabs
 //! can be reordered and moved between the leaves inside it; the canvas has no
 //! tab bar and no border, so nothing around it wastes room.
 
@@ -34,8 +34,10 @@ impl Tab {
     /// The region a panel opens in when it is not on screen.
     pub fn region(self) -> Region {
         match self {
-            Self::Timeline | Self::XSheet | Self::Bones => Region::Bottom,
-            Self::Layers | Self::Properties | Self::Style | Self::Actions | Self::History => Region::Right,
+            Self::Timeline | Self::XSheet => Region::Bottom,
+            Self::Layers | Self::Properties | Self::Style | Self::Actions | Self::History | Self::Bones => {
+                Region::Right
+            }
         }
     }
 }
@@ -84,13 +86,14 @@ impl Layout {
             generation: 0,
         };
         // History is not shown until it is asked for (Window menu); it then
-        // joins Layers.
+        // joins Layers. Bones is a tab beside Layers, where the room is.
         match w {
             Workspace::Animate => {
-                layout
-                    .right
-                    .main_surface_mut()
-                    .split_below(NodeIndex::root(), 0.42, vec![Tab::Layers]);
+                layout.right.main_surface_mut().split_below(
+                    NodeIndex::root(),
+                    0.42,
+                    vec![Tab::Layers, Tab::Bones],
+                );
             }
             Workspace::Draw => {
                 layout.right = DockState::new(vec![Tab::Style, Tab::Properties, Tab::Actions]);
@@ -103,9 +106,8 @@ impl Layout {
             Workspace::Rig => {
                 layout.right = DockState::new(vec![Tab::Properties, Tab::Actions, Tab::Style]);
                 let s = layout.right.main_surface_mut();
-                let [_, layers] = s.split_below(NodeIndex::root(), 0.35, vec![Tab::Layers]);
-                s.split_below(layers, 0.55, vec![Tab::Bones]);
-                layout.right_width = 320.0;
+                s.split_below(NodeIndex::root(), 0.4, vec![Tab::Layers, Tab::Bones]);
+                layout.right_width = 340.0;
                 layout.bottom_height = 250.0;
             }
             Workspace::FrameByFrame => {
@@ -143,16 +145,15 @@ impl Layout {
         }
     }
 
-    /// Whether the panel is on screen, in either region (Rig keeps Bones in
-    /// the right column, the other workspaces below).
+    /// Whether the panel is on screen, in either region.
     pub fn is_open(&self, tab: Tab) -> bool {
         self.show_right && self.right.find_tab(&tab).is_some()
             || self.show_bottom && self.bottom.find_tab(&tab).is_some()
     }
 
     /// Show a panel and bring it to the front of its tabs. A panel that was
-    /// closed comes back in its own region: History beside Layers, the rest
-    /// in the leaf that has focus.
+    /// closed comes back in its own region: History and Bones beside Layers,
+    /// the rest in the leaf that has focus.
     pub fn open(&mut self, tab: Tab) {
         for region in [Region::Right, Region::Bottom] {
             let dock = self.dock(region);
@@ -165,7 +166,7 @@ impl Layout {
         let region = tab.region();
         self.show(region);
         let dock = self.dock(region);
-        if tab == Tab::History
+        if matches!(tab, Tab::History | Tab::Bones)
             && let Some(layers) = dock.find_tab(&Tab::Layers)
         {
             dock.set_focused_node_and_surface(layers.node_path());
@@ -324,12 +325,30 @@ mod tests {
 
     #[test]
     fn a_closed_panel_comes_back_in_its_own_region() {
-        let mut layout = Layout::for_workspace(Workspace::Animate);
-        layout.open(Tab::Bones);
-        assert!(layout.bottom.find_tab(&Tab::Bones).is_some());
-        assert!(layout.right.find_tab(&Tab::Bones).is_none());
+        let mut layout = Layout::for_workspace(Workspace::Draw);
+        layout.open(Tab::XSheet);
+        assert!(layout.bottom.find_tab(&Tab::XSheet).is_some());
+        assert!(layout.right.find_tab(&Tab::XSheet).is_none());
         layout.open(Tab::Actions);
         assert!(layout.is_open(Tab::Actions));
+    }
+
+    #[test]
+    fn bones_is_a_tab_beside_layers_and_comes_back_there() {
+        for w in [Workspace::Animate, Workspace::Rig] {
+            let layout = Layout::for_workspace(w);
+            let bones = layout.right.find_tab(&Tab::Bones).expect("Bones is open");
+            let layers = layout.right.find_tab(&Tab::Layers).unwrap();
+            assert_eq!(bones.node, layers.node, "{w:?}: Bones shares Layers' leaf");
+        }
+        // a workspace without it opens it beside Layers too
+        let mut layout = Layout::for_workspace(Workspace::Draw);
+        assert!(!layout.is_open(Tab::Bones));
+        layout.open(Tab::Bones);
+        let bones = layout.right.find_tab(&Tab::Bones).unwrap();
+        let layers = layout.right.find_tab(&Tab::Layers).unwrap();
+        assert_eq!(bones.node, layers.node);
+        assert!(layout.bottom.find_tab(&Tab::Bones).is_none());
     }
 
     #[test]

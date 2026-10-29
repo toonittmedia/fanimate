@@ -93,6 +93,9 @@ struct ClipboardData {
 
 const CLIPBOARD_TAG: &str = "layers";
 
+/// What the status bar says when an edit is tried while the animation plays.
+pub const PAUSE_TO_EDIT: &str = "Pause playback to edit.";
+
 pub struct Editor {
     pub doc: Document,
     /// Where the project is saved; `None` until the first save.
@@ -416,6 +419,10 @@ impl Editor {
 
     pub fn run(&mut self, action: Action) -> Outcome {
         use Action::*;
+        if self.playing && action.edits_document() {
+            self.set_status(StatusKind::Info, PAUSE_TO_EDIT);
+            return Outcome::Done;
+        }
         match action {
             Undo => self.undo(),
             Redo => self.redo(),
@@ -454,6 +461,10 @@ impl Editor {
                 self.paste(None);
             }
             Duplicate => self.duplicate(),
+            // with the timeline in front, the keys that are picked go
+            Delete if self.focus == Focus::Timeline && self.has_selected_keys() => {
+                self.delete_selected_keys();
+            }
             // with a point tool, editing commands act on points
             Delete if self.tool.edits_points() && !self.points.is_empty() => {
                 self.delete_points();
@@ -464,8 +475,19 @@ impl Editor {
             {
                 self.delete_selected_bone();
             }
+            // the shapes picked on the canvas
+            Delete if !self.selected_shapes().is_empty() => self.delete_shapes(),
+            // never a layer: that is DeleteLayers (Ctrl+Delete), so a stray
+            // Delete cannot take a whole layer when keys or points were meant
+            Delete => self.set_status(
+                StatusKind::Info,
+                "Nothing to delete here. Press Ctrl+Delete to delete the selected layer.",
+            ),
             BindToBone => {
                 self.bind_to_bone();
+            }
+            DeleteBone => {
+                self.delete_selected_bone();
             }
             NewAction => {
                 self.new_action(false);
@@ -527,7 +549,7 @@ impl Editor {
             }
             SelectAll if self.tool.edits_points() => self.select_all_points(),
             SelectNone if self.tool.edits_points() => self.points.clear(),
-            Delete => self.delete_selected(),
+            DeleteLayers => self.delete_selected(),
             SelectAll => self.select_all(),
             SelectNone => self.selection.clear(),
             Rename => self.rename_request = self.primary(),
@@ -592,9 +614,22 @@ impl Editor {
         Outcome::Done
     }
 
+    /// For the canvas and panels, which edit directly rather than through an
+    /// [`Action`]: true, with a hint in the status bar, while the animation
+    /// plays and nothing may be edited.
+    pub fn editing_blocked(&mut self) -> bool {
+        if self.playing {
+            self.set_status(StatusKind::Info, PAUSE_TO_EDIT);
+        }
+        self.playing
+    }
+
     /// Whether `action` can run now, for greying out menu items.
     pub fn can_run(&self, action: Action) -> bool {
         use Action::*;
+        if self.playing && action.edits_document() {
+            return false;
+        }
         let has_sel = !self.selection.is_empty();
         match action {
             Undo => self.history.undo_label().is_some(),
@@ -604,13 +639,21 @@ impl Editor {
                 .is_some_and(|id| self.history.before_last_change(id, &self.doc).is_some()),
             GoToHistory(state) => state != self.history.cursor(),
             Cut | Copy => self.can_copy_focused(),
-            CutLayers | CopyLayers | Duplicate | Delete | GroupLayers | MoveLayerUp | MoveLayerDown
+            CutLayers | CopyLayers | Duplicate | DeleteLayers | GroupLayers | MoveLayerUp | MoveLayerDown
             | ToggleVisibility => has_sel,
+            // Delete acts on what has focus: keys, points, shapes or a bone
+            Delete => {
+                self.focus == Focus::Timeline && self.has_selected_keys()
+                    || self.tool.edits_points() && !self.points.is_empty()
+                    || self.tool.group() == crate::action::ToolGroup::Bone && self.selected_bone().is_some()
+                    || !self.selected_shapes().is_empty()
+            }
             AddKey | DeleteKey => has_sel || self.has_selected_keys(),
             SetLoop(_) => self.has_selected_keys(),
             Rename | LayerProperties | PickPivot => self.primary().is_some(),
             SetLabel(_) => has_sel,
             BindToBone | BindSmoothly | Unbind => self.can_bind(),
+            DeleteBone => self.selected_bone().is_some(),
             NewAction => self.actions_layer().is_some(),
             NewSmartBoneAction => self
                 .actions_layer()
@@ -1875,9 +1918,50 @@ mod tests {
         ed.run(Action::Duplicate);
         assert_eq!(names(&ed), ["A", "B", "B copy", "C"]);
         ed.select(a, SelectMode::Replace);
-        ed.run(Action::Delete);
+        ed.run(Action::DeleteLayers);
         assert_eq!(names(&ed), ["B", "B copy", "C"]);
         assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn plain_delete_never_deletes_a_layer() {
+        let (mut ed, [a, _, _]) = three();
+        ed.select(a, SelectMode::Replace);
+        let before = ed.revision();
+        // nothing else to delete: the layer stays, and the status says how
+        assert!(!ed.can_run(Action::Delete));
+        ed.run(Action::Delete);
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+        assert_eq!(ed.revision(), before);
+        let (_, message) = ed.status.clone().unwrap();
+        assert!(message.contains("Ctrl+Delete"), "{message}");
+        // the same in every place the focus can be, and with a point tool
+        for focus in [Focus::Canvas, Focus::Layers, Focus::Timeline] {
+            ed.set_focus(focus);
+            ed.run(Action::Delete);
+            assert_eq!(names(&ed), ["A", "B", "C"], "{focus:?}");
+        }
+        ed.set_tool(Tool::SelectPoints);
+        ed.run(Action::Delete);
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn delete_in_the_timeline_deletes_the_picked_keys_not_the_layer() {
+        let (mut ed, [a, _, _]) = three();
+        ed.select(a, SelectMode::Replace);
+        ed.go_to(4);
+        ed.run(Action::AddKey);
+        ed.set_focus(Focus::Timeline);
+        ed.select_all_keys();
+        assert!(ed.has_selected_keys());
+        assert!(ed.can_run(Action::Delete));
+        ed.run(Action::Delete);
+        assert_eq!(names(&ed), ["A", "B", "C"], "the layer is still there");
+        assert!(!ed.has_selected_keys());
+        assert!(ed.doc.find(a).unwrap().transform.position.keys.is_empty());
+        ed.run(Action::Undo);
+        assert!(!ed.doc.find(a).unwrap().transform.position.keys.is_empty());
     }
 
     #[test]
@@ -2366,6 +2450,36 @@ mod tests {
         assert!(!ed.playing);
         ed.go_to(-4);
         assert_eq!(ed.current_frame(), 0);
+    }
+
+    #[test]
+    fn nothing_is_edited_while_the_animation_plays() {
+        let (mut ed, ids) = three();
+        ed.select(ids[0], SelectMode::Replace);
+        ed.go_to(5);
+        ed.playing = true;
+        let before = ed.revision();
+        for action in [
+            Action::AddKey,
+            Action::Delete,
+            Action::Duplicate,
+            Action::NewVectorLayer,
+        ] {
+            assert!(!ed.can_run(action), "{action:?} is greyed while playing");
+            ed.run(action);
+        }
+        assert_eq!(ed.revision(), before, "no edit left a history step");
+        assert_eq!(ed.doc.layers.len(), 3, "no layer was added or deleted");
+        assert!(ed.status.is_some(), "the status bar says why");
+        // moving about and choosing tools still work
+        assert!(ed.can_run(Action::Tool(Tool::Pan)));
+        assert!(ed.can_run(Action::NextFrame));
+        assert!(!ed.begin_selected_key_drag(false));
+        // once paused, the same edit goes through
+        ed.playing = false;
+        assert!(ed.can_run(Action::AddKey));
+        ed.run(Action::AddKey);
+        assert_ne!(ed.revision(), before);
     }
 
     #[test]

@@ -455,108 +455,107 @@ fn selected_shapes(ui: &mut egui::Ui, shell: &mut Shell) {
         shell.ui.shape_rename_focus = true;
     }
 
-    egui::ScrollArea::vertical()
-        .max_height(200.0)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for (i, shape) in shapes.iter().enumerate() {
-                // the colours as they are on this frame, if they are animated
-                let mut style = shape.style_at(frame);
-                let row_id = ui.id().with(("shape-row", i));
+    // no scroll area of its own: the whole panel scrolls, so a small screen
+    // has one place to scroll, not a list inside a list
+    ui.scope(|ui| {
+        for (i, shape) in shapes.iter().enumerate() {
+            // the colours as they are on this frame, if they are animated
+            let mut style = shape.style_at(frame);
+            let row_id = ui.id().with(("shape-row", i));
 
-                ui.horizontal(|ui| {
-                    // Drag handle: a grab cursor and DnD source
-                    let handle_resp = ui.allocate_response(egui::vec2(14.0, 18.0), egui::Sense::drag());
-                    // Draw the ⠿ dots
-                    let painter = ui.painter_at(handle_resp.rect);
-                    let c = handle_resp.rect.center();
-                    for dy in [-4.0_f32, 0.0, 4.0] {
-                        for dx in [-2.5_f32, 2.5] {
-                            painter.circle_filled(
-                                egui::pos2(c.x + dx, c.y + dy),
-                                1.5,
-                                if handle_resp.hovered() {
-                                    p.text
-                                } else {
-                                    p.text_muted
-                                },
-                            );
-                        }
+            ui.horizontal(|ui| {
+                // Drag handle: a grab cursor and DnD source
+                let handle_resp = ui.allocate_response(egui::vec2(14.0, 18.0), egui::Sense::drag());
+                // Draw the ⠿ dots
+                let painter = ui.painter_at(handle_resp.rect);
+                let c = handle_resp.rect.center();
+                for dy in [-4.0_f32, 0.0, 4.0] {
+                    for dx in [-2.5_f32, 2.5] {
+                        painter.circle_filled(
+                            egui::pos2(c.x + dx, c.y + dy),
+                            1.5,
+                            if handle_resp.hovered() {
+                                p.text
+                            } else {
+                                p.text_muted
+                            },
+                        );
                     }
-                    if handle_resp.hovered() || handle_resp.dragged() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                    }
-                    if handle_resp.drag_started() {
-                        egui::DragAndDrop::set_payload(ui.ctx(), DraggedShape(i));
-                    }
+                }
+                if handle_resp.hovered() || handle_resp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                }
+                if handle_resp.drag_started() {
+                    egui::DragAndDrop::set_payload(ui.ctx(), DraggedShape(i));
+                }
 
-                    // Drop zone: hover over a row to show where it would land
-                    if let Some(src) = egui::DragAndDrop::payload::<DraggedShape>(ui.ctx()).map(|p| p.0)
-                        && src != i
-                    {
-                        // draw an insertion line at the top of this row
-                        let top = handle_resp.rect.left_top();
-                        let right = egui::pos2(ui.max_rect().right(), top.y);
-                        painter.hline(top.x..=right.x, top.y, egui::Stroke::new(2.0, accent));
-                        // detect drop
-                        if handle_resp.hovered() && ui.input(|inp| inp.pointer.any_released()) {
-                            reorder = Some((src, i));
-                            egui::DragAndDrop::clear_payload(ui.ctx());
-                        }
+                // Drop zone: hover over a row to show where it would land
+                if let Some(src) = egui::DragAndDrop::payload::<DraggedShape>(ui.ctx()).map(|p| p.0)
+                    && src != i
+                {
+                    // draw an insertion line at the top of this row
+                    let top = handle_resp.rect.left_top();
+                    let right = egui::pos2(ui.max_rect().right(), top.y);
+                    painter.hline(top.x..=right.x, top.y, egui::Stroke::new(2.0, accent));
+                    // detect drop
+                    if handle_resp.hovered() && ui.input(|inp| inp.pointer.any_released()) {
+                        reorder = Some((src, i));
+                        egui::DragAndDrop::clear_payload(ui.ctx());
                     }
+                }
 
-                    shape_name(ui, shell, id, i, shape, selected.contains(&i));
+                shape_name(ui, shell, id, i, shape, selected.contains(&i));
 
-                    // Fill colour
-                    let mut fill = style.fill.map(to_color32).unwrap_or(egui::Color32::TRANSPARENT);
-                    let r = ui.color_edit_button_srgba(&mut fill);
-                    if r.changed() {
-                        style.fill = Some(from_color32(fill));
-                        edited = Some((i, style, r));
-                    }
+                // Fill colour
+                let mut fill = style.fill.map(to_color32).unwrap_or(egui::Color32::TRANSPARENT);
+                let r = ui.color_edit_button_srgba(&mut fill);
+                if r.changed() {
+                    style.fill = Some(from_color32(fill));
+                    edited = Some((i, style, r));
+                }
 
-                    // Stroke colour
-                    let mut stroke = style.stroke.unwrap_or(Stroke {
-                        color: fanimate_core::Color::BLACK,
-                        width: 0.0,
-                    });
-                    let mut c = to_color32(stroke.color);
-                    let r = ui.color_edit_button_srgba(&mut c);
-                    if r.changed() {
-                        stroke.color = from_color32(c);
-                        style.stroke = Some(stroke);
-                        edited = Some((i, style, r));
-                    }
-
-                    // Stroke width
-                    let r = ui.add(
-                        egui::DragValue::new(&mut stroke.width)
-                            .range(0.0..=200.0)
-                            .speed(0.1),
-                    );
-                    if r.changed() {
-                        style.stroke = (stroke.width > 0.0).then_some(stroke);
-                        edited = Some((i, style, r));
-                    }
+                // Stroke colour
+                let mut stroke = style.stroke.unwrap_or(Stroke {
+                    color: fanimate_core::Color::BLACK,
+                    width: 0.0,
                 });
-
-                let _ = row_id;
-            }
-
-            // Drop at end of list
-            if let Some(src) = egui::DragAndDrop::payload::<DraggedShape>(ui.ctx()).map(|p| p.0) {
-                let rest = ui.allocate_response(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
-                if rest.hovered() && ui.input(|inp| inp.pointer.any_released()) {
-                    reorder = Some((src, shapes.len() - 1));
-                    egui::DragAndDrop::clear_payload(ui.ctx());
+                let mut c = to_color32(stroke.color);
+                let r = ui.color_edit_button_srgba(&mut c);
+                if r.changed() {
+                    stroke.color = from_color32(c);
+                    style.stroke = Some(stroke);
+                    edited = Some((i, style, r));
                 }
-                if rest.hovered() {
-                    let y = rest.rect.top();
-                    let painter = ui.painter_at(rest.rect);
-                    painter.hline(rest.rect.x_range(), y, egui::Stroke::new(2.0, accent));
+
+                // Stroke width
+                let r = ui.add(
+                    egui::DragValue::new(&mut stroke.width)
+                        .range(0.0..=200.0)
+                        .speed(0.1),
+                );
+                if r.changed() {
+                    style.stroke = (stroke.width > 0.0).then_some(stroke);
+                    edited = Some((i, style, r));
                 }
+            });
+
+            let _ = row_id;
+        }
+
+        // Drop at end of list
+        if let Some(src) = egui::DragAndDrop::payload::<DraggedShape>(ui.ctx()).map(|p| p.0) {
+            let rest = ui.allocate_response(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
+            if rest.hovered() && ui.input(|inp| inp.pointer.any_released()) {
+                reorder = Some((src, shapes.len() - 1));
+                egui::DragAndDrop::clear_payload(ui.ctx());
             }
-        });
+            if rest.hovered() {
+                let y = rest.rect.top();
+                let painter = ui.painter_at(rest.rect);
+                painter.hline(rest.rect.x_range(), y, egui::Stroke::new(2.0, accent));
+            }
+        }
+    });
 
     if let Some((i, style, r)) = edited {
         begin_edit(shell, &r, "Change style");

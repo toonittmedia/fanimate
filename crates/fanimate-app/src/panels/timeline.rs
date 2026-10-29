@@ -1399,6 +1399,7 @@ fn key_clipboard_items(ui: &mut egui::Ui, shell: &mut Shell) {
     key_item(ui, shell, Action::Copy, "Copy Keyframes");
     key_item(ui, shell, Action::Cut, "Cut Keyframes");
     key_item(ui, shell, Action::Paste, "Paste Keyframes");
+    key_item(ui, shell, Action::Delete, "Delete Keyframes");
     ui.separator();
 }
 

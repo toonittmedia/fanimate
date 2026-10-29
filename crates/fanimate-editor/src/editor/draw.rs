@@ -645,6 +645,20 @@ mod tests {
     }
 
     #[test]
+    fn drawing_on_a_layer_that_is_not_vector_makes_a_vector_layer() {
+        let mut ed = Editor::untitled();
+        ed.run(crate::Action::NewBoneLayer);
+        let bones = ed.primary().unwrap();
+        // the drawing tools are on offer for a bone layer, and for nothing
+        assert!(ed.tool_groups().contains(&crate::ToolGroup::Draw));
+        draw_line(&mut ed, Vec2::ZERO, Vec2::new(50.0, 50.0));
+        let new = ed.primary().unwrap();
+        assert_ne!(new, bones);
+        assert!(matches!(ed.doc.find(new).unwrap().kind, LayerKind::Vector { .. }));
+        assert_eq!(shapes(&ed, new).len(), 1);
+    }
+
+    #[test]
     fn drawing_with_nothing_selected_makes_a_top_layer() {
         let (mut ed, id) = editor();
         ed.selection.clear();

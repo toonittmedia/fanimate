@@ -111,6 +111,7 @@ impl Icon {
                 Tool::RollCamera => own!("camera-roll"),
                 Tool::SelectBone => own!("bone-select"),
                 Tool::AddBone => own!("bone-plus"),
+                Tool::ReparentBone => own!("bone-reparent"),
                 Tool::ManipulateBones => own!("bone-rotate"),
                 Tool::PaintWeights => lucide!("brush"),
                 Tool::Pan => lucide!("hand"),

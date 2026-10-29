@@ -81,21 +81,27 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
         let shell = &mut *self.shell;
+        // While the animation plays nothing is edited, so the panels that
+        // edit are greyed (the timeline keeps its transport and scrubbing).
+        let editable = !shell.editor.playing;
         match tab {
             Tab::Timeline => timeline::show(ui, shell),
-            Tab::Layers => layers::show(ui, shell),
-            Tab::Properties => properties::show(ui, shell),
-            Tab::Style => style::show(ui, shell),
-            Tab::History => history::show(ui, shell),
-            Tab::XSheet => xsheet::show(ui, shell),
-            Tab::Actions => actions::show(ui, shell),
-            Tab::Bones => bones::show(ui, shell),
+            Tab::Layers => ui.add_enabled_ui(editable, |ui| layers::show(ui, shell)).inner,
+            Tab::Properties => {
+                ui.add_enabled_ui(editable, |ui| properties::show(ui, shell))
+                    .inner
+            }
+            Tab::Style => ui.add_enabled_ui(editable, |ui| style::show(ui, shell)).inner,
+            Tab::History => ui.add_enabled_ui(editable, |ui| history::show(ui, shell)).inner,
+            Tab::XSheet => ui.add_enabled_ui(editable, |ui| xsheet::show(ui, shell)).inner,
+            Tab::Actions => ui.add_enabled_ui(editable, |ui| actions::show(ui, shell)).inner,
+            Tab::Bones => ui.add_enabled_ui(editable, |ui| bones::show(ui, shell)).inner,
         }
     }
 
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
         match tab {
-            Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet | Tab::Bones => [false, false],
+            Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet => [false, false],
             _ => [false, true],
         }
     }
@@ -168,7 +174,6 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                         p.text_muted,
                     ),
                 };
-                let hover = text.clone();
                 // state on the right first, so a long message is cut short
                 // with an ellipsis instead of running under it
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -261,8 +266,9 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                         ui.separator();
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).truncate())
-                            .on_hover_text(&hover);
+                        // a truncated label shows its full text on hover by itself;
+                        // adding a tooltip of our own would show it twice
+                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).truncate());
                     });
                 });
             });

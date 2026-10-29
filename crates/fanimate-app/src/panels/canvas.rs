@@ -108,33 +108,50 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     } else {
         None
     };
+    // While the animation plays nothing is edited: a click at a moving
+    // playhead would key a different frame each time. The view still pans
+    // and zooms (`navigate`, above).
+    let playing = shell.editor.playing;
+    if playing
+        && !matches!(tool, Tool::Pan | Tool::Zoom)
+        && (response.clicked_by(egui::PointerButton::Primary)
+            || response.drag_started_by(egui::PointerButton::Primary))
+    {
+        shell.editor.editing_blocked();
+    }
     // armed, the pivot picker takes the next click and nothing else acts
-    let picking = handles::pick_pivot(&ctx, &response, shell, &screen);
-    let handle_busy =
-        on_canvas && !picking && handles::interact(&ctx, &response, shell, &screen, frame_seen.as_ref());
-    let on_handle = response.clicked_by(egui::PointerButton::Primary)
+    let picking = !playing && handles::pick_pivot(&ctx, &response, shell, &screen);
+    let handle_busy = !playing
+        && on_canvas
+        && !picking
+        && handles::interact(&ctx, &response, shell, &screen, frame_seen.as_ref());
+    let on_handle = !playing
+        && response.clicked_by(egui::PointerButton::Primary)
         && response.interact_pointer_pos().is_some_and(|p| {
             handles::hit_test(&screen, frame_seen.as_ref(), radius_seen.as_ref(), p).is_some()
         });
     let tools_free = !handle_busy && !on_handle && !picking;
 
-    if tools_free {
-        transform_tool(&ctx, &response, shell, &to_doc);
+    let (mut shape_preview, mut shape_e_preview) = (None, None);
+    if !playing {
+        if tools_free {
+            transform_tool(&ctx, &response, shell, &to_doc);
+        }
+        freehand_tool(&ctx, &response, shell, &to_doc);
+        eraser_tool(&ctx, &response, shell, &to_doc);
+        shape_preview = shape_tools(&ctx, &response, shell, &to_doc);
+        shape_e_preview = shape_tools_e(&ctx, &response, shell, &to_doc);
+        click_tools(&response, shell, &to_doc);
+        if tools_free {
+            point_tools(&ctx, &response, shell, &to_doc);
+        }
+        editing_tools_e(&ctx, &response, shell, &to_doc);
+        add_point_tool(&response, shell, &to_doc);
+        bone_tools(&ctx, &response, shell, &to_doc);
+        pen_tool(&ctx, &response, shell, &to_doc);
+        curvature_tool(&ctx, &response, shell, &to_doc);
+        super::camera_tools::interact(&ctx, &response, shell, &to_doc);
     }
-    freehand_tool(&ctx, &response, shell, &to_doc);
-    eraser_tool(&ctx, &response, shell, &to_doc);
-    let shape_preview = shape_tools(&ctx, &response, shell, &to_doc);
-    let shape_e_preview = shape_tools_e(&ctx, &response, shell, &to_doc);
-    click_tools(&response, shell, &to_doc);
-    if tools_free {
-        point_tools(&ctx, &response, shell, &to_doc);
-    }
-    editing_tools_e(&ctx, &response, shell, &to_doc);
-    add_point_tool(&response, shell, &to_doc);
-    bone_tools(&ctx, &response, shell, &to_doc);
-    pen_tool(&ctx, &response, shell, &to_doc);
-    curvature_tool(&ctx, &response, shell, &to_doc);
-    super::camera_tools::interact(&ctx, &response, shell, &to_doc);
 
     // what is under the pointer decides the cursor: a handle, else the tool
     let hover_hit = response
@@ -350,6 +367,8 @@ fn tool_cursor(ctx: &egui::Context, response: &egui::Response, tool: Tool) -> eg
         Tool::ZoomCamera => CursorIcon::ZoomIn,
         Tool::RollCamera => CursorIcon::Crosshair,
         Tool::SelectPoints | Tool::SelectBone | Tool::ManipulateBones => CursorIcon::Default,
+        // over a bone it can be grabbed; the rest of the canvas is not a target
+        Tool::ReparentBone => CursorIcon::Default,
         Tool::Zoom if ctx.input(|i| i.modifiers.alt) => CursorIcon::ZoomOut,
         Tool::Zoom => CursorIcon::ZoomIn,
         Tool::Freehand
@@ -909,7 +928,7 @@ fn bone_tools(
     let tool = shell.editor.tool;
     if !matches!(
         tool,
-        Tool::AddBone | Tool::SelectBone | Tool::ManipulateBones | Tool::PaintWeights
+        Tool::AddBone | Tool::SelectBone | Tool::ReparentBone | Tool::ManipulateBones | Tool::PaintWeights
     ) {
         return;
     }
@@ -951,6 +970,9 @@ fn bone_tools(
                     shell.editor.begin_bone_edit(at, slop);
                 }
             }
+            Tool::ReparentBone => {
+                shell.editor.begin_reparent(at, slop);
+            }
             Tool::ManipulateBones => {
                 shell.editor.begin_pose(at, slop, mods.alt);
             }
@@ -969,7 +991,7 @@ fn bone_tools(
                 .editor
                 .paint_weights(doc(pos), shell.editor.draw.weight_brush / 2.0, amount, mods.alt);
             ctx.request_repaint();
-        } else if shell.editor.is_dragging_bone() {
+        } else if shell.editor.is_dragging_bone() && tool != Tool::ReparentBone {
             let mut tip = do_snap(shell, doc(pos));
             // Shift + AddBone: snap the bone angle to 15° multiples
             if tool == Tool::AddBone
@@ -985,6 +1007,12 @@ fn bone_tools(
         }
     }
     if response.drag_stopped() {
+        // Reparent Bone changes nothing until it is let go
+        if shell.editor.reparenting().is_some()
+            && let Some(pos) = ctx.input(|i| i.pointer.latest_pos())
+        {
+            shell.editor.finish_reparent(doc(pos), slop);
+        }
         shell.editor.end_bone_drag();
         shell.editor.end_paint_weights();
     }
@@ -1139,7 +1167,9 @@ fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Ve
 }
 
 /// A bone layer's bones as tapered shapes from joint to tip, the selected
-/// one in the interaction colour, pinned ones with a square joint.
+/// one in the interaction colour, pinned ones with a square joint. The
+/// selected bone's parent is drawn lighter, and a Reparent Bone drag shows
+/// the link it would make.
 fn bone_overlay(
     painter: &egui::Painter,
     shell: &Shell,
@@ -1149,19 +1179,86 @@ fn bone_overlay(
     let ed = &shell.editor;
     let (c, z, p) = (shell.view.center, shell.view.zoom, shell.palette);
     let selected = ed.selected_bone().filter(|b| b.layer == rig).map(|b| b.bone);
-    for (i, joint, tip) in ed.bone_positions(rig) {
-        let (sa, sb) = (to_screen(c, z, joint), to_screen(c, z, tip));
-        let color = if selected == Some(i) { p.accent } else { p.bone };
+    let parent_of_selected =
+        selected.and_then(|i| ed.bone(fanimate_editor::BoneRef { layer: rig, bone: i })?.parent);
+    // while a bone is dragged to a new parent: the bone under the pointer that
+    // would be the parent, measured on screen
+    let dragged = ed.reparenting().filter(|b| b.layer == rig);
+    let pointer = painter.ctx().pointer_latest_pos();
+    let positions = ed.bone_positions(rig);
+    let screen: Vec<(Pos2, Pos2)> = positions
+        .iter()
+        .map(|(_, joint, tip)| (to_screen(c, z, *joint), to_screen(c, z, *tip)))
+        .collect();
+    let target = dragged.zip(pointer).and_then(|(b, pos)| {
+        let choices = ed.parent_choices(b);
+        positions
+            .iter()
+            .zip(&screen)
+            .filter(|((i, _, _), _)| choices.contains(i))
+            .map(|((i, _, _), (a, b))| (*i, screen_distance(pos, *a, *b)))
+            .filter(|(_, d)| *d <= BONE_SLOP_PX * 2.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    });
+    // arrows from a bone to its parent, as Moho shows when bones are being
+    // parented: all of them with Reparent Bone, else the picked bone's
+    if matches!(ed.tool, Tool::ReparentBone | Tool::SelectBone) {
+        for ((i, _, _), (joint, _)) in positions.iter().zip(&screen) {
+            let all = ed.tool == Tool::ReparentBone;
+            if !all && selected != Some(*i) {
+                continue;
+            }
+            let Some(parent) = ed
+                .bone(fanimate_editor::BoneRef { layer: rig, bone: *i })
+                .and_then(|b| b.parent)
+            else {
+                continue;
+            };
+            let Some(&(pj, pt)) = screen.get(parent) else {
+                continue;
+            };
+            let color = if selected == Some(*i) {
+                p.accent_strong
+            } else {
+                p.text_muted
+            };
+            if joint.distance(pt) > 6.0 {
+                // the bone starts away from its parent's tip: a link between
+                parent_arrow(painter, *joint, pt, color);
+            } else {
+                // joined end to end: a small arrow on the parent, pointing back
+                // up the chain
+                let back = pj - *joint;
+                if back.length() > 24.0 {
+                    let dir = back / back.length();
+                    arrow_head(painter, *joint + dir * 16.0, dir, 6.0, color);
+                }
+            }
+        }
+    }
+    for ((i, _, _), (sa, sb)) in positions.iter().zip(&screen) {
+        let (i, sa, sb) = (*i, *sa, *sb);
+        let color = if selected == Some(i) || dragged.is_some_and(|b| b.bone == i) {
+            p.accent
+        } else if target == Some(i) {
+            p.accent_strong
+        } else if parent_of_selected == Some(i) {
+            p.accent.gamma_multiply(0.6)
+        } else {
+            p.bone
+        };
         let d = sb - sa;
         let len = d.length();
         if len > 1.0 {
             // a kite: wide near the joint, to a point at the tip
             let n = egui::vec2(-d.y, d.x) / len * (len * 0.12).clamp(3.0, 9.0);
             let m = sa + d * 0.15;
+            let width = if target == Some(i) { 2.5 } else { 1.5 };
             painter.add(egui::Shape::convex_polygon(
                 vec![sa, m + n, sb, m - n],
                 color.gamma_multiply(0.55),
-                Stroke::new(1.5, color),
+                Stroke::new(width, color),
             ));
         }
         let pinned = ed
@@ -1176,6 +1273,69 @@ fn bone_overlay(
             painter.circle_stroke(sa, 4.5, Stroke::new(1.0, p.bg));
         }
     }
+
+    // the link being made: an arrow from the dragged bone's joint to the
+    // parent's tip (or to the pointer while there is no parent under it)
+    if let Some(b) = dragged
+        && let Some(pos) = pointer
+        && let Some(&(from, _)) = screen.get(b.bone)
+    {
+        let end = target.and_then(|t| screen.get(t)).map_or(pos, |(_, tip)| *tip);
+        parent_arrow(painter, from, end, p.accent_strong);
+        let has_parent = ed.bone(b).is_some_and(|bone| bone.parent.is_some());
+        let text = match target.and_then(|t| ed.bone(fanimate_editor::BoneRef { layer: rig, bone: t })) {
+            Some(parent) => format!("Parent: {}", parent.name),
+            None if has_parent => "Release on empty space for no parent".to_owned(),
+            None => "Drop on the parent bone".to_owned(),
+        };
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.0), p.text);
+        let at = pos + egui::vec2(14.0, 14.0);
+        painter.rect_filled(
+            Rect::from_min_size(at, galley.size()).expand2(egui::vec2(5.0, 3.0)),
+            3.0,
+            p.panel,
+        );
+        painter.galley(at, galley, p.text);
+    }
+}
+
+/// A dashed link from a bone to its parent, ending in an arrowhead at the parent.
+fn parent_arrow(painter: &egui::Painter, from: Pos2, to: Pos2, color: Color32) {
+    let d = to - from;
+    let len = d.length();
+    if len < 1.0 {
+        return;
+    }
+    let dir = d / len;
+    painter.extend(egui::Shape::dashed_line(
+        &[from, to - dir * 8.0],
+        Stroke::new(2.0, color),
+        6.0,
+        3.0,
+    ));
+    arrow_head(painter, to, dir, 11.0, color);
+}
+
+/// A filled arrowhead with its point at `tip`, pointing along `dir` (a unit vector).
+fn arrow_head(painter: &egui::Painter, tip: Pos2, dir: egui::Vec2, size: f32, color: Color32) {
+    let side = egui::vec2(-dir.y, dir.x) * size * 0.5;
+    let base = tip - dir * size;
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, base + side, base - side],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// How far `p` is from the segment `a` to `b`, in screen points.
+fn screen_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = if ab.length_sq() > 0.0 {
+        ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a + ab * t).distance(p)
 }
 
 /// The Transform tool's frame and handles, a rectangle's radius handles,

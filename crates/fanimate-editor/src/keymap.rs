@@ -5,8 +5,8 @@
 //! - **Fanimate** (the default): the conventions of mainstream editing apps.
 //!   Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste what has focus (points on
 //!   the canvas, keys in the timeline) and Ctrl+Shift+C / X / V do the same
-//!   for layers; Ctrl+Y and Ctrl+Shift+Z both redo; Delete deletes;
-//!   F2 renames; tool letters follow Adobe Animate and Illustrator.
+//!   for layers; Ctrl+Y and Ctrl+Shift+Z both redo; Delete deletes keys,
+//!   points, shapes and bones, and Ctrl+Delete deletes layers; F2 renames; tool letters follow Adobe Animate and Illustrator.
 //! - **Moho**: Moho Pro's own shortcuts, so Moho users keep their muscle
 //!   memory. Redo is Ctrl+Shift+Z only, tools use Moho's letters (M, T, G,
 //!   Z, …), and Home resets the view. A few keys Moho leaves unused (F1, F2)
@@ -110,7 +110,7 @@ impl KeymapKind {
         match self {
             Self::Fanimate => {
                 "Shortcuts like other editing apps: Ctrl+C, Ctrl+X and Ctrl+V work on points and keys, Ctrl+Shift+C, X and V on layers, \
-                 Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes, F2 renames."
+                 Ctrl+Y or Ctrl+Shift+Z redo, Delete deletes keys, points and shapes, Ctrl+Delete deletes layers, F2 renames."
             }
             Self::Moho => {
                 "Moho Pro's shortcuts: Ctrl+Shift+Z redoes, tools use Moho's letters \
@@ -204,6 +204,7 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Ctrl+D", Duplicate),
     ("Delete", Delete),
     ("Backspace", Delete),
+    ("Ctrl+Delete", DeleteLayers),
     ("Ctrl+A", SelectAll),
     ("Escape", SelectNone),
     ("Ctrl+Shift+A", SelectNone),
@@ -308,6 +309,7 @@ const MOHO: &[(&str, Action)] = &[
     ("Ctrl+Shift+C", CopyLayers),
     ("Ctrl+Shift+V", PasteLayers),
     ("Delete", Delete),
+    ("Ctrl+Delete", DeleteLayers),
     ("Ctrl+A", SelectAll),
     ("Escape", SelectNone),
     ("Ctrl+Shift+I", LayerProperties),
