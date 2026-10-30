@@ -315,10 +315,18 @@ mod tests {
 
     /// GPU tests need a GPU (or a software adapter such as lavapipe or
     /// WARP) and skip, with a note, on machines with neither.
-    fn gpu_or_skip() -> Option<Gpu> {
-        Gpu::headless()
-            .inspect_err(|e| eprintln!("skipping GPU test: {e}"))
-            .ok()
+    ///
+    /// Keep one shared device for the whole test process: creating and tearing
+    /// down several headless devices in one run can trip flaky Windows driver
+    /// faults.
+    fn gpu_or_skip() -> Option<&'static Gpu> {
+        static GPU: std::sync::OnceLock<Option<Gpu>> = std::sync::OnceLock::new();
+        GPU.get_or_init(|| {
+            Gpu::headless()
+                .inspect_err(|e| eprintln!("skipping GPU test: {e}"))
+                .ok()
+        })
+        .as_ref()
     }
 
     #[test]
@@ -326,7 +334,7 @@ mod tests {
         let Some(gpu) = gpu_or_skip() else { return };
         let doc = samples::hello();
         let (w, h) = (320, 180);
-        let px = render_to_rgba(&gpu, &doc, 0.0, w, h).unwrap();
+        let px = render_to_rgba(gpu, &doc, 0.0, w, h).unwrap();
         assert_eq!(px.len(), (w * h * 4) as usize);
 
         let at = |x: u32, y: u32| {
@@ -369,7 +377,7 @@ mod tests {
         );
         grey.transform.position.base = fanimate_core::Vec2::new(50.0, 0.0);
         doc.layers.extend([blue, grey]);
-        let px = render_to_rgba(&gpu, &doc, 0.0, 100, 100).unwrap();
+        let px = render_to_rgba(gpu, &doc, 0.0, 100, 100).unwrap();
         let at = |x: usize, y: usize| &px[(y * 100 + x) * 4..(y * 100 + x) * 4 + 3];
         assert_eq!(at(20, 50), [0, 0, 255]);
         let g = at(80, 50);
@@ -383,17 +391,17 @@ mod tests {
         let Some(gpu) = gpu_or_skip() else { return };
         let doc = samples::benchmark(40);
         let (w, h) = (320, 180);
-        let fresh = render_to_rgba(&gpu, &doc, 12.0, w, h).unwrap();
+        let fresh = render_to_rgba(gpu, &doc, 12.0, w, h).unwrap();
 
-        let mut target = Offscreen::new(&gpu, w, h);
+        let mut target = Offscreen::new(gpu, w, h);
         for frame in [0.0, 60.0, 12.0] {
-            target.draw(&gpu, &doc, frame);
+            target.draw(gpu, &doc, frame);
         }
-        assert_eq!(target.read_rgba(&gpu).unwrap(), fresh);
+        assert_eq!(target.read_rgba(gpu).unwrap(), fresh);
 
         // and the benchmark really is animated, so the check means something
-        target.draw(&gpu, &doc, 60.0);
-        assert_ne!(target.read_rgba(&gpu).unwrap(), fresh);
+        target.draw(gpu, &doc, 60.0);
+        assert_ne!(target.read_rgba(gpu).unwrap(), fresh);
     }
 
     /// The OpenGL driver is only loaded when DirectX 12 has no GPU, because
