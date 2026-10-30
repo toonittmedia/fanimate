@@ -47,7 +47,7 @@ impl Gpu {
 
     /// Open a device for offscreen work, with no window.
     pub fn headless() -> Result<Self, RenderError> {
-        pollster::block_on(Self::new(instance(), None))
+        pollster::block_on(Self::new(headless_instance(), None))
     }
 
     /// Whether this is a software rasteriser (lavapipe, llvmpipe, WARP)
@@ -60,8 +60,20 @@ impl Gpu {
 /// Create the wgpu instance with Fanimate's backend choice (see
 /// [`backends`]).
 pub fn instance() -> wgpu::Instance {
+    instance_for(backends())
+}
+
+/// Create the wgpu instance used for headless work.
+///
+/// On Windows this avoids loading OpenGL unless explicitly requested with
+/// `WGPU_BACKEND`, because some OpenGL drivers crash on process exit.
+fn headless_instance() -> wgpu::Instance {
+    instance_for(headless_backends())
+}
+
+fn instance_for(backends: wgpu::Backends) -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = backends();
+    desc.backends = backends;
     wgpu::Instance::new(desc.with_env())
 }
 
@@ -92,6 +104,19 @@ pub fn backends() -> wgpu::Backends {
     }
     #[cfg(not(windows))]
     wgpu::Backends::PRIMARY
+}
+
+#[cfg(windows)]
+fn headless_backends() -> wgpu::Backends {
+    if wgpu::Backends::from_env().is_some() {
+        return backends();
+    }
+    wgpu::Backends::DX12
+}
+
+#[cfg(not(windows))]
+fn headless_backends() -> wgpu::Backends {
+    backends()
 }
 
 /// Whether `backends` offers a real GPU. DirectX 12 nearly always lists the
@@ -385,6 +410,17 @@ mod tests {
             wgpu::Backends::DX12 | wgpu::Backends::GL
         };
         assert_eq!(backends(), expected);
+    }
+
+    /// Headless work on Windows stays on DirectX 12 by default so tests and
+    /// CLI runs do not load OpenGL drivers that can crash at process exit.
+    #[cfg(windows)]
+    #[test]
+    fn windows_headless_defaults_to_directx_only() {
+        if std::env::var_os("WGPU_BACKEND").is_some() {
+            return;
+        }
+        assert_eq!(headless_backends(), wgpu::Backends::DX12);
     }
 
     #[test]
