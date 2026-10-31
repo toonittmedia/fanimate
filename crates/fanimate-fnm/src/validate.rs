@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use fanimate_core::anim::Animatable;
-use fanimate_core::{Channel, Document, Key, Layer, LayerId, LayerKind, LoopMode};
+use fanimate_core::{Channel, Document, Interpolation, Key, Layer, LayerId, LayerKind, LoopMode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -317,6 +317,87 @@ impl Checker {
 
     /// `bones`: bone count of the enclosing bone layer, if any. `siblings`:
     /// how many layers share the list this one is in, counting itself.
+    /// A text layer: its settings within range, a font that exists, a sane
+    /// number of animators, and each animator's values and keys like any other
+    /// channel's.
+    fn text(&mut self, text: &mut fanimate_core::Text, loc: &str, end: i32) {
+        if !text.look().is_sound() {
+            self.issue(
+                Severity::Warning,
+                loc,
+                "the text's size, weight, spacing, wrapping, language, features, colour or path are outside what is allowed; they are held within it".into(),
+                true,
+            );
+            if self.repair {
+                text.look_mut().repair();
+            }
+        }
+        if !text.look().font_is_available() {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!(
+                    "the font \"{}\" is not one Fanimate has; the text is set in {}",
+                    text.look().family,
+                    fanimate_core::text::DEFAULT_FONT
+                ),
+                false,
+            );
+        }
+        if text.animators.len() > fanimate_core::text::MAX_ANIMATORS {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!(
+                    "{} animators; only the first {} are used",
+                    text.animators.len(),
+                    fanimate_core::text::MAX_ANIMATORS
+                ),
+                true,
+            );
+            if self.repair {
+                text.animators.truncate(fanimate_core::text::MAX_ANIMATORS);
+            }
+        }
+        self.channel(&mut text.path_offset, loc, "path offset", end);
+        for (i, a) in text.animators.iter_mut().enumerate() {
+            let aloc = format!("{loc} > animator {i} \"{}\"", a.name);
+            self.channel(&mut a.selector.start, &aloc, "range start", end);
+            self.channel(&mut a.selector.end, &aloc, "range end", end);
+            self.channel(&mut a.selector.offset, &aloc, "range offset", end);
+            self.channel(&mut a.position, &aloc, "position", end);
+            self.channel(&mut a.rotation, &aloc, "rotation", end);
+            self.channel(&mut a.scale, &aloc, "scale", end);
+            self.channel(&mut a.opacity, &aloc, "opacity", end);
+            if let Some(fill) = &mut a.fill {
+                self.channel(fill, &aloc, "fill", end);
+            }
+            self.channel(&mut a.anchor, &aloc, "anchor", end);
+            self.channel(&mut a.tracking, &aloc, "tracking", end);
+            self.channel(&mut a.stroke_width, &aloc, "stroke width", end);
+            if let Some(c) = &mut a.stroke_color {
+                self.channel(c, &aloc, "stroke colour", end);
+            }
+        }
+    }
+
+    /// Every bone needs an id of its own, and the counter has to be above them
+    /// all, or a script holding an id could find another bone (version 7).
+    fn bone_ids(&mut self, skeleton: &mut fanimate_core::Skeleton, loc: &str) {
+        if skeleton.ids_are_sound() {
+            return;
+        }
+        self.issue(
+            Severity::Error,
+            loc,
+            "bones share an id, have none or have one out of range; they get new ids".into(),
+            true,
+        );
+        if self.repair {
+            skeleton.ensure_ids();
+        }
+    }
+
     fn layer(&mut self, layer: &mut Layer, end: i32, bones: Option<usize>, siblings: usize) {
         let loc = format!("layer {} \"{}\"", layer.id.0, layer.name);
         self.channel(&mut layer.opacity, &loc, "opacity", end);
@@ -348,6 +429,21 @@ impl Checker {
             );
             if self.repair {
                 layer.transform.pivot = None;
+            }
+        }
+        // the record of what made the layer is kept, never dropped, so that
+        // generated content stays labelled; only what is unusable in it is fixed
+        if let Some(provenance) = &mut layer.provenance
+            && !provenance.is_sound()
+        {
+            self.issue(
+                Severity::Warning,
+                &loc,
+                "the record of what made this layer is incomplete or too long".into(),
+                true,
+            );
+            if self.repair {
+                provenance.repair();
             }
         }
 
@@ -391,6 +487,7 @@ impl Checker {
                     self.layer(child, end, bones, siblings);
                 }
             }
+            LayerKind::Text(text) => self.text(text, &loc, end),
             LayerKind::Audio(audio) => {
                 self.media_file(&audio.media, &loc, "sound");
                 if !(audio.volume.is_finite() && audio.volume >= 0.0) {
@@ -406,6 +503,7 @@ impl Checker {
                 }
             }
             LayerKind::Bone { skeleton, children } => {
+                self.bone_ids(skeleton, &loc);
                 for i in 0..skeleton.bones.len() {
                     let bone = &mut skeleton.bones[i];
                     let bloc = format!("{loc} > bone {i} \"{}\"", bone.name);
@@ -472,11 +570,37 @@ impl Checker {
                     let aloc = format!("{loc} > action {a} \"{}\"", act.name);
                     self.action(act, &aloc, n);
                 }
-                // an action whose driver is missing cannot play
+                // an action whose driver is missing cannot play; the actions after it move up one,
+                // so controllers holding them are renumbered
+                let kept: Vec<bool> = actions
+                    .iter()
+                    .map(|act| act.driver.is_none_or(|d| d < n))
+                    .collect();
                 if self.repair {
+                    let mut at = 0;
+                    let renumber: Vec<Option<usize>> = kept
+                        .iter()
+                        .map(|k| {
+                            k.then(|| {
+                                at += 1;
+                                at - 1
+                            })
+                        })
+                        .collect();
                     actions.retain(|act| act.driver.is_none_or(|d| d < n));
+                    for c in &mut skeleton.controllers {
+                        for link in &mut c.links {
+                            if let Some(Some(new)) = renumber.get(link.action) {
+                                link.action = *new;
+                            } else {
+                                link.action = usize::MAX;
+                            }
+                        }
+                    }
                 }
+                let action_count = actions.len();
                 skeleton.actions = actions;
+                self.controllers(&mut skeleton.controllers, &loc, action_count, end);
                 let siblings = children.len();
                 for child in children {
                     self.layer(child, end, Some(n), siblings);
@@ -818,6 +942,76 @@ impl Checker {
         }
     }
 
+    /// Master controllers: a sane number of them, with names, values that are numbers
+    /// and links that point at actions that exist.
+    fn controllers(
+        &mut self,
+        controllers: &mut Vec<fanimate_core::actions::Controller>,
+        loc: &str,
+        actions: usize,
+        end: i32,
+    ) {
+        use fanimate_core::actions::{MAX_CONTROLLERS, MAX_LINKS};
+        if controllers.len() > MAX_CONTROLLERS {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!(
+                    "{} controllers; only the first {MAX_CONTROLLERS} are kept",
+                    controllers.len()
+                ),
+                true,
+            );
+            if self.repair {
+                controllers.truncate(MAX_CONTROLLERS);
+            }
+        }
+        for (i, c) in controllers.iter_mut().enumerate() {
+            let cloc = format!("{loc} > controller {i} \"{}\"", c.name);
+            if c.name.trim().is_empty() || c.name.chars().count() > 200 {
+                self.issue(
+                    Severity::Warning,
+                    &cloc,
+                    "its name is empty or too long".into(),
+                    true,
+                );
+                if self.repair {
+                    c.name = format!("Controller {}", i + 1);
+                }
+            }
+            self.channel(&mut c.x, &cloc, "x", end);
+            self.channel(&mut c.y, &cloc, "y", end);
+            let bad = c
+                .links
+                .iter()
+                .filter(|l| l.action >= actions || !l.from.is_finite() || !l.to.is_finite())
+                .count();
+            if bad > 0 {
+                self.issue(
+                    Severity::Error,
+                    &cloc,
+                    format!("{bad} link(s) point at an action that does not exist or have a range that is not a number; they are removed"),
+                    true,
+                );
+                if self.repair {
+                    c.links
+                        .retain(|l| l.action < actions && l.from.is_finite() && l.to.is_finite());
+                }
+            }
+            if c.links.len() > MAX_LINKS {
+                self.issue(
+                    Severity::Warning,
+                    &cloc,
+                    format!("more than {MAX_LINKS} links; the rest are removed"),
+                    true,
+                );
+                if self.repair {
+                    c.links.truncate(MAX_LINKS);
+                }
+            }
+        }
+    }
+
     /// An action: its driver and bones exist, its keys are sound.
     fn action(&mut self, act: &mut fanimate_core::RigAction, loc: &str, bones: usize) {
         if act.driver.is_some_and(|d| d >= bones) {
@@ -1017,6 +1211,28 @@ impl Checker {
             );
             if self.repair {
                 keys.retain(|k| finite(&k.value));
+            }
+        }
+
+        // a custom curve with a control point out of range evaluates as if held
+        // within it; repair makes the file say so
+        let curves = keys
+            .iter()
+            .filter(|k| matches!(k.interp, Interpolation::Bezier(b) if !b.is_sound()))
+            .count();
+        if curves > 0 {
+            self.issue(
+                Severity::Warning,
+                loc,
+                format!("{curves} keyframe(s) with a curve outside the allowed range; it is held within"),
+                true,
+            );
+            if self.repair {
+                for k in keys.iter_mut() {
+                    if let Interpolation::Bezier(b) = k.interp {
+                        k.interp = Interpolation::Bezier(b.repaired());
+                    }
+                }
             }
         }
 
@@ -1745,5 +1961,73 @@ mod tests {
         repair(&mut doc);
         assert_eq!(kids(&mut doc)[1].order.keys, vec![key(1, 1.0)]);
         assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+    }
+
+    #[test]
+    fn damaged_controllers_are_repaired_and_links_follow_the_actions_that_stay() {
+        use fanimate_core::actions::{Controller, ControllerAxis, ControllerKind, ControllerLink, RigAction};
+        let mut doc = rigged();
+        let LayerKind::Bone { skeleton, .. } = &mut doc.layers[0].kind else {
+            unreachable!()
+        };
+        // action 0 is Smart Bone action whose driver bone does not exist (it will be dropped),
+        // action 1 and 2 are fine
+        skeleton.actions.push(RigAction::new("lost", Some(99), 5));
+        skeleton.actions.push(RigAction::new("one", None, 5));
+        skeleton.actions.push(RigAction::new("two", None, 5));
+        let link = |action: usize| ControllerLink {
+            action,
+            axis: ControllerAxis::X,
+            from: 0.0,
+            to: 1.0,
+        };
+        let mut c = Controller::new("  ", ControllerKind::Slider);
+        c.links = vec![link(0), link(1), link(2), link(77)];
+        c.x.base = f32::NAN;
+        let mut wild = Controller::new("Wild", ControllerKind::Pad);
+        wild.links = vec![ControllerLink {
+            from: f32::NAN,
+            ..link(1)
+        }];
+        skeleton.controllers = vec![c, wild];
+        let report = validate(&doc);
+        assert!(report.unresolved_errors().count() >= 1, "{report}");
+        repair(&mut doc);
+        assert!(validate(&doc).is_clean(), "{}", validate(&doc));
+        let LayerKind::Bone { skeleton, .. } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        let names: Vec<_> = skeleton.actions.iter().map(|a| a.name.as_str()).collect();
+        assert!(!names.contains(&"lost"), "{names:?}");
+        let first = &skeleton.controllers[0];
+        assert_eq!(first.name, "Controller 1", "a blank name is replaced");
+        assert!(first.x.base.is_finite());
+        // "one" and "two" moved up by one: the links that held them moved with them, the one to the
+        // lost action and the one past the end are gone
+        let held: Vec<_> = first
+            .links
+            .iter()
+            .map(|l| skeleton.actions[l.action].name.as_str())
+            .collect();
+        assert_eq!(held, ["one", "two"]);
+        assert!(
+            skeleton.controllers[1].links.is_empty(),
+            "a range that is not a number is removed"
+        );
+        // too many controllers are cut
+        let LayerKind::Bone { skeleton, .. } = &mut doc.layers[0].kind else {
+            unreachable!()
+        };
+        skeleton.controllers = (0..fanimate_core::actions::MAX_CONTROLLERS + 4)
+            .map(|i| Controller::new(format!("c{i}"), ControllerKind::Slider))
+            .collect();
+        repair(&mut doc);
+        let LayerKind::Bone { skeleton, .. } = &doc.layers[0].kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            skeleton.controllers.len(),
+            fanimate_core::actions::MAX_CONTROLLERS
+        );
     }
 }

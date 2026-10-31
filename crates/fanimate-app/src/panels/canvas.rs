@@ -142,6 +142,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         shape_preview = shape_tools(&ctx, &response, shell, &to_doc);
         shape_e_preview = shape_tools_e(&ctx, &response, shell, &to_doc);
         click_tools(&response, shell, &to_doc);
+        super::text_tool::interact(&response, shell, &to_doc);
         if tools_free {
             point_tools(&ctx, &response, shell, &to_doc);
         }
@@ -258,6 +259,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         weight_overlay(ui, shell, rect, &to_screen);
         brush_cursor(ui, &response, shell);
         line_width_overlay(ui, &response, shell, rect, &to_screen);
+        super::text_tool::overlay(ui, shell, rect, &to_screen);
     }
 
     menus::context_menu(&response, |ui| {
@@ -365,6 +367,7 @@ fn tool_cursor(ctx: &egui::Context, response: &egui::Response, tool: Tool) -> eg
         // Windows has no hand cursors, so panning shows the move arrows
         Tool::Pan | Tool::TransformLayer | Tool::TranslatePoints | Tool::TrackCamera => CursorIcon::Move,
         Tool::ZoomCamera => CursorIcon::ZoomIn,
+        Tool::Text => CursorIcon::Text,
         Tool::RollCamera => CursorIcon::Crosshair,
         Tool::SelectPoints | Tool::SelectBone | Tool::ManipulateBones => CursorIcon::Default,
         // over a bone it can be grabbed; the rest of the canvas is not a target

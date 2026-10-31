@@ -4,6 +4,8 @@ mod actions;
 mod bones;
 mod camera_tools;
 pub mod canvas;
+mod controllers;
+mod graph;
 pub mod handles;
 mod history;
 mod layers;
@@ -11,6 +13,8 @@ mod properties;
 pub mod rulers;
 mod selbar;
 mod style;
+mod text_props;
+pub mod text_tool;
 pub mod timeline;
 mod tools;
 mod xsheet;
@@ -36,10 +40,11 @@ pub enum Tab {
     History,
     XSheet,
     Bones,
+    Graph,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Self::Layers,
         Self::Timeline,
         Self::Properties,
@@ -48,6 +53,7 @@ impl Tab {
         Self::History,
         Self::XSheet,
         Self::Bones,
+        Self::Graph,
     ];
 
     pub fn title(self) -> &'static str {
@@ -60,6 +66,7 @@ impl Tab {
             Self::History => "History",
             Self::XSheet => "X-Sheet",
             Self::Bones => "Bones",
+            Self::Graph => "Graph",
         }
     }
 }
@@ -96,20 +103,21 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::XSheet => ui.add_enabled_ui(editable, |ui| xsheet::show(ui, shell)).inner,
             Tab::Actions => ui.add_enabled_ui(editable, |ui| actions::show(ui, shell)).inner,
             Tab::Bones => ui.add_enabled_ui(editable, |ui| bones::show(ui, shell)).inner,
+            Tab::Graph => ui.add_enabled_ui(editable, |ui| graph::show(ui, shell)).inner,
         }
     }
 
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
         match tab {
-            Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet => [false, false],
+            Tab::Timeline | Tab::Layers | Tab::History | Tab::XSheet | Tab::Graph => [false, false],
             _ => [false, true],
         }
     }
 }
 
 /// The tools column's contents (not a dock tab: it has no tab bar).
-pub fn tools_panel(ui: &mut egui::Ui, shell: &mut Shell, columns: usize) {
-    tools::show(ui, shell, columns);
+pub fn tools_panel(ui: &mut egui::Ui, shell: &mut Shell, columns: usize, simple: bool) {
+    tools::show(ui, shell, columns, simple);
 }
 
 /// The canvas, which fills what the other panels leave.
@@ -130,6 +138,14 @@ fn update_label(shell: &Shell) -> Option<String> {
         State::Ready(r, _) => Some(format!("Restart to update to {}", r.version)),
         _ => None,
     }
+}
+
+/// A percentage in the monospace font, padded to a fixed width, so the status
+/// bar does not shift while it counts.
+fn percent_text(fraction: f32, width: usize, color: egui::Color32) -> RichText {
+    RichText::new(format!("{:>width$.0}%", fraction * 100.0))
+        .font(crate::theme::mono(12.0))
+        .color(color)
 }
 
 /// Bottom bar: messages or the tool hint on the left, state on the right.
@@ -198,7 +214,7 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                             ui.add(bar)
                                 .on_hover_text("Downloading the update. You can keep working.");
                             if let Some(f) = fraction {
-                                ui.label(muted(format!("{:.0}%", f * 100.0)));
+                                ui.label(percent_text(f, 3, p.text_muted));
                             }
                         }
                         ui.separator();
@@ -218,10 +234,8 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                     }
                     ui.separator();
                     if !home {
-                        ui.label(muted(format!(
-                            "{:.0}%",
-                            shell.view.zoom * ui.ctx().pixels_per_point() * 100.0
-                        )));
+                        let zoom = shell.view.zoom * ui.ctx().pixels_per_point();
+                        ui.label(percent_text(zoom, 4, p.text_muted));
                         ui.separator();
                     }
                     if let Some((name, fraction)) = shell.renders.active.clone() {
@@ -236,7 +250,26 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                         if r.clicked() {
                             shell.pending.push(fanimate_editor::Action::RenderQueue);
                         }
-                        ui.label(muted(format!("Rendering {:.0}%", fraction * 100.0)));
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(
+                            "Rendering ",
+                            0.0,
+                            egui::TextFormat {
+                                font_id: egui::FontId::proportional(12.0),
+                                color: p.text_muted,
+                                ..Default::default()
+                            },
+                        );
+                        job.append(
+                            &format!("{:>3.0}%", fraction * 100.0),
+                            0.0,
+                            egui::TextFormat {
+                                font_id: crate::theme::mono(12.0),
+                                color: p.text_muted,
+                                ..Default::default()
+                            },
+                        );
+                        ui.label(job);
                         ui.separator();
                     }
                     if !home {

@@ -67,6 +67,25 @@ When there is a new version, a button appears at the right of the status bar. No
 
 **Skip this version** hides a version until a newer one appears.
 
+## Working offline, and locking Fanimate down
+
+Fanimate works fully without a network or an account, and sends nothing by itself. Two ways to be sure of it:
+
+- **Work offline** (Edit › Preferences) stops update checks and, as they arrive, cloud services. Everything else works as before.
+- **A policy file** sets the same for a whole computer, a school lab or a studio. It is a JSON file with any of these names (a name left out keeps its default):
+
+  | Name | Default | Meaning |
+  |---|---|---|
+  | `offline` | `false` | Never use the network: no update checks, no cloud services |
+  | `ai` | `true` | `false` turns off every AI tool, local ones included |
+  | `cloud` | `true` | `false` turns off cloud services even when the network is allowed |
+
+  ```json
+  { "offline": true, "ai": false }
+  ```
+
+  Fanimate reads `fanimate-policy.json` beside the program (put it there to apply to everyone who uses the computer) and `policy.json` in the user's Fanimate folder (the folder with the settings). Where they disagree, the stricter one wins, and a user's own choice can add a restriction but never lift one. A policy file that cannot be read or understood is treated as the strictest policy, with a message naming the file, so a typo cannot silently allow what an administrator meant to forbid. When a policy turns **Work offline** on, Preferences shows it ticked and greyed out.
+
 ## Crash reports
 
 If Fanimate closes unexpectedly, the next start first offers to recover your unsaved work (it is kept up to the last change), then asks whether to report the crash. **Report on GitHub…** opens a new issue in your browser with the report filled in (Fanimate's version, your system and graphics, what failed and where, and how many sessions on this computer ended in a crash), for you to read, edit and send. Fanimate never sends a report itself. Uncheck **Offer to report crashes** (also in Preferences) to stop being asked.

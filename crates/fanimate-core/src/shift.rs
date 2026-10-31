@@ -80,6 +80,10 @@ fn layers(list: &mut [Layer], by: Frame) {
                 for act in &mut skeleton.actions {
                     action(act, by);
                 }
+                for c in &mut skeleton.controllers {
+                    c.x.shift(by);
+                    c.y.shift(by);
+                }
                 layers(children, by);
             }
             LayerKind::Group { children } => layers(children, by),
@@ -89,6 +93,21 @@ fn layers(list: &mut [Layer], by: Frame) {
             }
             LayerKind::Audio(audio) => audio.start = audio.start.saturating_add(by),
             LayerKind::Image(_) => {}
+            LayerKind::Text(text) => {
+                text.path_offset.shift(by);
+                for a in &mut text.animators {
+                    a.selector.start.shift(by);
+                    a.selector.end.shift(by);
+                    a.selector.offset.shift(by);
+                    a.position.shift(by);
+                    a.rotation.shift(by);
+                    a.scale.shift(by);
+                    a.opacity.shift(by);
+                    if let Some(fill) = &mut a.fill {
+                        fill.shift(by);
+                    }
+                }
+            }
         }
     }
 }

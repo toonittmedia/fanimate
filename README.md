@@ -76,8 +76,8 @@ cargo run --release -p fanimate-cli -- validate hello.fnm
 
 | Phase | Duration (estimate) | Focus | Ends at |
 |---|---|---|---|
-| **1. Foundation** | About 2 to 3 more months (M0 to M5 are built; the public beta remains) | Engine and renderer, drawing and frame-by-frame, rigging, lip sync, SVG, PSD, Moho and Animate import, video export | **Version 1.0** |
-| 2. Production | About 6 months | Node graph, text animation, auto colour fill, raster brushes, scripting API, local AI tools, Lottie and game export | A pilot short film ships |
+| **1. Foundation** | M0 to M5 are built; the close-out runs alongside Phase 2 | Engine and renderer, drawing and frame-by-frame, rigging, lip sync, SVG, PSD, Moho and Animate import, video export | Close-out with testers (no public release) |
+| 2. Production | About 6 months, then a public beta of at least 8 weeks | Node graph, text animation, auto colour fill, raster brushes, scripting API, local AI tools, Lottie and game export, and the films, examples and handmade templates that launch with 1.0 | **Version 1.0 and the public launch** |
 | 3. Studio | About 6 months | Fanimate Hub, review and approvals, cloud rendering, marketplace | Studio-ready |
 | 4. Reach | Ongoing | Tablet apps, live co-editing, Harmony import, education | — |
 

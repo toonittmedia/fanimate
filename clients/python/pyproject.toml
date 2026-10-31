@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fanimate"
+version = "0.1.0"
+description = "Drive Fanimate, the 2D animation app, from Python: scripts, pipelines and tools over its JSON-RPC host."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "The Fanimate authors" }]
+keywords = ["animation", "fanimate", "scripting", "json-rpc"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/toonittmedia/fanimate"
+
+[tool.setuptools]
+packages = ["fanimate"]

@@ -35,6 +35,9 @@ struct Settings {
     /// After a crash, offer to report it.
     crash_reports: bool,
     updates: crate::update::UpdateSettings,
+    /// Work offline: never use the network (the policy files can ask for the
+    /// same, and win).
+    offline: bool,
     /// What opens when Fanimate starts.
     startup: Startup,
     /// Files opened or saved lately, newest first.
@@ -103,6 +106,7 @@ impl Default for Settings {
             ffmpeg: None,
             crash_reports: true,
             updates: Default::default(),
+            offline: false,
             startup: Startup::default(),
             recent: Vec::new(),
             last_seen_version: String::new(),
@@ -244,6 +248,8 @@ pub struct UiState {
     /// The widget being edited in the Properties or Style panel, so one
     /// drag or one typed value makes one undo step.
     pub active_edit: Option<egui::Id>,
+    /// Text being typed on the canvas with the Text tool.
+    pub text_edit: Option<crate::panels::text_tool::TextEdit>,
     /// Show (or reopen) a panel on the next frame.
     pub open_tab: Option<Tab>,
     pub reset_layout: bool,
@@ -350,6 +356,8 @@ pub struct Shell {
     pub audio: crate::audio::Audio,
     /// A lip sync waiting on Rhubarb.
     pub lipsync: Option<crate::lipsync::Job>,
+    /// An export to SVG, Lottie or a sprite sheet in progress.
+    pub web_export: Option<crate::web_export::Job>,
     pub export_format: fanimate_export::Format,
     /// What can make each export format here.
     pub video: crate::formats::VideoTools,
@@ -365,6 +373,11 @@ pub struct Shell {
     /// How this copy was installed, which decides how it updates.
     pub install: crate::update::Install,
     pub updates: crate::update::UpdateSettings,
+    /// The user chose to work offline (Preferences).
+    pub offline: bool,
+    /// What the policy files allow (see `policy.rs`). The user's own choice to
+    /// work offline is added by [`Shell::policy`].
+    file_policy: fanimate_core::Policy,
     /// Commands recently run from the palette, most recent first.
     pub recent_actions: Vec<Action>,
     /// The user asked for this check, so its result is shown.
@@ -423,6 +436,10 @@ impl FanimateApp {
             .unwrap_or_else(|| "no GPU".into());
 
         crate::crash::set_gpu(&gpu_name);
+        let (file_policy, policy_note) = crate::policy::load();
+        if let Some(note) = policy_note {
+            editor.set_status(StatusKind::Error, note);
+        }
         let bench = opts.bench_bones.is_some();
         let (crash_session, mut crash) = match crate::crash::dir() {
             Some(dir) if !bench => crate::crash::begin(&dir),
@@ -465,6 +482,7 @@ impl FanimateApp {
                 look_through_camera: false,
                 audio: Default::default(),
                 lipsync: None,
+                web_export: None,
                 export_format: settings.export_format,
                 video: crate::formats::VideoTools::new(settings.ffmpeg.clone()),
                 renders: Default::default(),
@@ -474,6 +492,8 @@ impl FanimateApp {
                 updater: Default::default(),
                 install: crate::update::Install::detect(),
                 updates: settings.updates.clone(),
+                offline: settings.offline,
+                file_policy,
                 recent_actions: Vec::new(),
                 update_manual: false,
                 update_due: (!bench).then(|| Instant::now() + Duration::from_secs(5)),
@@ -576,6 +596,7 @@ impl eframe::App for FanimateApp {
             .audio
             .follow(&shell.editor.doc, shell.editor.playing, shell.editor.frame);
         crate::lipsync::poll(&ctx, shell);
+        crate::web_export::poll(&ctx, shell);
 
         handle_close_request(&ctx, shell);
         titlebar::track_window(&ctx, &mut shell.ui.window);
@@ -705,6 +726,7 @@ impl eframe::App for FanimateApp {
                 ffmpeg: s.video.chosen.clone(),
                 crash_reports: s.crash_reports,
                 updates: s.updates.clone(),
+                offline: s.offline,
                 startup: s.startup,
                 recent: s.recent.clone(),
                 last_seen_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -953,6 +975,11 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::SaveAs => shell.ui.save_as = Some(crate::saveas::SaveForm::new(shell)),
             Action::SaveAsFolder => save_as_folder(shell),
             Action::Import => import_dialog(shell),
+            Action::ImportCaptions => import_captions_dialog(shell),
+            Action::ExportCaptions => export_captions_dialog(shell),
+            Action::ExportSvgFrame => crate::web_export::start(shell, crate::web_export::Kind::Svg),
+            Action::ExportLottie => crate::web_export::start(shell, crate::web_export::Kind::Lottie),
+            Action::ExportSpriteSheet => crate::web_export::start(shell, crate::web_export::Kind::Sheet),
             Action::LipSync => crate::lipsync::start(shell),
             Action::ExportVideo => {
                 shell.ui.export = Some(crate::export::ExportForm::new(shell, shell.export_format));
@@ -980,6 +1007,13 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             }
             Action::Preferences => shell.ui.show_preferences = true,
             Action::CheckForUpdates => {
+                if !shell.policy().network_allowed() {
+                    shell.editor.set_status(
+                        StatusKind::Info,
+                        "Fanimate is working offline, so it does not check for updates.",
+                    );
+                    return;
+                }
                 shell.update_manual = true;
                 shell.ui.show_update = true;
                 shell.updater.check(true, &shell.install);
@@ -1012,7 +1046,7 @@ fn update_tick(ctx: &egui::Context, shell: &mut Shell) {
         && Instant::now() >= due
     {
         shell.update_due = None;
-        if shell.updates.check {
+        if shell.updates.check && shell.policy().network_allowed() {
             shell.updater.check(false, &shell.install);
         }
     }
@@ -1083,7 +1117,7 @@ fn zoom_by(shell: &mut Shell, factor: f32) {
 /// The kinds of file File > Import (and dropping a file on the window) brings
 /// in as layers: pictures, Photoshop and SVG files, and sound.
 fn importable_extensions() -> Vec<&'static str> {
-    let mut all = vec!["png", "jpg", "jpeg", "psd", "svg"];
+    let mut all = vec!["png", "jpg", "jpeg", "psd", "svg", "srt", "vtt"];
     all.extend(fanimate_editor::SOUND_EXTENSIONS);
     all
 }
@@ -1110,6 +1144,7 @@ fn import_file(shell: &mut Shell, path: &Path) -> bool {
         match ext.as_str() {
             "psd" => shell.editor.import_psd(&name, &bytes),
             "svg" => shell.editor.import_svg(&name, &bytes),
+            "srt" | "vtt" => import_captions_bytes(shell, path, &bytes),
             e if fanimate_editor::SOUND_EXTENSIONS.contains(&e) => shell.editor.import_audio(&name, bytes),
             _ => shell.editor.import_picture(&name, bytes),
         }
@@ -1146,6 +1181,80 @@ fn import_dialog(shell: &mut Shell) {
         if !import_file(shell, &path) {
             return;
         }
+    }
+}
+
+/// Read caption bytes (UTF-8, or Latin-1 as old files often are) into a
+/// layer of captions named after the file, and say how many were read.
+fn import_captions_bytes(
+    shell: &mut Shell,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<fanimate_core::LayerId, String> {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(t) => t.to_owned(),
+        Err(_) => bytes.iter().map(|b| char::from(*b)).collect(),
+    };
+    let name = path
+        .file_stem()
+        .map_or_else(|| "Captions".to_owned(), |s| s.to_string_lossy().into_owned());
+    let made = shell.editor.import_captions(&text, &name)?;
+    let mut message = format!("Imported {} captions", made.cues);
+    if made.skipped + made.cut_off > 0 {
+        message.push_str(&format!(" ({} could not be read)", made.skipped + made.cut_off));
+    }
+    shell.editor.set_status(StatusKind::Success, message);
+    Ok(made.layer)
+}
+
+fn import_captions_dialog(shell: &mut Shell) {
+    if shell.editor.editing_blocked() {
+        return;
+    }
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Import captions")
+        .add_filter("Captions (SRT or WebVTT)", &["srt", "vtt"])
+        .pick_file()
+    else {
+        return;
+    };
+    import_file(shell, &path);
+}
+
+/// Write the selected caption layer as SubRip or WebVTT, by the extension
+/// of the file chosen.
+fn export_captions_dialog(shell: &mut Shell) {
+    let Some(id) = shell.editor.primary() else {
+        return;
+    };
+    let name = shell
+        .editor
+        .doc
+        .find(id)
+        .map_or_else(|| "Captions".to_owned(), |l| l.name.clone());
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Export captions")
+        .set_file_name(format!("{name}.srt"))
+        .add_filter("SubRip", &["srt"])
+        .add_filter("WebVTT", &["vtt"])
+        .save_file()
+    else {
+        return;
+    };
+    let webvtt = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtt"));
+    let Some(text) = shell.editor.export_captions(id, webvtt) else {
+        shell
+            .editor
+            .set_status(StatusKind::Info, "Select a layer of captions first.");
+        return;
+    };
+    match std::fs::write(&path, text) {
+        Ok(()) => shell
+            .editor
+            .set_status(StatusKind::Success, "Exported the captions"),
+        Err(e) => shell
+            .editor
+            .set_status(StatusKind::Error, format!("Could not write the captions: {e}")),
     }
 }
 
@@ -1302,6 +1411,13 @@ pub fn save(shell: &mut Shell, ask: bool) -> bool {
 }
 
 impl Shell {
+    /// What may be used now: what the policy files allow, with the user's own
+    /// choice to work offline added. Nothing that uses the network, runs an AI
+    /// tool or reaches a cloud service may start unless this allows it.
+    pub fn policy(&self) -> fanimate_core::Policy {
+        self.file_policy.with_user_offline(self.offline)
+    }
+
     pub fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
         self.theme = theme;
         self.palette = theme::apply(ctx, theme);

@@ -168,7 +168,14 @@ fn every_layer() -> Document {
         cel.line = shapes.iter().take(i + 1).cloned().collect();
         cels.push(cel);
     }
-    let frames = doc.new_layer("Drawn", LayerKind::Frames { cels });
+    let mut frames = doc.new_layer("Drawn", LayerKind::Frames { cels });
+    // layers a tool made carry a record, which puts `requires` in the manifest
+    frames.provenance = Some(fanimate_core::Provenance {
+        tool: "line-clean-up".into(),
+        model: "clean-lines".into(),
+        version: "1.2".into(),
+        date: "2026-10-30".into(),
+    });
     let open = doc.new_layer("Open", LayerKind::vector(shapes.clone()));
     let closed = doc.new_layer("Closed", LayerKind::vector(shapes));
     let switch = doc.new_layer(
@@ -189,13 +196,36 @@ fn every_layer() -> Document {
             ],
         },
     );
-    let group = doc.new_layer(
+    let mut group = doc.new_layer(
         "Head",
         LayerKind::Group {
             children: vec![frames, switch],
         },
     );
+    group.provenance = Some(fanimate_core::Provenance::new("auto-rig"));
     doc.layers.push(group);
+    // a title with animators, so damage reaches the text layer, its settings and its keys
+    let mut title = fanimate_core::Text::new(
+        "Hello, damaged world
+second line",
+    );
+    title.look_mut().width = Some(400.0);
+    let mut rise = fanimate_core::Animator::new("Rise", fanimate_core::TextUnit::Word);
+    rise.position.base = fanimate_core::Vec2::new(0.0, 30.0);
+    rise.opacity.base = 0.0;
+    rise.fill = Some(fanimate_core::Channel::new(fanimate_core::Color::WHITE));
+    rise.selector.random = true;
+    rise.selector
+        .end
+        .set_key(0, 0.0, fanimate_core::Interpolation::Linear);
+    rise.selector.end.set_key(
+        12,
+        100.0,
+        fanimate_core::Interpolation::Ease(fanimate_core::Easing::Bounce),
+    );
+    title.animators.push(rise);
+    let title = doc.new_layer("Title", LayerKind::Text(title));
+    doc.layers.push(title);
     doc
 }
 

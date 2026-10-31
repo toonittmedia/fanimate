@@ -4,8 +4,10 @@
 //! becomes a vector layer, inside a group named after the file, so
 //! artwork drawn elsewhere arrives in pieces ready to rig. Shapes keep
 //! their outlines and solid colours. What Fanimate cannot draw yet
-//! (text, gradients, filters and the like) is simplified or left out, and
-//! the import says so rather than dropping it silently.
+//! (gradients, filters and the like) is simplified or left out, and the
+//! import says so rather than dropping it silently. Text comes in as text
+//! layers (see `svg_text`), above the shapes: SVG's drawing order between
+//! text and shapes is not kept.
 
 use std::collections::HashMap;
 
@@ -14,6 +16,7 @@ use usvg::roxmltree;
 use usvg::tiny_skia_path::PathSegment;
 
 use super::import::{file_name, stem};
+use super::svg_text::{self, Anchor, SvgText};
 use super::{Editor, StatusKind, labelled};
 
 /// How far outlines refitted for the even-odd fill rule may stray, in
@@ -44,7 +47,9 @@ impl Notes {
         };
         let mut out = Vec::new();
         if let Some(t) = count(self.text, "text item", "text items") {
-            out.push(format!("{t} left out (convert text to outlines first)"));
+            out.push(format!(
+                "{t} left out (text on a path: convert it to outlines first)"
+            ));
         }
         if let Some(p) = count(self.pictures, "picture", "pictures") {
             out.push(format!("{p} left out (import pictures on their own)"));
@@ -73,7 +78,7 @@ impl Editor {
     /// Import an SVG file as vector layers, centred on the canvas. One
     /// undo step. Returns the new layer.
     pub fn import_svg(&mut self, name: &str, bytes: &[u8]) -> Result<LayerId, String> {
-        let (pieces, size, notes) = read(name, bytes)?;
+        let (pieces, size, notes, texts) = read(name, bytes)?;
 
         self.checkpoint("Import SVG file");
         let offset = (self.doc.size() - size) / 2.0;
@@ -84,6 +89,8 @@ impl Editor {
                 labelled(self.doc.new_layer(name, LayerKind::vector(shapes)))
             })
             .collect();
+        let text_count = texts.len();
+        layers.extend(texts.iter().map(|t| self.text_layer(t)));
         let mut layer = if layers.len() == 1 {
             layers.remove(0)
         } else {
@@ -93,19 +100,82 @@ impl Editor {
                     .new_layer(stem(name), LayerKind::Group { children: layers }),
             )
         };
-        layer.transform.position.base = offset;
+        // a single imported layer may already stand somewhere (a text does)
+        layer.transform.position.base += offset;
         let id = layer.id;
         self.place_imported(layer);
         let lost = notes.phrases();
+        let as_text = match text_count {
+            0 => String::new(),
+            1 => " (1 text item as a text layer)".to_owned(),
+            n => format!(" ({n} text items as text layers)"),
+        };
         if lost.is_empty() {
-            self.set_status(StatusKind::Success, format!("Imported {}", file_name(name)));
+            self.set_status(
+                StatusKind::Success,
+                format!("Imported {}{as_text}", file_name(name)),
+            );
         } else {
             self.set_status(
                 StatusKind::Warning,
-                format!("Imported {}; {}", file_name(name), lost.join("; ")),
+                format!("Imported {}{as_text}; {}", file_name(name), lost.join("; ")),
             );
         }
         Ok(id)
+    }
+}
+
+impl Editor {
+    /// A text layer for one SVG text element, standing where the SVG put it: the
+    /// text's anchor point (the start, middle or end of its first baseline) lands on
+    /// the element's position even when it is turned.
+    fn text_layer(&mut self, t: &SvgText) -> Layer {
+        let mut text = fanimate_core::Text::new(t.content.clone());
+        let look = text.look_mut();
+        look.size = t.size;
+        look.weight = t.weight;
+        look.fill = t.fill;
+        if let Some(family) = fanimate_core::text::families()
+            .into_iter()
+            .find(|f| f.eq_ignore_ascii_case(&t.family))
+        {
+            look.family = family.to_owned();
+        }
+        look.align = match t.anchor {
+            Anchor::Start => fanimate_core::TextAlign::Start,
+            Anchor::Middle => fanimate_core::TextAlign::Center,
+            Anchor::End => fanimate_core::TextAlign::End,
+        };
+        look.repair();
+        let width = text.box_size().x;
+        let anchor_in_text = Vec2::new(
+            match t.anchor {
+                Anchor::Start => 0.0,
+                Anchor::Middle => width / 2.0,
+                Anchor::End => width,
+            },
+            text.first_baseline(),
+        );
+        let (sin, cos) = t.rotation.sin_cos();
+        let turned = Vec2::new(
+            anchor_in_text.x * cos - anchor_in_text.y * sin,
+            anchor_in_text.x * sin + anchor_in_text.y * cos,
+        );
+        let name = if t.id.is_empty() {
+            t.content
+                .lines()
+                .next()
+                .unwrap_or("Text")
+                .chars()
+                .take(24)
+                .collect()
+        } else {
+            t.id.clone()
+        };
+        let mut layer = labelled(self.doc.new_layer(name, LayerKind::Text(text)));
+        layer.transform.position.base = t.at - turned;
+        layer.transform.rotation.base = t.rotation;
+        layer
     }
 }
 
@@ -115,7 +185,7 @@ pub(crate) type Pieces = Vec<(String, Vec<Shape>)>;
 /// What an SVG file holds as layers: its top-level groups, each with its
 /// shapes (named by id, or by Inkscape label), the size of its page and what
 /// could not come through.
-fn read(name: &str, bytes: &[u8]) -> Result<(Pieces, Vec2, Notes), String> {
+fn read(name: &str, bytes: &[u8]) -> Result<(Pieces, Vec2, Notes, Vec<SvgText>), String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "not an SVG file Fanimate can read".to_owned())?;
     let options = usvg::Options {
         // an SVG file may point at any file on disk; pictures are not
@@ -162,15 +232,21 @@ fn read(name: &str, bytes: &[u8]) -> Result<(Pieces, Vec2, Notes), String> {
     if !loose.is_empty() {
         pieces.insert(0, (stem(name), loose));
     }
-    if pieces.is_empty() {
+    let size = tree.size();
+    let page = Vec2::new(size.width(), size.height());
+    let (texts, text_skipped) = match roxmltree::Document::parse(text) {
+        Ok(doc) => svg_text::texts(&doc, page),
+        Err(_) => (Vec::new(), 0),
+    };
+    notes.text = text_skipped;
+    if pieces.is_empty() && texts.is_empty() {
         let mut why = "the SVG file has no shapes Fanimate can import".to_owned();
         if let Some(first) = notes.phrases().first() {
             why = format!("{why}: {first}");
         }
         return Err(why);
     }
-    let size = tree.size();
-    Ok((pieces, Vec2::new(size.width(), size.height()), notes))
+    Ok((pieces, page, notes, texts))
 }
 
 /// The layers of an SVG file that ships with Fanimate (a template's mouths,
@@ -180,7 +256,7 @@ fn read(name: &str, bytes: &[u8]) -> Result<(Pieces, Vec2, Notes), String> {
 /// shows as missing artwork rather than stopping the template.
 pub(crate) fn bundled(name: &str, svg: &str) -> (Pieces, Vec2) {
     match read(name, svg.as_bytes()) {
-        Ok((layers, size, _)) => (layers, size),
+        Ok((layers, size, _, _)) => (layers, size),
         Err(_) => (Vec::new(), Vec2::ZERO),
     }
 }
@@ -190,12 +266,9 @@ pub(crate) fn bundled(name: &str, svg: &str) -> (Pieces, Vec2) {
 fn scan(text: &str) -> (HashMap<String, String>, Notes) {
     const INKSCAPE: &str = "http://www.inkscape.org/namespaces/inkscape";
     let mut labels = HashMap::new();
-    let mut notes = Notes::default();
+    let notes = Notes::default();
     if let Ok(doc) = roxmltree::Document::parse(text) {
         for node in doc.descendants().filter(|n| n.is_element()) {
-            if node.tag_name().name() == "text" {
-                notes.text += 1;
-            }
             if let (Some(id), Some(label)) = (node.attribute("id"), node.attribute((INKSCAPE, "label"))) {
                 labels.insert(id.to_owned(), label.to_owned());
             }
@@ -377,7 +450,11 @@ mod tests {
         assert_eq!(root.name, "hero");
         let layers = root.kind.children().unwrap();
         let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names, ["Body", "arm"]);
+        assert_eq!(
+            names,
+            ["Body", "arm", "Hello"],
+            "the text comes in after the shapes"
+        );
         // the view box scales 2x; the nested transform and opacity apply
         let body = vector(&layers[0]);
         assert_eq!(body[0].name, "torso");
@@ -401,7 +478,7 @@ mod tests {
         assert_eq!(root.transform.position.base, Vec2::new(540.0, 310.0));
         assert!(fanimate_fnm::validate(&ed.doc).is_clean());
         let status = &ed.status.as_ref().unwrap().1;
-        assert!(status.contains("1 text item left out"), "{status}");
+        assert!(status.contains("1 text item as a text layer"), "{status}");
         assert!(status.contains("1 dashed line became solid"), "{status}");
         ed.run(Action::Undo);
         assert!(ed.doc.find(id).is_none());
@@ -438,9 +515,13 @@ mod tests {
         let mut ed = Editor::untitled();
         assert!(ed.import_svg("x.svg", b"<svg").is_err());
         assert!(ed.import_svg("x.svg", &[0xff, 0xfe]).is_err());
-        let only_text = r#"<svg xmlns="http://www.w3.org/2000/svg"><text>Hi</text></svg>"#;
-        let err = ed.import_svg("t.svg", only_text.as_bytes()).unwrap_err();
-        assert!(err.contains("text"), "{err}");
+        let nothing = r#"<svg xmlns="http://www.w3.org/2000/svg"><g/></svg>"#;
+        let err = ed.import_svg("t.svg", nothing.as_bytes()).unwrap_err();
+        assert!(err.contains("no shapes"), "{err}");
+        let on_a_path = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+            <text><textPath xlink:href="#p">around</textPath></text></svg>"##;
+        let err = ed.import_svg("t.svg", on_a_path.as_bytes()).unwrap_err();
+        assert!(err.contains("text on a path"), "{err}");
         assert!(ed.history.undo_label().is_none());
     }
 
@@ -452,5 +533,83 @@ mod tests {
             <rect width="5" height="5"/></svg>"#;
         assert!(ed.import_svg("p.svg", svg.as_bytes()).is_ok());
         assert!(ed.doc.media.is_empty());
+    }
+
+    fn text_of(layer: &Layer) -> &fanimate_core::Text {
+        match &layer.kind {
+            LayerKind::Text(t) => t,
+            other => panic!("not a text layer: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_file_with_only_text_comes_in_as_text_layers_with_their_look() {
+        let mut ed = Editor::untitled();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200">
+            <text id="title" x="50" y="100" font-size="40" font-weight="bold" fill="#00aa00">Hello</text>
+            <text x="50" y="150" font-size="20">Second line</text></svg>"##;
+        let id = ed.import_svg("words.svg", svg.as_bytes()).unwrap();
+        let group = ed.doc.find(id).unwrap();
+        let layers = group.kind.children().unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].name, "title");
+        assert_eq!(layers[1].name, "Second line");
+        let t = text_of(&layers[0]);
+        assert_eq!(t.look().content, "Hello");
+        assert_eq!((t.look().size, t.look().weight), (40.0, 700.0));
+        assert_eq!(t.look().fill, Color::rgb(0.0, 2.0 / 3.0, 0.0));
+        assert!(fanimate_fnm::validate(&ed.doc).is_clean());
+        assert!(
+            ed.status
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("2 text items as text layers")
+        );
+        ed.run(Action::Undo);
+        assert!(ed.doc.find(id).is_none());
+    }
+
+    #[test]
+    fn the_baseline_of_the_text_lands_on_the_svgs_y_and_an_anchor_centres_the_words() {
+        let mut ed = Editor::untitled();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200">
+            <text x="100" y="120" font-size="40">Left</text>
+            <text x="300" y="120" font-size="40" text-anchor="middle">Centre</text></svg>"#;
+        let id = ed.import_svg("a.svg", svg.as_bytes()).unwrap();
+        let layers = ed.doc.find(id).unwrap().kind.children().unwrap().clone();
+        let (left, centre) = (&layers[0], &layers[1]);
+        let page_offset = ed.doc.find(id).unwrap().transform.position.base;
+        let baseline = |l: &Layer| l.transform.position.base.y + text_of(l).first_baseline() + page_offset.y;
+        assert!(
+            (baseline(left) - (120.0 + page_offset.y)).abs() < 0.01,
+            "{}",
+            baseline(left)
+        );
+        assert!((baseline(centre) - (120.0 + page_offset.y)).abs() < 0.01);
+        // the middle of the centred words is on x = 300
+        let middle = centre.transform.position.base.x + text_of(centre).box_size().x / 2.0;
+        assert!((middle - 300.0).abs() < 0.01, "{middle}");
+        // the left one starts on x = 100
+        assert!((left.transform.position.base.x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_turned_text_keeps_its_anchor_where_the_svg_put_it() {
+        let mut ed = Editor::untitled();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">
+            <text transform="translate(200 200) rotate(90)" x="0" y="0" font-size="30">Up</text></svg>"#;
+        let id = ed.import_svg("r.svg", svg.as_bytes()).unwrap();
+        let layer = ed.doc.find(id).unwrap();
+        assert!((layer.transform.rotation.base - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+        // the start of the baseline is at (200, 200) on the page, which an untitled
+        // document centres on its canvas
+        let baseline_start = Vec2::new(0.0, text_of(layer).first_baseline());
+        let on_canvas = ed.world(layer.id).transform_point2(baseline_start);
+        let shift = (ed.doc.size() - Vec2::new(400.0, 400.0)) / 2.0;
+        assert!(
+            (on_canvas - shift - Vec2::new(200.0, 200.0)).length() < 0.05,
+            "{on_canvas} {shift}"
+        );
     }
 }

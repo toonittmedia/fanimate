@@ -28,8 +28,9 @@ pub mod zip;
 
 pub use history::{HistoryRecord, HistoryState};
 pub use io::{
-    FORMAT_NAME, FORMAT_VERSION, MAX_THUMBNAIL_BYTES, THUMBNAIL_NAME, is_media_name, load, load_and_repair,
-    load_archive, load_from, read_thumbnail, save, save_folder, save_with_thumbnail,
+    FEATURE_PROVENANCE, FEATURE_TEXT, FORMAT_NAME, FORMAT_VERSION, MAX_THUMBNAIL_BYTES, SUPPORTED_FEATURES,
+    THUMBNAIL_NAME, is_media_name, load, load_and_repair, load_archive, load_from, read_thumbnail,
+    required_features, save, save_folder, save_with_thumbnail,
 };
 pub use journal::{Journal, Recoverable, SessionInfo, find_recoverable};
 pub use validate::{Issue, Report, Severity, repair, validate};
@@ -49,6 +50,13 @@ pub enum FnmError {
     NotFnm(PathBuf),
     #[error("project uses .fnm version {found}; this build reads up to version {supported}")]
     UnsupportedVersion { found: u32, supported: u32 },
+    /// The project says it needs something this build cannot read faithfully,
+    /// such as a layer kind added by a newer Fanimate. Refused rather than
+    /// opened with that part missing.
+    #[error(
+        "this project needs \"{feature}\", which this build does not have; open it with a newer Fanimate"
+    )]
+    MissingFeature { feature: String },
 }
 
 pub type Result<T> = std::result::Result<T, FnmError>;

@@ -110,6 +110,8 @@ pub struct Evaluator {
     /// at (Smart Bones), or NaN for actions that are not playing.
     smart: Vec<Vec<f32>>,
     pose: Vec<Affine2>,
+    /// Buffers text layers use each frame.
+    text: crate::text::Scratch,
     rest: Vec<Affine2>,
     angles: Vec<f32>,
     /// The bone layer whose action is being edited: its Smart Bones are not
@@ -221,6 +223,7 @@ impl Evaluator {
                     }
                 }
                 LayerKind::Audio(_) => {}
+                LayerKind::Text(text) => text.items(layer.id, frame, world, opacity, &mut self.text, out),
                 LayerKind::Image(image) => {
                     let mut vertices = image.vertices();
                     let mut transform = world;
@@ -268,6 +271,18 @@ impl Evaluator {
                             .and_then(|d| self.angles.get(d).copied())
                             .and_then(|a| act.frame_for(a));
                         smart.push(f.unwrap_or(f32::NAN));
+                    }
+                    // master controllers play regular actions by their values on this frame
+                    if on {
+                        for controller in &skeleton.controllers {
+                            for link in &controller.links {
+                                if let Some(act) = skeleton.actions.get(link.action)
+                                    && let Some(f) = controller.action_frame(link, act, frame)
+                                {
+                                    smart[link.action] = f;
+                                }
+                            }
+                        }
                     }
                     for (act, &f) in skeleton.actions.iter().zip(smart.iter()) {
                         if f.is_nan() {

@@ -37,6 +37,7 @@ mod markdown;
 mod menus;
 mod panels;
 mod places;
+mod policy;
 mod preview;
 mod recovery;
 mod render_queue;
@@ -47,6 +48,7 @@ mod thumbs;
 mod timecode;
 mod titlebar;
 mod update;
+mod web_export;
 mod whatsnew;
 mod yourfiles;
 

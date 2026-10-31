@@ -91,7 +91,18 @@ impl Color {
 
     pub fn lerp(a: Self, b: Self, t: f32) -> Self {
         let m = |x: f32, y: f32| x + (y - x) * t;
-        Self::rgba(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b), m(a.a, b.a))
+        let mixed = Self::rgba(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b), m(a.a, b.a));
+        // an easing that overshoots takes t past the ends; a colour cannot follow
+        if (0.0..=1.0).contains(&t) {
+            mixed
+        } else {
+            Self::rgba(
+                mixed.r.clamp(0.0, 1.0),
+                mixed.g.clamp(0.0, 1.0),
+                mixed.b.clamp(0.0, 1.0),
+                mixed.a.clamp(0.0, 1.0),
+            )
+        }
     }
 }
 

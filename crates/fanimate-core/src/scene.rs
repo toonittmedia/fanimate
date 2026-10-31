@@ -7,6 +7,7 @@ use crate::Color;
 use crate::anim::{Channel, Frame, KeyList, LoopMode};
 use crate::bones::Skeleton;
 use crate::path::Shape;
+use crate::provenance::Provenance;
 use crate::transform::AnimTransform;
 
 /// Stable identifier for a layer, unique within a document.
@@ -237,6 +238,20 @@ impl Document {
         go(&mut self.layers, &mut f);
     }
 
+    /// Give every bone in the document an id of its own (see
+    /// [`Skeleton::ensure_ids`]). Every load does this, so files from before
+    /// version 7 get theirs, and importers call it on what they build.
+    /// Returns whether anything changed.
+    pub fn assign_ids(&mut self) -> bool {
+        let mut changed = false;
+        self.walk_mut(|l| {
+            if let LayerKind::Bone { skeleton, .. } = &mut l.kind {
+                changed |= skeleton.ensure_ids();
+            }
+        });
+        changed
+    }
+
     pub fn layer_count(&self) -> usize {
         let mut n = 0;
         self.walk(|_| n += 1);
@@ -429,6 +444,10 @@ pub struct Layer {
     #[serde(default, skip_serializing_if = "no_order_keys")]
     pub order: Channel<f32>,
     pub transform: AnimTransform,
+    /// Version 7: what made the layer's content, when a tool rather than the
+    /// artist did (see [`Provenance`]). Layers the artist drew have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
     #[serde(flatten)]
     pub kind: LayerKind,
 }
@@ -460,6 +479,7 @@ impl Layer {
             opacity: Channel::new(1.0),
             order: Channel::new(0.0),
             transform: AnimTransform::default(),
+            provenance: None,
             kind,
         }
     }
@@ -508,8 +528,15 @@ impl Layer {
                     })
                 });
             }
-            LayerKind::Bone { skeleton, .. } => skeleton.bones.iter().for_each(|b| f(&b.angle.keys)),
+            LayerKind::Bone { skeleton, .. } => {
+                skeleton.bones.iter().for_each(|b| f(&b.angle.keys));
+                skeleton.controllers.iter().for_each(|c| {
+                    f(&c.x.keys);
+                    f(&c.y.keys);
+                });
+            }
             LayerKind::Switch { switch, .. } => f(switch),
+            LayerKind::Text(t) => t.key_lists(&mut f),
             LayerKind::Group { .. } | LayerKind::Image(_) | LayerKind::Audio(_) => {}
         }
     }
@@ -539,8 +566,15 @@ impl Layer {
                 }
                 f(cels);
             }
-            LayerKind::Bone { skeleton, .. } => skeleton.bones.iter_mut().for_each(|b| f(&mut b.angle.keys)),
+            LayerKind::Bone { skeleton, .. } => {
+                skeleton.bones.iter_mut().for_each(|b| f(&mut b.angle.keys));
+                skeleton.controllers.iter_mut().for_each(|c| {
+                    f(&mut c.x.keys);
+                    f(&mut c.y.keys);
+                });
+            }
             LayerKind::Switch { switch, .. } => f(switch),
+            LayerKind::Text(t) => t.key_lists_mut(&mut f),
             LayerKind::Group { .. } | LayerKind::Image(_) | LayerKind::Audio(_) => {}
         }
     }
@@ -590,7 +624,8 @@ impl Layer {
             LayerKind::Group { .. }
             | LayerKind::Frames { .. }
             | LayerKind::Image(_)
-            | LayerKind::Audio(_) => {}
+            | LayerKind::Audio(_)
+            | LayerKind::Text(_) => {}
         }
         v
     }
@@ -813,6 +848,9 @@ pub enum LayerKind {
     /// Sound on the timeline (see [`crate::media`]): a WAV file from the
     /// media store, starting on `start`.
     Audio(crate::media::Audio),
+    /// Words, drawn as shapes and animated a character, word or line at a time
+    /// (see [`crate::text`]). Version 7; the project requires `text@1`.
+    Text(crate::text::Text),
 }
 
 impl LayerKind {
@@ -820,9 +858,25 @@ impl LayerKind {
         Self::Vector { shapes }
     }
 
+    /// The kind's name in the file format (`"type"` in a layer file).
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Vector { .. } => "vector",
+            Self::Group { .. } => "group",
+            Self::Bone { .. } => "bone",
+            Self::Image(_) => "image",
+            Self::Frames { .. } => "frames",
+            Self::Switch { .. } => "switch",
+            Self::Audio(_) => "audio",
+            Self::Text(_) => "text",
+        }
+    }
+
     pub fn children(&self) -> Option<&Vec<Layer>> {
         match self {
-            Self::Vector { .. } | Self::Image(_) | Self::Frames { .. } | Self::Audio(_) => None,
+            Self::Vector { .. } | Self::Image(_) | Self::Frames { .. } | Self::Audio(_) | Self::Text(_) => {
+                None
+            }
             Self::Group { children } | Self::Bone { children, .. } | Self::Switch { children, .. } => {
                 Some(children)
             }
@@ -831,7 +885,9 @@ impl LayerKind {
 
     pub fn children_mut(&mut self) -> Option<&mut Vec<Layer>> {
         match self {
-            Self::Vector { .. } | Self::Image(_) | Self::Frames { .. } | Self::Audio(_) => None,
+            Self::Vector { .. } | Self::Image(_) | Self::Frames { .. } | Self::Audio(_) | Self::Text(_) => {
+                None
+            }
             Self::Group { children } | Self::Bone { children, .. } | Self::Switch { children, .. } => {
                 Some(children)
             }
@@ -964,5 +1020,33 @@ mod tests {
         doc.walk(|l| ids.push(l.id));
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len());
+    }
+
+    /// `type_name` is the file format's `"type"`, for every kind the samples use.
+    #[test]
+    fn a_layer_kinds_type_name_is_its_type_in_the_file() {
+        let mut seen = std::collections::BTreeSet::new();
+        for doc in [
+            crate::samples::hello(),
+            crate::samples::benchmark(8),
+            crate::samples::walk_cycle(),
+            crate::samples::lip_sync(),
+            crate::samples::frame_by_frame(),
+        ] {
+            doc.walk(|l| {
+                let json = serde_json::to_value(&l.kind).unwrap();
+                assert_eq!(json["type"], l.kind.type_name(), "{}", l.name);
+                seen.insert(l.kind.type_name());
+            });
+        }
+        // vector, bone, switch and frames are in those samples; a group is built here
+        let (doc, _) = tree();
+        doc.walk(|l| {
+            assert_eq!(serde_json::to_value(&l.kind).unwrap()["type"], l.kind.type_name());
+            seen.insert(l.kind.type_name());
+        });
+        for kind in ["vector", "bone", "group", "switch", "frames"] {
+            assert!(seen.contains(kind), "no {kind} layer in the samples ({seen:?})");
+        }
     }
 }

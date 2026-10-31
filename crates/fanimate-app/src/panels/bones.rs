@@ -666,6 +666,82 @@ fn bone_editor(ui: &mut egui::Ui, shell: &mut Shell, b: BoneRef) {
     if let Some(parent) = new_parent {
         shell.editor.set_bone_parent(b, parent);
     }
+    secondary_motion(ui, shell);
+}
+
+/// Spring settings and the button that bakes them: a tail, ear or scarf
+/// follows the bones above it, swings and settles, and the swing is written
+/// as ordinary keys the animator can then edit.
+fn secondary_motion(ui: &mut egui::Ui, shell: &mut Shell) {
+    use fanimate_core::physics::SpringParams;
+    heading(ui, shell, "Secondary motion");
+    ui.label(
+        egui::RichText::new(
+            "Makes the bone and those below it follow their keys on a spring, thrown about by the bones above. The result is baked to keys.",
+        )
+        .color(shell.palette.text_muted),
+    );
+    let mut spring = shell.editor.spring;
+    egui::Grid::new("spring-settings")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Stiffness");
+            ui.add(
+                egui::DragValue::new(&mut spring.stiffness)
+                    .range(SpringParams::STIFFNESS_RANGE.0..=SpringParams::STIFFNESS_RANGE.1)
+                    .speed(1.0),
+            )
+            .on_hover_text(
+                "How hard the bone is pulled back to its key. 100 is a loose tail, 1000 a stiff one",
+            );
+            ui.end_row();
+            ui.label("Damping");
+            ui.add(
+                egui::DragValue::new(&mut spring.damping)
+                    .range(SpringParams::DAMPING_RANGE.0..=SpringParams::DAMPING_RANGE.1)
+                    .speed(0.1),
+            )
+            .on_hover_text(
+                "How fast the swing dies away. Twice the square root of the stiffness stops it overshooting",
+            );
+            ui.end_row();
+            ui.label("Inertia");
+            ui.add(
+                egui::DragValue::new(&mut spring.inertia)
+                    .range(SpringParams::INERTIA_RANGE.0..=SpringParams::INERTIA_RANGE.1)
+                    .speed(0.02),
+            )
+            .on_hover_text("How much the turning of the bones above throws it. 0 is none, 1 a free weight");
+            ui.end_row();
+            ui.label("Gravity");
+            ui.add(
+                egui::DragValue::new(&mut spring.gravity)
+                    .range(SpringParams::GRAVITY_RANGE.0..=SpringParams::GRAVITY_RANGE.1)
+                    .speed(0.2),
+            )
+            .on_hover_text(
+                "How hard gravity pulls the bone down the canvas. 0 is none; 10 droops a loose tail gently",
+            );
+            ui.end_row();
+            ui.label("Wind");
+            ui.add(
+                egui::DragValue::new(&mut spring.wind)
+                    .range(SpringParams::WIND_RANGE.0..=SpringParams::WIND_RANGE.1)
+                    .speed(0.2),
+            )
+            .on_hover_text("How hard a steady wind blows the bone to the right. Negative blows left");
+            ui.end_row();
+        });
+    shell.editor.spring = spring;
+    let enabled = shell.editor.can_run(fanimate_editor::Action::BakeSpring);
+    if ui
+        .add_enabled(enabled, egui::Button::new(fanimate_editor::Action::BakeSpring.label()))
+        .on_hover_text("Replaces the keys of the bone and those below it, over the whole animation. Undo brings them back")
+        .clicked()
+    {
+        shell.pending.push(fanimate_editor::Action::BakeSpring);
+    }
 }
 
 // ---------------------------------------------------------------------------

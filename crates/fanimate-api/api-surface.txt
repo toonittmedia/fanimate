@@ -1,0 +1,169 @@
+pub mod rpc;
+pub const API_VERSION: &str = "0.1.0-unstable";
+pub const MAX_NAME_CHARS: usize = 200;
+pub enum ErrorCode {
+pub fn as_str(self) -> &'static str {
+pub struct ApiError {
+pub code: ErrorCode,
+pub message: String,
+pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+pub struct DocumentInfo {
+pub name: String,
+pub width: f32,
+pub height: f32,
+pub fps: f32,
+pub start: i32,
+pub end: i32,
+pub layers: usize,
+pub format_version: u32,
+pub api_version: &'static str,
+pub struct LayerInfo {
+pub id: u32,
+pub name: String,
+pub kind: &'static str,
+pub parent: Option<u32>,
+pub visible: bool,
+pub locked: bool,
+pub children: usize,
+pub provenance: Option<Provenance>,
+pub struct BoneInfo {
+pub id: u32,
+pub name: String,
+pub parent: Option<u32>,
+pub length: f32,
+pub struct TextInfo {
+pub content: String,
+pub family: String,
+pub size: f32,
+pub weight: f32,
+pub tracking: f32,
+pub line_height: f32,
+pub width: Option<f32>,
+pub characters: usize,
+pub words: usize,
+pub lines: usize,
+pub animators: Vec<AnimatorInfo>,
+pub on_path: bool,
+pub const MAX_FRAME: i32 = 2_000_000;
+pub struct DocumentSettings {
+pub name: Option<String>,
+pub width: Option<f32>,
+pub height: Option<f32>,
+pub fps: Option<f32>,
+pub start: Option<i32>,
+pub end: Option<i32>,
+pub struct TransformChange {
+pub frame: Option<i32>,
+pub x: Option<f32>,
+pub y: Option<f32>,
+pub rotation: Option<f32>,
+pub scale_x: Option<f32>,
+pub scale_y: Option<f32>,
+pub opacity: Option<f32>,
+pub struct ShapeSpec {
+pub kind: String,
+pub name: Option<String>,
+pub x: f32,
+pub y: f32,
+pub width: f32,
+pub height: f32,
+pub radius: Option<f32>,
+pub fill: Option<String>,
+pub stroke: Option<String>,
+pub stroke_width: Option<f32>,
+pub enum AnimatorValue {
+pub struct ActionInfo {
+pub index: usize,
+pub name: String,
+pub kind: &'static str,
+pub length: i32,
+pub struct KeyInfo {
+pub frame: i32,
+pub value: f32,
+pub interp: serde_json::Value,
+pub struct CurveInfo {
+pub channel: String,
+pub component: usize,
+pub keys: Vec<KeyInfo>,
+pub struct ControllerInfo {
+pub index: usize,
+pub name: String,
+pub kind: &'static str,
+pub x: f32,
+pub y: f32,
+pub links: Vec<ControllerLinkInfo>,
+pub struct ControllerLinkInfo {
+pub action: usize,
+pub axis: &'static str,
+pub from: f32,
+pub to: f32,
+pub const MAX_BONES: usize = 2_000;
+pub struct SpringSettings {
+pub stiffness: Option<f32>,
+pub damping: Option<f32>,
+pub inertia: Option<f32>,
+pub gravity: Option<f32>,
+pub wind: Option<f32>,
+pub struct CaptionInfo {
+pub layer: u32,
+pub captions: usize,
+pub skipped: usize,
+pub cut_off: usize,
+pub struct AnimatorInfo {
+pub name: String,
+pub unit: &'static str,
+pub struct TextStyle {
+pub family: Option<String>,
+pub size: Option<f32>,
+pub weight: Option<f32>,
+pub tracking: Option<f32>,
+pub line_height: Option<f32>,
+pub width: Option<f32>,
+pub wrap: Option<bool>,
+pub struct Api<'a> {
+pub fn new(editor: &'a mut Editor) -> Self {
+pub fn document(&self) -> DocumentInfo {
+pub fn layers(&self) -> Vec<LayerInfo> {
+pub fn layer(&self, id: u32) -> Result<LayerInfo, ApiError> {
+pub fn bones(&self, layer: u32) -> Result<Vec<BoneInfo>, ApiError> {
+pub fn text(&self, layer: u32) -> Result<TextInfo, ApiError> {
+pub fn rename_layer(&mut self, id: u32, name: &str) -> Result<(), ApiError> {
+pub fn rename_bone(&mut self, layer: u32, bone: u32, name: &str) -> Result<(), ApiError> {
+pub fn set_layer_visible(&mut self, id: u32, visible: bool) -> Result<(), ApiError> {
+pub fn set_layer_provenance(&mut self, id: u32, provenance: Option<Provenance>) -> Result<(), ApiError> {
+pub fn add_text_layer(&mut self, content: &str, x: f32, y: f32) -> Result<u32, ApiError> {
+pub fn set_text_content(&mut self, layer: u32, content: &str) -> Result<(), ApiError> {
+pub fn set_text_style(&mut self, layer: u32, style: TextStyle) -> Result<(), ApiError> {
+pub fn add_text_animator(&mut self, layer: u32, preset: &str) -> Result<usize, ApiError> {
+pub fn import_captions(&mut self, content: &str, name: &str) -> Result<CaptionInfo, ApiError> {
+pub fn export_captions(&self, layer: u32, format: &str) -> Result<String, ApiError> {
+pub fn add_layer(&mut self, kind: &str, name: &str, parent: Option<u32>) -> Result<u32, ApiError> {
+pub fn delete_layer(&mut self, id: u32) -> Result<(), ApiError> {
+pub fn set_document(&mut self, settings: DocumentSettings) -> Result<(), ApiError> {
+pub fn set_layer_transform(&mut self, id: u32, change: TransformChange) -> Result<(), ApiError> {
+pub fn add_shape(&mut self, layer: u32, shape: ShapeSpec) -> Result<usize, ApiError> {
+pub fn add_bone_layer(&mut self, name: &str) -> Result<u32, ApiError> {
+pub fn add_bone( &mut self, layer: u32, name: &str, parent: Option<u32>, x: f32, y: f32, length: f32, ) -> Result<u32, ApiError> {
+pub fn set_bone_angle( &mut self, layer: u32, bone: u32, degrees: f32, frame: Option<i32>, ) -> Result<(), ApiError> {
+pub fn bake_spring( &mut self, layer: u32, bones: &[u32], settings: SpringSettings, start: Option<i32>, end: Option<i32>, ) -> Result<usize, ApiError> {
+pub fn actions(&self, layer: u32) -> Result<Vec<ActionInfo>, ApiError> {
+pub fn save_pose( &mut self, layer: u32, name: Option<&str>, frame: Option<i32>, ) -> Result<usize, ApiError> {
+pub fn mirror_pose(&mut self, layer: u32, index: usize) -> Result<usize, ApiError> {
+pub fn insert_action(&mut self, layer: u32, index: usize, frame: i32) -> Result<(), ApiError> {
+pub fn import_svg(&mut self, svg: &str, name: &str) -> Result<u32, ApiError> {
+pub fn controllers(&self, layer: u32, frame: Option<i32>) -> Result<Vec<ControllerInfo>, ApiError> {
+pub fn add_controller(&mut self, layer: u32, name: &str, kind: &str) -> Result<usize, ApiError> {
+pub fn curves(&self, layer: u32) -> Result<Vec<CurveInfo>, ApiError> {
+pub fn move_key( &mut self, layer: u32, channel: &str, component: usize, frame: i32, to_frame: i32, value: f32, ) -> Result<i32, ApiError> {
+pub fn set_key_interpolation( &mut self, layer: u32, channel: &str, frame: i32, interp: serde_json::Value, ) -> Result<bool, ApiError> {
+pub fn rename_controller(&mut self, layer: u32, index: usize, name: &str) -> Result<(), ApiError> {
+pub fn remove_controller(&mut self, layer: u32, index: usize) -> Result<(), ApiError> {
+pub fn link_controller( &mut self, layer: u32, controller: usize, action: usize, axis: &str, from: f32, to: f32, ) -> Result<(), ApiError> {
+pub fn unlink_controller( &mut self, layer: u32, controller: usize, action: usize, ) -> Result<bool, ApiError> {
+pub fn set_controller_value( &mut self, layer: u32, controller: usize, axis: &str, value: f32, frame: Option<i32>, ) -> Result<(), ApiError> {
+pub fn undo(&mut self) -> Result<bool, ApiError> {
+pub fn redo(&mut self) -> Result<bool, ApiError> {
+pub fn set_text_animator_value( &mut self, layer: u32, index: usize, property: &str, value: AnimatorValue, frame: Option<i32>, ) -> Result<(), ApiError> {
+pub fn set_text_path(&mut self, layer: u32, shape_layer: u32) -> Result<(), ApiError> {
+pub fn clear_text_path(&mut self, layer: u32) -> Result<(), ApiError> {
+pub fn set_text_path_offset(&mut self, layer: u32, percent: f32) -> Result<(), ApiError> {

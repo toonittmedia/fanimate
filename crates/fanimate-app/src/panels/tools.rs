@@ -8,7 +8,7 @@ use fanimate_editor::{Action, Tool, ToolGroup};
 
 /// The tools in rows of `columns` buttons. The column is exactly that wide
 /// (`Layout::tools_width`), so no room is left over.
-pub fn show(ui: &mut egui::Ui, shell: &mut Shell, columns: usize) {
+pub fn show(ui: &mut egui::Ui, shell: &mut Shell, columns: usize, simple: bool) {
     let p = shell.palette;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -16,7 +16,12 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, columns: usize) {
             ui.add_space(4.0);
             // the active layer decides which groups there are: drawing tools
             // for vector layers, bone tools for bone layers
-            for group in shell.editor.tool_groups() {
+            // Simple mode keeps the groups a first drawing needs
+            let groups = shell.editor.tool_groups();
+            for group in groups
+                .into_iter()
+                .filter(|g| !simple || matches!(g, ToolGroup::Draw | ToolGroup::Fill | ToolGroup::Layer))
+            {
                 ui.label(RichText::new(group.label()).size(11.0).color(p.text_muted));
                 let tools: Vec<Tool> = Tool::ALL.into_iter().filter(|t| t.group() == group).collect();
                 ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
@@ -36,7 +41,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, columns: usize) {
                     });
                 }
                 ui.add_space(6.0);
-                if group == ToolGroup::Draw {
+                if group == ToolGroup::Draw && !simple {
                     combine_buttons(ui, shell);
                 }
             }

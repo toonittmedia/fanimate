@@ -43,7 +43,7 @@ Two release trains, so polish never waits for new features (pain point P16 in th
 
 A release is cut with `pnpm release`, which checks, tags and pushes; the tag triggers the cross-platform build and publishes the GitHub release (see [CONTRIBUTING.md](CONTRIBUTING.md#releases)). CI runs only for releases, not on every push.
 
-Phases end at a quality gate, not a date. Version 1.0 ships when every Gate 1 criterion in the [Phase 1 plan](docs/roadmap/phase-1.md#5-gate-1-acceptance-tests) passes.
+Phases end at a quality gate, not a date. Version 1.0 ships when every Gate 1 criterion passes. Gate 1 sits at the end of Phase 2 and also includes the frozen scripting API, a body of films and examples and handmade templates (see the [Phase 1 tests](docs/roadmap/phase-1.md#5-gate-1-acceptance-tests) and [docs/roadmap/release-1.0.md](docs/roadmap/release-1.0.md#6-gate-1-criteria-now)).
 
 ## Code of Conduct enforcement
 

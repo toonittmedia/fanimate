@@ -2,8 +2,10 @@
 resolver = "3"
 members = [
     "crates/fanimate-core",
+    "crates/fanimate-text",
     "crates/fanimate-fnm",
     "crates/fanimate-editor",
+    "crates/fanimate-api",
     "crates/fanimate-render",
     "crates/fanimate-export",
     "crates/fanimate-import",
@@ -14,8 +16,10 @@ members = [
 ]
 default-members = [
     "crates/fanimate-core",
+    "crates/fanimate-text",
     "crates/fanimate-fnm",
     "crates/fanimate-editor",
+    "crates/fanimate-api",
     "crates/fanimate-render",
     "crates/fanimate-export",
     "crates/fanimate-import",
@@ -35,9 +39,11 @@ authors = ["The Fanimate Contributors"]
 
 [workspace.dependencies]
 fanimate-core = { path = "crates/fanimate-core" }
+fanimate-text = { path = "crates/fanimate-text" }
 fanimate-fnm = { path = "crates/fanimate-fnm" }
 fanimate-render = { path = "crates/fanimate-render" }
 fanimate-editor = { path = "crates/fanimate-editor" }
+fanimate-api = { path = "crates/fanimate-api" }
 fanimate-export = { path = "crates/fanimate-export" }
 fanimate-import = { path = "crates/fanimate-import" }
 fanimate-oscodec = { path = "crates/fanimate-oscodec" }

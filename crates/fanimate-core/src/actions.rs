@@ -27,6 +27,123 @@ use crate::bones::Skeleton;
 use crate::path::{Path, PathCmd};
 use crate::scene::{Document, Layer, LayerId, LayerKind};
 
+/// The most master controllers a rig holds.
+pub const MAX_CONTROLLERS: usize = 256;
+/// The most actions one controller drives.
+pub const MAX_LINKS: usize = 64;
+
+/// Which value of a controller a link reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerAxis {
+    #[default]
+    X,
+    Y,
+}
+
+/// The shape of a controller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerKind {
+    /// One value from 0 to 1.
+    #[default]
+    Slider,
+    /// Two values from 0 to 1: a point on a square pad.
+    Pad,
+}
+
+/// A controller's hold on an action: the action plays to the frame the
+/// controller's value maps to, from its first frame at `from` to its last at `to`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ControllerLink {
+    /// The action's index in the rig's list.
+    pub action: usize,
+    #[serde(default)]
+    pub axis: ControllerAxis,
+    /// The value at which the action is on its first frame.
+    #[serde(default = "zero", skip_serializing_if = "is_zero")]
+    pub from: f32,
+    /// The value at which the action is on its last frame.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub to: f32,
+}
+
+fn zero() -> f32 {
+    0.0
+}
+fn one() -> f32 {
+    1.0
+}
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+fn half() -> Channel<f32> {
+    Channel::new(0.0)
+}
+fn is_plain_zero(c: &Channel<f32>) -> bool {
+    c.keys.is_empty() && c.base == 0.0 && c.loop_mode.is_off()
+}
+
+/// A master controller: a slider or a pad whose values (which have keys, like
+/// any animated value) play other actions, so one control can pose a whole
+/// face or body: a smile slider that works the mouth, brows and cheeks, a
+/// pad that looks the head in any direction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Controller {
+    pub name: String,
+    #[serde(default)]
+    pub kind: ControllerKind,
+    /// The slider's value, or the pad's horizontal one, from 0 to 1.
+    #[serde(default = "half", skip_serializing_if = "is_plain_zero")]
+    pub x: Channel<f32>,
+    /// The pad's vertical value, from 0 to 1 (unused by a slider).
+    #[serde(default = "half", skip_serializing_if = "is_plain_zero")]
+    pub y: Channel<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<ControllerLink>,
+}
+
+impl Controller {
+    pub fn new(name: impl Into<String>, kind: ControllerKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            x: Channel::new(0.0),
+            y: Channel::new(0.0),
+            links: Vec::new(),
+        }
+    }
+
+    /// The value of one axis on `frame`, held between 0 and 1 (a value that is
+    /// not a number is 0).
+    pub fn value(&self, axis: ControllerAxis, frame: f32) -> f32 {
+        let v = match axis {
+            ControllerAxis::X => self.x.sample(frame),
+            ControllerAxis::Y => self.y.sample(frame),
+        };
+        if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    }
+
+    /// The frame of `action` that `link` plays on timeline frame `frame`: the
+    /// value mapped from `from..to` onto the action's frames, held at both
+    /// ends. `None` for a Smart Bone action (it plays by its own bone) and
+    /// for a link whose range is empty or not a number.
+    pub fn action_frame(&self, link: &ControllerLink, action: &RigAction, frame: f32) -> Option<f32> {
+        if action.driver.is_some() {
+            return None;
+        }
+        let span = link.to - link.from;
+        if span == 0.0 || !span.is_finite() || !link.from.is_finite() {
+            return None;
+        }
+        let t = ((self.value(link.axis, frame) - link.from) / span).clamp(0.0, 1.0);
+        Some(t * action.length as f32)
+    }
+}
+
 /// One action on a bone layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigAction {
@@ -267,7 +384,7 @@ impl Document {
         let LayerKind::Bone { skeleton, children } = &mut l.kind else {
             return;
         };
-        let Skeleton { bones, actions } = skeleton;
+        let Skeleton { bones, actions, .. } = skeleton;
         let mut bone_keys = Vec::new();
         for (i, b) in bones.iter_mut().enumerate() {
             let main = edit
@@ -321,8 +438,11 @@ fn for_each_shape(layers: &mut [Layer], f: &mut impl FnMut(LayerId, usize, &mut 
                 }
             }
             LayerKind::Group { children } | LayerKind::Switch { children, .. } => for_each_shape(children, f),
-            LayerKind::Bone { .. } | LayerKind::Image(_) | LayerKind::Frames { .. } | LayerKind::Audio(_) => {
-            }
+            LayerKind::Bone { .. }
+            | LayerKind::Image(_)
+            | LayerKind::Frames { .. }
+            | LayerKind::Audio(_)
+            | LayerKind::Text(_) => {}
         }
     }
 }
@@ -465,5 +585,149 @@ mod tests {
         assert_eq!(act.driver, Some(0));
         assert!(act.bones.is_empty());
         assert!(!act.renumber(&[None]));
+    }
+
+    /// The rig with a regular action "open" (index 1) that pulls the mouth point down by 20 over 10 frames.
+    fn with_open() -> (Document, LayerId) {
+        let (mut doc, rig, _) = rigged();
+        let mut open = RigAction::new("open", None, 10);
+        open.shapes = skel(&mut doc, rig).actions[0].shapes.clone();
+        skel(&mut doc, rig).actions.push(open);
+        (doc, rig)
+    }
+
+    fn mouth_y(doc: &Document, frame: f32) -> f32 {
+        evaluate(doc, frame)[0].shape.path.on_curve_points()[1].y
+    }
+
+    fn slider(doc: &mut Document, rig: LayerId, x: Channel<f32>, link: ControllerLink) {
+        let mut c = Controller::new("Smile", ControllerKind::Slider);
+        c.x = x;
+        c.links.push(link);
+        skel(doc, rig).controllers.push(c);
+    }
+
+    const LINK: ControllerLink = ControllerLink {
+        action: 1,
+        axis: ControllerAxis::X,
+        from: 0.0,
+        to: 1.0,
+    };
+
+    #[test]
+    fn a_slider_plays_a_regular_action_by_its_value_held_at_both_ends() {
+        let (mut doc, rig) = with_open();
+        assert_eq!(mouth_y(&doc, 0.0), 50.0, "no controller, no change");
+        for (value, expect) in [
+            (0.0, 50.0),
+            (0.5, 60.0),
+            (1.0, 70.0),
+            (3.0, 70.0),
+            (-2.0, 50.0),
+            (f32::NAN, 50.0),
+        ] {
+            skel(&mut doc, rig).controllers.clear();
+            slider(&mut doc, rig, Channel::new(value), LINK);
+            assert!(
+                (mouth_y(&doc, 0.0) - expect).abs() < 1e-3,
+                "value {value}: {}",
+                mouth_y(&doc, 0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn a_range_maps_the_value_onto_the_action_and_a_pad_axis_is_its_own_value() {
+        let (mut doc, rig) = with_open();
+        let mut pad = Controller::new("Look", ControllerKind::Pad);
+        pad.x = Channel::new(0.9);
+        pad.y = Channel::new(0.75);
+        // the action runs while y goes from 0.5 to 1; x is not linked
+        pad.links.push(ControllerLink {
+            axis: ControllerAxis::Y,
+            from: 0.5,
+            to: 1.0,
+            ..LINK
+        });
+        skel(&mut doc, rig).controllers.push(pad);
+        assert!(
+            (mouth_y(&doc, 0.0) - 60.0).abs() < 1e-3,
+            "y = 0.75 is halfway through 0.5..1"
+        );
+        // a range written backwards plays the action backwards
+        skel(&mut doc, rig).controllers[0].links[0] = ControllerLink {
+            axis: ControllerAxis::Y,
+            from: 1.0,
+            to: 0.5,
+            ..LINK
+        };
+        assert!((mouth_y(&doc, 0.0) - 60.0).abs() < 1e-3);
+        skel(&mut doc, rig).controllers[0].y = Channel::new(1.0);
+        assert!((mouth_y(&doc, 0.0) - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_controllers_values_have_keys_and_move_the_action_over_time() {
+        let (mut doc, rig) = with_open();
+        let x = Channel::new(0.0)
+            .with_key(1, 0.0, Interpolation::Linear)
+            .with_key(11, 1.0, Interpolation::Linear);
+        slider(&mut doc, rig, x, LINK);
+        assert!((mouth_y(&doc, 1.0) - 50.0).abs() < 1e-3);
+        assert!((mouth_y(&doc, 6.0) - 60.0).abs() < 1e-3);
+        assert!((mouth_y(&doc, 11.0) - 70.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn links_that_cannot_play_do_nothing_and_a_controller_is_not_applied_while_its_rig_is_edited() {
+        let (mut doc, rig) = with_open();
+        let smart = ControllerLink { action: 0, ..LINK }; // action 0 is a Smart Bone action
+        let beyond = ControllerLink { action: 9, ..LINK };
+        let empty = ControllerLink { to: 0.0, ..LINK };
+        let nan = ControllerLink { to: f32::NAN, ..LINK };
+        for link in [smart, beyond, empty, nan] {
+            skel(&mut doc, rig).controllers.clear();
+            slider(&mut doc, rig, Channel::new(1.0), link);
+            assert_eq!(mouth_y(&doc, 0.0), 50.0, "{link:?}");
+        }
+        skel(&mut doc, rig).controllers.clear();
+        slider(&mut doc, rig, Channel::new(1.0), LINK);
+        assert!((mouth_y(&doc, 0.0) - 70.0).abs() < 1e-3);
+        assert!(doc.enter_action(rig, 1));
+        assert_eq!(
+            mouth_y(&doc, 0.0),
+            50.0,
+            "the action being edited is shown as it is"
+        );
+    }
+
+    #[test]
+    fn controller_data_survives_saving_and_a_rig_without_them_writes_nothing() {
+        let (mut doc, rig) = with_open();
+        let x = Channel::new(0.25)
+            .with_key(1, 0.0, Interpolation::Linear)
+            .with_key(9, 1.0, Interpolation::Smooth);
+        slider(
+            &mut doc,
+            rig,
+            x,
+            ControllerLink {
+                from: 0.1,
+                to: 0.9,
+                ..LINK
+            },
+        );
+        let json = serde_json::to_string(&skel(&mut doc, rig).clone()).unwrap();
+        let back: Skeleton = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, *skel(&mut doc, rig));
+        let plain = serde_json::to_string(&Skeleton::default()).unwrap();
+        assert!(!plain.contains("controllers"), "{plain}");
+        // a link with the default range writes no range
+        let c = Controller {
+            links: vec![LINK],
+            ..Controller::new("C", ControllerKind::Slider)
+        };
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(!text.contains("from") && !text.contains("\"to\""), "{text}");
     }
 }

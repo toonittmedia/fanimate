@@ -10,15 +10,16 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 |---|---|---|
 | Inter (UI font) | OFL-1.1 | `brand/fonts` |
 | JetBrains Mono (frame numbers) | OFL-1.1 | `brand/fonts` |
+| Noto Sans Arabic, Hebrew, Devanagari and Thai (text in those scripts) | OFL-1.1 | `brand/fonts` |
 | Lucide icons | ISC | `crates/fanimate-app/icons/lucide` |
 | Rhubarb Lip Sync 1.14.0 (separate program) | MIT | `scripts/fetch-rhubarb.sh` |
 
-## Rust crates (518)
+## Rust crates (526)
 
 | Licence used | Crates |
 |---|---|
-| MIT | 467 |
-| Apache-2.0 | 18 |
+| MIT | 474 |
+| Apache-2.0 | 19 |
 | MPL-2.0 | 12 |
 | BSD-3-Clause | 6 |
 | BSD-2-Clause | 4 |
@@ -122,6 +123,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | core-graphics | 0.23.2 | MIT OR Apache-2.0 | MIT |
 | core-graphics-types | 0.1.3 | MIT OR Apache-2.0 | MIT |
 | core_detect | 1.0.0 | MIT/Apache-2.0 | MIT |
+| core_maths | 0.1.1 | MIT | MIT |
 | coreaudio-rs | 0.14.2 | MIT/Apache-2.0 | MIT |
 | cpal | 0.18.2 | Apache-2.0 | Apache-2.0 |
 | crc32fast | 1.5.2 | MIT OR Apache-2.0 | MIT |
@@ -395,6 +397,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | MIT |
 | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | MIT |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 | MIT |
+| rustybuzz | 0.20.1 | MIT | MIT |
 | scoped-tls | 1.0.1 | MIT/Apache-2.0 | MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | MIT |
 | sctk-adwaita | 0.10.1 | MIT | MIT |
@@ -461,8 +464,14 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | type-map | 0.5.1 | MIT/Apache-2.0 | MIT |
 | typeid | 1.0.3 | MIT OR Apache-2.0 | MIT |
 | uds_windows | 1.2.1 | MIT | MIT |
+| unicode-bidi | 0.3.18 | MIT OR Apache-2.0 | MIT |
+| unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 | MIT |
+| unicode-ccc | 0.4.0 | MIT/Apache-2.0 | MIT |
 | unicode-general-category | 1.1.0 | Apache-2.0 | Apache-2.0 |
 | unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | MIT AND Unicode-3.0 |
+| unicode-linebreak | 0.1.5 | Apache-2.0 | Apache-2.0 |
+| unicode-properties | 0.1.4 | MIT/Apache-2.0 | MIT |
+| unicode-script | 0.5.8 | MIT OR Apache-2.0 | MIT |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | MIT |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 | MIT |
 | usvg | 0.48.1 | Apache-2.0 OR MIT | MIT |

@@ -1,0 +1,20 @@
+[package]
+name = "fanimate-text"
+description = "Fanimate text engine: shapes a string with a font, lays it out in lines and returns positioned glyphs and their outlines. No IO, no UI, no GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+glam.workspace = true
+rustybuzz = "0.20"
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
+unicode-script = "0.5"
+unicode-segmentation = "1.13"
+
+[lints]
+workspace = true

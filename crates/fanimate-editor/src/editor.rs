@@ -19,22 +19,30 @@ mod actions;
 mod arrange;
 mod bones;
 mod booleans;
+mod captions;
 mod clipboard_shapes;
 mod construct;
+mod controllers;
 mod draw;
 mod exposure;
+mod graph;
 mod handles;
 mod import;
 mod keys;
+mod physics;
 mod points;
 mod points_frame;
+mod poses;
 mod shapes;
 mod shapesel;
 pub(crate) mod sound;
 pub(crate) mod svg;
+mod svg_text;
+mod text;
 mod tools_e;
 pub use arrange::{AlignTo, ConvertTo, Loss};
 pub use bones::BoneRef;
+pub use captions::CaptionImport;
 pub use clipboard_shapes::Focus;
 pub use draw::DrawStyle;
 pub use handles::{Handle, HandleMods, SelectionFrame};
@@ -42,6 +50,7 @@ pub use keys::{KeyRef, KeySelect, KeyTarget};
 pub use points::PointRef;
 pub use shapesel::RadiusTarget;
 pub use sound::{MouthCue, SOUND_EXTENSIONS, SoundInfo, parse_rhubarb, sound_info, sound_to_wav};
+pub use text::{AnimatorProp, PropValue};
 pub use tools_e::ShapeBuilderState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +78,15 @@ pub enum StatusKind {
     Success,
     Warning,
     Error,
+}
+
+/// Why an [`Editor::transaction`] did not complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TxError<E> {
+    /// The animation is playing, and nothing is edited then.
+    Playing,
+    /// The work failed; the document is as it was before.
+    Failed(E),
 }
 
 /// What running an action asks of the app.
@@ -105,6 +123,9 @@ pub struct Editor {
     /// Counts edits, undos and redos, so the app can tell when the document
     /// changed (for the crash recovery journal).
     revision: u64,
+    /// How many [`Editor::transaction`]s are open (they nest). While one is,
+    /// [`Editor::checkpoint`] records nothing: the transaction is one step.
+    transaction_depth: u32,
     /// Selected layers in click order; the last is the primary selection.
     pub selection: Vec<LayerId>,
     /// Selected points, for the point tools.
@@ -115,6 +136,8 @@ pub struct Editor {
     /// How keys made from now on move on to the next key (the timeline's
     /// dropdown). Keys already there keep theirs.
     pub key_interp: Interpolation,
+    /// The settings the next Bake Spring Motion uses.
+    pub spring: fanimate_core::physics::SpringParams,
     pub tool: Tool,
     pub history: History,
     /// Groups collapsed in the Layers panel.
@@ -239,11 +262,13 @@ impl Editor {
             path: None,
             dirty: false,
             revision: 0,
+            transaction_depth: 0,
             selection: Vec::new(),
             points: BTreeSet::new(),
             frame,
             playing: false,
             key_interp: Interpolation::Smooth,
+            spring: fanimate_core::physics::SpringParams::default(),
             tool: Tool::default(),
             history: History::default(),
             collapsed: HashSet::new(),
@@ -409,9 +434,60 @@ impl Editor {
     /// Record the state before an edit. Call once per user action: for a
     /// drag, at drag start, not on every movement.
     pub fn checkpoint(&mut self, label: &str) {
+        // inside a transaction the whole run is one step, recorded by it
+        if self.transaction_depth > 0 {
+            return;
+        }
         self.history.push(label, &self.doc, &self.selection);
         self.dirty = true;
         self.revision += 1;
+    }
+
+    /// Run `f` as one undo step called `label`, however many edits it makes:
+    /// checkpoints inside it fold into the one step. If `f` fails, the
+    /// document and the selection are put back as they were and no step is
+    /// recorded, so the undo history (redo included) is untouched. Nothing
+    /// is edited while the animation plays, as for every other edit.
+    ///
+    /// This is how scripts, the node graph and the AI tools change a
+    /// document: all or nothing, and one Ctrl+Z to take back.
+    pub fn transaction<T, E>(
+        &mut self,
+        label: &str,
+        f: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, TxError<E>> {
+        if self.editing_blocked() {
+            return Err(TxError::Playing);
+        }
+        // a transaction inside one is part of it; the outer one rolls back
+        if self.transaction_depth > 0 {
+            return f(self).map_err(TxError::Failed);
+        }
+        let before = self.doc.clone();
+        let selection = self.selection.clone();
+        self.transaction_depth += 1;
+        let result = f(self);
+        self.transaction_depth -= 1;
+        match result {
+            Ok(value) => {
+                // work that changed nothing is not an undo step, and does not
+                // make the project look edited
+                if self.doc != before || self.selection != selection {
+                    self.history.push(label, &before, &selection);
+                    self.dirty = true;
+                    self.revision += 1;
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                self.doc = before;
+                self.selection = selection;
+                // the document changed and changed back: the journal must not
+                // keep a half-done state
+                self.revision += 1;
+                Err(TxError::Failed(error))
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -494,6 +570,22 @@ impl Editor {
             }
             NewFramesLayer => self.new_layer(NewKind::Frames),
             NewSwitchLayer => self.new_layer(NewKind::Switch),
+            NewTextLayer => self.new_text_layer(),
+            AddTextAnimator(preset) => match self.selected_text() {
+                Some(id) => {
+                    self.add_text_animator(id, preset);
+                }
+                None => self.set_status(StatusKind::Info, "Select a text layer first."),
+            },
+            ConvertTextToShapes => self.text_to_shapes(),
+            BakeSpring => self.bake_spring_selected(),
+            SetTextPath => self.set_text_path_from_selection(),
+            ClearTextPath => match self.selected_text() {
+                Some(id) => {
+                    self.clear_text_path(id);
+                }
+                None => self.set_status(StatusKind::Info, "Select a text layer first."),
+            },
             SetSwitch(i) => {
                 self.set_switch(i);
             }
@@ -516,9 +608,19 @@ impl Editor {
             InsertAction(i) => {
                 self.insert_action(i);
             }
+            SavePose => {
+                self.save_pose();
+            }
+            MirrorPose(i) => {
+                self.mirror_pose_action(i);
+            }
             DeleteAction(i) => {
                 self.delete_action(i);
             }
+            NewController(kind) => self.new_controller_action(kind),
+            DeleteController(i) => self.delete_controller_action(i),
+            LinkController(c, a, axis) => self.link_controller_action(c, a, axis),
+            UnlinkController(c, a) => self.unlink_controller_action(c, a),
             BindSmoothly => {
                 self.bind_smoothly();
             }
@@ -604,7 +706,8 @@ impl Editor {
             }
             New | NewPreset(_) | Open | OpenFolder | OpenOther | OpenSample(_) | CloseDocument
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
-            | SaveAsFolder | Import | ExportVideo | RenderQueue | RenderPreviewFrame | LipSync
+            | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
+            | ExportSpriteSheet | ExportVideo | RenderQueue | RenderPreviewFrame | LipSync
             | CheckForUpdates | InstallUpdate | Workspace(_) | Quit | ToggleOnionSkin | ToggleLightTable
             | LookThroughCamera | Preferences | CommandPalette | LayerProperties | ZoomIn | ZoomOut
             | FitView | ActualSize => {
@@ -655,6 +758,7 @@ impl Editor {
             BindToBone | BindSmoothly | Unbind => self.can_bind(),
             DeleteBone => self.selected_bone().is_some(),
             NewAction => self.actions_layer().is_some(),
+            BakeSpring => self.selected_bone().is_some() && !self.playing,
             NewSmartBoneAction => self
                 .actions_layer()
                 .is_some_and(|l| self.selected_bone().is_some_and(|b| b.layer == l)),
@@ -667,12 +771,59 @@ impl Editor {
             EditAction(i) | InsertAction(i) | DeleteAction(i) => self
                 .actions_layer()
                 .is_some_and(|l| i < self.rig_actions(l).len()),
+            NewController(_) => self.controllers_open(),
+            DeleteController(i) => {
+                self.actions_layer()
+                    .is_some_and(|l| i < self.controllers(l).len())
+                    && self.controllers_open()
+            }
+            LinkController(c, a, axis) => self.actions_layer().is_some_and(|l| {
+                self.controllers_open()
+                    && self.controllers(l).get(c).is_some_and(|k| {
+                        axis == fanimate_core::actions::ControllerAxis::X
+                            || k.kind == fanimate_core::actions::ControllerKind::Pad
+                    })
+                    && self.rig_actions(l).get(a).is_some_and(|r| r.driver.is_none())
+            }),
+            UnlinkController(c, a) => self.actions_layer().is_some_and(|l| {
+                self.controllers_open()
+                    && self
+                        .controllers(l)
+                        .get(c)
+                        .is_some_and(|k| k.links.iter().any(|x| x.action == a))
+            }),
+            MirrorPose(i) => self.actions_layer().is_some_and(|l| {
+                self.editing_action().is_none()
+                    && !self.playing
+                    && self
+                        .rig_actions(l)
+                        .get(i)
+                        .is_some_and(fanimate_core::actions::RigAction::is_pose)
+            }),
+            SavePose => {
+                self.editing_action().is_none()
+                    && !self.playing
+                    && self
+                        .actions_layer()
+                        .is_some_and(|l| self.skeleton(l).is_some_and(|s| !s.bones.is_empty()))
+            }
             Paste => self.can_paste(),
             PasteLayers => self.clipboard.is_some(),
             FinishPath => self.is_drawing_path(),
             Union | Subtract | Intersect => self.can_combine(),
             ExpandShape => self.expandable_shapes() > 0,
             SetInterpolation(_) => self.key_interpolation().is_some(),
+            AddTextAnimator(_) | ConvertTextToShapes => self.selected_text().is_some(),
+            ExportCaptions => self
+                .primary()
+                .and_then(|id| self.captions_of(id))
+                .is_some_and(|cues| !cues.is_empty()),
+            ImportCaptions => !self.playing,
+            SetTextPath => self.selected_text().is_some() && self.selection.len() > 1,
+            ClearTextPath => self
+                .selected_text()
+                .and_then(|id| self.text(id))
+                .is_some_and(|t| t.look().path.is_some()),
             ToggleLock | Align(_) => has_sel,
             ResetCamera => !self.doc.camera.is_default(),
             DeleteShapes | DuplicateShapes => !self.selected_shapes().is_empty(),
@@ -2751,5 +2902,116 @@ mod tests {
         assert_eq!(search(&all, "", &[]).len(), all.len());
         let workspaces = search(&all, "workspace", &[]);
         assert_eq!(workspaces.len(), crate::Workspace::ALL.len());
+    }
+
+    #[test]
+    fn a_transaction_is_one_undo_step_however_many_edits_it_makes() {
+        let (mut ed, [a, b, _]) = three();
+        let before = ed.revision();
+        let done = ed.transaction("Script", |ed| {
+            ed.rename(a, "X");
+            ed.set_visible(b, false);
+            ed.rename(b, "Y");
+            Ok::<_, ()>(7)
+        });
+        assert_eq!(done, Ok(7));
+        assert_eq!(names(&ed), ["X", "Y", "C"]);
+        assert!(!ed.doc.find(b).unwrap().visible);
+        assert!(ed.dirty);
+        assert_eq!(ed.revision(), before + 1, "the journal sees one change");
+        assert_eq!(ed.history.undo_label(), Some("Script"));
+        ed.run(Action::Undo);
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+        assert!(ed.doc.find(b).unwrap().visible);
+        assert_eq!(ed.history.undo_label(), None, "one step, not three");
+        ed.run(Action::Redo);
+        assert_eq!(names(&ed), ["X", "Y", "C"]);
+    }
+
+    #[test]
+    fn a_failed_transaction_puts_everything_back_and_leaves_the_history_alone() {
+        let (mut ed, [a, b, _]) = three();
+        ed.rename(a, "first");
+        ed.run(Action::Undo);
+        assert_eq!(ed.history.redo_label(), Some("Rename"));
+        ed.select(b, SelectMode::Replace);
+        let before = ed.revision();
+        let failed: Result<(), _> = ed.transaction("Script", |ed| {
+            ed.rename(a, "half done");
+            ed.set_visible(b, false);
+            ed.selection.clear();
+            Err("no such bone")
+        });
+        assert_eq!(failed, Err(TxError::Failed("no such bone")));
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+        assert!(ed.doc.find(b).unwrap().visible);
+        assert_eq!(ed.selection, [b]);
+        assert_eq!(ed.history.undo_label(), None);
+        assert_eq!(ed.history.redo_label(), Some("Rename"), "the redo is still there");
+        assert!(
+            ed.revision() > before,
+            "the journal must not keep the half-done state"
+        );
+    }
+
+    #[test]
+    fn transactions_nest_into_the_outer_one() {
+        let (mut ed, [a, b, _]) = three();
+        let ok = ed.transaction("Outer", |ed| {
+            ed.rename(a, "X");
+            ed.transaction("Inner", |ed| {
+                ed.rename(b, "Y");
+                Ok::<_, ()>(())
+            })
+            .map_err(|_| ())
+        });
+        assert_eq!(ok, Ok(()));
+        assert_eq!(ed.history.undo_label(), Some("Outer"));
+        ed.run(Action::Undo);
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+        assert_eq!(ed.history.undo_label(), None);
+
+        // an inner success is undone when the outer fails
+        let failed: Result<(), _> = ed.transaction("Outer", |ed| {
+            ed.transaction("Inner", |ed| {
+                ed.rename(b, "Y");
+                Ok::<_, ()>(())
+            })
+            .map_err(|_| "inner")?;
+            Err("outer")
+        });
+        assert_eq!(failed, Err(TxError::Failed("outer")));
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+        assert_eq!(ed.history.undo_label(), None);
+    }
+
+    #[test]
+    fn a_transaction_does_not_run_while_the_animation_plays() {
+        let (mut ed, [a, _, _]) = three();
+        ed.playing = true;
+        let mut ran = false;
+        let result = ed.transaction("Script", |ed| {
+            ran = true;
+            ed.rename(a, "X");
+            Ok::<_, ()>(())
+        });
+        assert_eq!(result, Err(TxError::Playing));
+        assert!(!ran);
+        assert_eq!(names(&ed), ["A", "B", "C"]);
+        assert_eq!(ed.status.as_ref().map(|s| s.1.as_str()), Some(PAUSE_TO_EDIT));
+    }
+
+    #[test]
+    fn a_transaction_that_changes_nothing_is_not_an_undo_step() {
+        let (mut ed, [a, _, _]) = three();
+        let before = ed.revision();
+        let done = ed.transaction("Script", |ed| {
+            ed.rename(a, "A"); // already called that
+            Ok::<_, ()>(())
+        });
+        assert_eq!(done, Ok(()));
+        assert_eq!(ed.history.undo_label(), None);
+        assert_eq!(ed.revision(), before);
+        assert!(!ed.dirty);
     }
 }

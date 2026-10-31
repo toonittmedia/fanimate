@@ -139,23 +139,45 @@ impl Editor {
         let Some(layer) = self.actions_layer() else {
             return false;
         };
+        let at = self.current_frame();
+        match self.insert_action_on(layer, index, at) {
+            Ok(name) => {
+                self.set_status(StatusKind::Info, format!("Inserted \"{name}\" at frame {at}"));
+                true
+            }
+            Err(e) => {
+                self.set_status(StatusKind::Info, e);
+                false
+            }
+        }
+    }
+
+    /// Copy the keys of action `index` of the bone layer `layer` into the
+    /// timeline starting at frame `at`. One undo step. Returns the action's
+    /// name. A Smart Bone action is refused: it plays by itself when its bone
+    /// turns.
+    pub fn insert_action_on(&mut self, layer: LayerId, index: usize, at: Frame) -> Result<String, String> {
+        if self.editing_blocked() {
+            return Err("Pause the animation to insert an action.".to_owned());
+        }
+        if self.editing_action().is_some() {
+            return Err("Finish editing the action first.".to_owned());
+        }
+        if at < 0 {
+            return Err("A frame is 0 or later.".to_owned());
+        }
         let Some(act) = self.rig_actions(layer).get(index).cloned() else {
-            return false;
+            return Err("There is no such action.".to_owned());
         };
         if act.driver.is_some() {
-            self.set_status(
-                StatusKind::Info,
-                "Smart Bone actions play by themselves when their bone turns",
-            );
-            return false;
+            return Err("Smart Bone actions play by themselves when their bone turns".to_owned());
         }
-        let at = self.current_frame();
         self.checkpoint("Insert action");
         if let Some(skeleton) = self.rig_mut(layer) {
             for b in &act.bones {
                 if let Some(bone) = skeleton.bones.get_mut(b.bone) {
                     for k in &b.angle.keys {
-                        bone.angle.set_key(at + k.frame, k.value, k.interp);
+                        bone.angle.set_key(at.saturating_add(k.frame), k.value, k.interp);
                     }
                 }
             }
@@ -164,16 +186,12 @@ impl Editor {
             if let Some(shape) = self.point_shape_mut((s.layer, s.shape)) {
                 for k in &s.path_keys {
                     if k.value.same_structure(&shape.path) {
-                        shape.key_path(at + k.frame, k.value.clone(), k.interp);
+                        shape.key_path(at.saturating_add(k.frame), k.value.clone(), k.interp);
                     }
                 }
             }
         }
-        self.set_status(
-            StatusKind::Info,
-            format!("Inserted \"{}\" at frame {at}", act.name),
-        );
-        true
+        Ok(act.name)
     }
 
     pub(super) fn delete_action(&mut self, index: usize) -> bool {
@@ -189,6 +207,15 @@ impl Editor {
         }
         if let Some(s) = self.rig_mut(layer) {
             s.actions.remove(index);
+            // master controllers that held it let go; those holding later actions follow them up
+            for c in &mut s.controllers {
+                c.links.retain(|l| l.action != index);
+                for l in &mut c.links {
+                    if l.action > index {
+                        l.action -= 1;
+                    }
+                }
+            }
         }
         true
     }

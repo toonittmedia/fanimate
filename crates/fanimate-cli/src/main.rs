@@ -1,7 +1,9 @@
 //! Headless Fanimate tool. Runs the same engine and renderer as the app
 //! with no window, for render servers, CI and batch work.
 
-use std::path::PathBuf;
+mod script;
+
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -11,17 +13,30 @@ use fanimate_render::{Gpu, Mesh, Offscreen, Tessellator, render_to_rgba};
 
 const USAGE: &str = "\
 usage:
-  fanimate-cli sample <hello|benchmark|episode|template> <out.fnm> [--bones N] [--seconds S]
+  fanimate-cli sample <hello|benchmark|episode|text|template> <out.fnm> [--bones N] [--seconds S] [--chars N]
                       (a template is its menu name in lower case with dashes: bouncing-ball,
                        scene-dressing-room, ...)
   fanimate-cli validate <project.fnm> [--repair]
   fanimate-cli import <file.moho|.mohoproj|.fla|.xfl> -o <out.fnm>
   fanimate-cli corpus <folder>
-  fanimate-cli render <project.fnm|file.moho|.fla|.xfl> -o <out.png> [--frame N] [--width W] [--height H]
+  fanimate-cli render <project.fnm|file.moho|.fla|.xfl> -o <out.png|out.svg> [--frame N] [--width W] [--height H]
+                      (an .svg is vector and ignores --width and --height; it lists what SVG cannot carry)
   fanimate-cli export <project.fnm> -o <out.mp4|.mov|.avi|.gif|.png|.exr|...> [--format F]
                       [--width W] [--height H] [--start N] [--end N] [--ffmpeg PATH]
+                      (-o out.json is a Lottie and -o out.lottie a dotLottie: the animation as vectors baked to keys,
+                       with --start and --end; it lists what Lottie cannot carry)
+  fanimate-cli sheet <project.fnm> -o <sheet.png> [--clips walk=1-24,idle=25-48] [--width W] [--height H]
+                      [--padding N] [--max-width N] [--no-trim]
+                      (a sprite sheet for games: the frames of the clips packed into one PNG, and
+                       <sheet>.json beside it, a TexturePacker JSON-hash atlas with a clips list)
   fanimate-cli formats [--ffmpeg PATH]
-  fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--actions] [--gpu [--width W] [--height H]]
+  fanimate-cli script [<project.fnm>] [--save <out.fnm>]
+                      (the scripting API over stdin and stdout: one JSON request per line,
+                       one JSON answer per line; the method api.methods lists the calls)
+  fanimate-cli serve [<project.fnm>] [--save <out.fnm>] [--port N]
+                      (the same calls over a local socket: prints one line of JSON with the port and
+                       a token; the first request on a connection must be auth with that token)
+  fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--text CHARS] [--actions] [--gpu [--width W] [--height H]]
 
 Frame numbers (--frame, --start, --end) are the project's own: its first frame is 1 and
 frame 0 is the rest pose. Without them, render shows the first frame and export the whole
@@ -37,8 +52,11 @@ fn main() -> ExitCode {
         Some("corpus") => corpus(&args[1..]),
         Some("render") => render(&args[1..]),
         Some("export") => export(&args[1..]),
+        Some("sheet") => sheet(&args[1..]),
         Some("formats") => formats(&args[1..]),
         Some("bench") => bench(&args[1..]),
+        Some("script") => script_cmd(&args[1..]),
+        Some("serve") => serve_cmd(&args[1..]),
         Some("-V" | "--version") => {
             println!("fanimate-cli {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -56,6 +74,32 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn serve_cmd(args: &[String]) -> CmdResult {
+    let a = Args::parse(args, &["--save", "--port"])?;
+    let project = a.positional.first().map(String::as_str);
+    let editor = script::open(project)?;
+    let save_to = a.get::<String>("--save")?.or_else(|| project.map(str::to_owned));
+    let port = a.get::<u16>("--port")?.unwrap_or(0);
+    script::serve_socket(editor, save_to.as_deref(), port, std::io::stdout().lock())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn script_cmd(args: &[String]) -> CmdResult {
+    let a = Args::parse(args, &["--save"])?;
+    let project = a.positional.first().map(String::as_str);
+    let editor = script::open(project)?;
+    let save_to = a.get::<String>("--save")?.or_else(|| project.map(str::to_owned));
+    let mut editor = editor;
+    script::serve(
+        &mut editor,
+        save_to.as_deref(),
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 type CmdResult = Result<ExitCode, String>;
@@ -102,13 +146,15 @@ impl Args {
 }
 
 fn sample(args: &[String]) -> CmdResult {
-    let a = Args::parse(args, &["--bones", "--seconds"])?;
+    let a = Args::parse(args, &["--bones", "--seconds", "--chars"])?;
     let [kind, out] = a.positional.as_slice() else {
         return Err(USAGE.into());
     };
     let doc = match kind.as_str() {
         "hello" => samples::hello(),
         "benchmark" => samples::benchmark(a.get("--bones")?.unwrap_or(40)),
+        // a title of animating text, to look at in the app
+        "text" => samples::text_benchmark(a.get("--chars")?.unwrap_or(120)),
         "episode" => samples::episode(
             a.get("--bones")?.unwrap_or(40),
             a.get("--seconds")?.unwrap_or(300),
@@ -120,7 +166,7 @@ fn sample(args: &[String]) -> CmdResult {
             Some(template) => template.document(),
             None => {
                 return Err(format!(
-                    "unknown sample {other}; use hello, benchmark, episode or a template"
+                    "unknown sample {other}; use hello, benchmark, episode, text or a template"
                 ));
             }
         },
@@ -194,8 +240,17 @@ fn render(args: &[String]) -> CmdResult {
         }
         doc
     };
-    let (width, height) = output_size(&doc, a.get("--width")?, a.get("--height")?);
     let frame: i32 = a.get("--frame")?.unwrap_or(doc.start);
+    if out.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+        let (svg, report) = fanimate_export::svg::frame(&doc, frame as f32);
+        std::fs::write(&out, svg).map_err(|e| format!("{}: {e}", out.display()))?;
+        println!("wrote frame {frame} as SVG to {}", out.display());
+        for line in report.lines() {
+            println!("  {line}");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let (width, height) = output_size(&doc, a.get("--width")?, a.get("--height")?);
 
     let started = Instant::now();
     let gpu = Gpu::headless().map_err(|e| e.to_string())?;
@@ -322,6 +377,101 @@ fn collect_importable(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
 /// Export frames as video (through FFmpeg), an animated GIF or a PNG
 /// sequence, chosen by the output's extension. The same code as the app's
 /// render queue.
+/// Export `path` as a Lottie (`dot` false) or a dotLottie, listing what it could not carry.
+fn export_lottie(a: &Args, path: &str, out: &Path, dot: bool) -> CmdResult {
+    let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
+    if !report.is_clean() {
+        eprint!("{report}");
+    }
+    let range = Some((
+        a.get("--start")?.unwrap_or(doc.start),
+        a.get("--end")?.unwrap_or(doc.end),
+    ));
+    let started = Instant::now();
+    let (bytes, notes, keys) = if dot {
+        let (bytes, notes) = fanimate_export::lottie::dotlottie(&doc, range)?;
+        (bytes, notes, None)
+    } else {
+        let l = fanimate_export::lottie::lottie(&doc, range)?;
+        let bytes = serde_json::to_vec(&l.json).map_err(|e| e.to_string())?;
+        (bytes, l.report, Some(l.keys))
+    };
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!(
+        "wrote {} ({} KB{}) in {:.0} ms",
+        out.display(),
+        bytes.len().div_ceil(1024),
+        keys.map_or(String::new(), |k| format!(", {k} keys")),
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    for line in notes.lines() {
+        println!("  {line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Pack the frames of some clips into a sprite sheet and its atlas.
+fn sheet(args: &[String]) -> CmdResult {
+    use fanimate_export::sheet::{self, Clip, Options};
+    let a = Args::parse(
+        args,
+        &["-o", "--clips", "--width", "--height", "--padding", "--max-width"],
+    )?;
+    let [path] = a.positional.as_slice() else {
+        return Err(USAGE.into());
+    };
+    let out: PathBuf = a.get::<String>("-o")?.ok_or("sheet needs -o <sheet.png>")?.into();
+    let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
+    if !report.is_clean() {
+        eprint!("{report}");
+    }
+    let clips = match a.get::<String>("--clips")? {
+        Some(text) => sheet::parse_clips(&text)?,
+        None => vec![Clip {
+            name: "all".to_owned(),
+            start: doc.start,
+            end: doc.end,
+        }],
+    };
+    let defaults = Options::default();
+    let (width, height) = output_size(&doc, a.get("--width")?, a.get("--height")?);
+    let opts = Options {
+        width,
+        height,
+        padding: a.get("--padding")?.unwrap_or(defaults.padding),
+        max_width: a.get("--max-width")?.unwrap_or(defaults.max_width),
+        trim: !a.has("--no-trim"),
+    };
+    let image_name = out
+        .file_name()
+        .map_or_else(|| "sheet.png".to_owned(), |n| n.to_string_lossy().into_owned());
+    let started = Instant::now();
+    let made = sheet::render(&doc, &clips, &opts, &image_name)?;
+    image::save_buffer(
+        &out,
+        &made.rgba,
+        made.width,
+        made.height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|e| format!("{}: {e}", out.display()))?;
+    let atlas = out.with_extension("json");
+    let text = serde_json::to_string_pretty(&made.atlas).map_err(|e| e.to_string())?;
+    std::fs::write(&atlas, text).map_err(|e| format!("{}: {e}", atlas.display()))?;
+    println!(
+        "wrote {} ({}x{}) and {} in {:.0} ms",
+        out.display(),
+        made.width,
+        made.height,
+        atlas.display(),
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    for line in made.report.lines() {
+        println!("  {line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn export(args: &[String]) -> CmdResult {
     use fanimate_export::{Format, Settings};
     let a = Args::parse(
@@ -334,6 +484,14 @@ fn export(args: &[String]) -> CmdResult {
         return Err(USAGE.into());
     };
     let out: PathBuf = a.get::<String>("-o")?.ok_or("export needs -o <out>")?.into();
+    // Lottie is vectors baked to keys, not rendered frames: .json is a Lottie, .lottie a dotLottie
+    let ext = out
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if a.get::<String>("--format")?.is_none() && (ext == "json" || ext == "lottie") {
+        return export_lottie(&a, path, &out, ext == "lottie");
+    }
     let format = match a.get::<String>("--format")? {
         Some(name) => parse_format(&name)?,
         None => {
@@ -478,13 +636,26 @@ fn bench_actions(doc: &Document) {
 /// save and load. `--gpu` adds the full render path without a window (see
 /// [`bench_gpu`]); `fanimate --bench` measures it in the app, UI included.
 fn bench(args: &[String]) -> CmdResult {
-    let a = Args::parse(args, &["--bones", "--frames", "--width", "--height", "--seconds"])?;
+    let a = Args::parse(
+        args,
+        &[
+            "--bones",
+            "--frames",
+            "--width",
+            "--height",
+            "--seconds",
+            "--text",
+        ],
+    )?;
     let bones: usize = a.get("--bones")?.unwrap_or(40);
     let frames: u32 = a.get("--frames")?.unwrap_or(2000);
     // --seconds 300: the Gate 1 project-open scene, a 5-minute episode
-    let doc = match a.get::<u32>("--seconds")? {
-        Some(seconds) => samples::episode(bones, seconds),
-        None => samples::benchmark(bones),
+    // --text 1000: the text benchmark, a title of that many animating characters
+    let text_chars: Option<usize> = a.get("--text")?;
+    let doc = match (text_chars, a.get::<u32>("--seconds")?) {
+        (Some(n), _) => samples::text_benchmark(n),
+        (None, Some(seconds)) => samples::episode(bones, seconds),
+        (None, None) => samples::benchmark(bones),
     };
 
     let mut evaluator = Evaluator::default();
@@ -493,6 +664,12 @@ fn bench(args: &[String]) -> CmdResult {
     let mut mesh = Mesh::new();
     let (mut eval_t, mut tess_t) = (0.0, 0.0);
     let mut triangles = 0;
+    // text is laid out the first time it is drawn; time that once, apart from the frames
+    let layout_ms = text_chars.map(|_| {
+        let t0 = Instant::now();
+        evaluator.evaluate_into(&doc, doc.start as f32, &mut items);
+        t0.elapsed().as_secs_f64() * 1000.0
+    });
     for i in 0..frames {
         let frame = doc.start as f32 + (i as f32 * 0.5) % doc.frame_count() as f32;
         let t0 = Instant::now();
@@ -509,6 +686,8 @@ fn bench(args: &[String]) -> CmdResult {
     let per = |t: f64| t * 1000.0 / frames as f64;
 
     let dir = std::env::temp_dir().join(format!("fanimate-bench-{}", std::process::id()));
+    // a project is one file now, and saving one does not make its folder
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("bench.fnm");
     let t0 = Instant::now();
     fanimate_fnm::save(&doc, &path).map_err(|e| e.to_string())?;
@@ -524,6 +703,9 @@ fn bench(args: &[String]) -> CmdResult {
         doc.name,
         items.len()
     );
+    if let Some(ms) = layout_ms {
+        println!("  text layout  {ms:>8.3} ms, once (shaping, line breaking, outlines)");
+    }
     println!("  evaluate     {:>8.3} ms/frame", per(eval_t));
     println!("  tessellate   {:>8.3} ms/frame", per(tess_t));
     println!("  CPU total    {:>8.3} ms/frame  (60 fps budget: 16.7 ms)", total);

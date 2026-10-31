@@ -55,7 +55,8 @@ Not needed for 1.0, but worth scoping early: terms of service and privacy policy
 |---|---|
 | Now | Sections 1 to 3: the Moho and Animate importers are built (M5) and in the public alpha; and the video codec question from section 4, before 1.0 |
 | Milestone M5 | The rest of section 4, once the dependency list is stable |
-| Milestone M6 | Final review of the 1.0 release; section 5 |
+| Before the first template commission | The licence, consent and provenance forms for makers, voice actors and composers ([release-1.0.md](../roadmap/release-1.0.md#56-provenance-licences-and-consent)); font and music licences |
+| End of Phase 2 (was M6; Gate 1 moved on 2026-10-30) | Final review of the 1.0 release, including the shipped template assets; section 5 |
 | Before Phase 3 | Section 6 |
 
 Timing follows the [Phase 1 plan](../roadmap/phase-1.md#4-milestones).

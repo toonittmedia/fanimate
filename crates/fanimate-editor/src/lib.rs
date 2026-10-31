@@ -17,9 +17,10 @@ mod templates;
 
 pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search, tool_groups_for};
 pub use editor::{
-    AlignTo, BoneRef, ConvertTo, DrawStyle, Editor, Focus, Handle, HandleMods, Loss, MouthCue, Outcome,
-    PAUSE_TO_EDIT, Placement, PointRef, RadiusTarget, SOUND_EXTENSIONS, SelectMode, SelectionFrame,
-    ShapeBuilderState, SoundInfo, StatusKind, parse_rhubarb, sound_info, sound_to_wav,
+    AlignTo, AnimatorProp, BoneRef, CaptionImport, ConvertTo, DrawStyle, Editor, Focus, Handle, HandleMods,
+    Loss, MouthCue, Outcome, PAUSE_TO_EDIT, Placement, PointRef, PropValue, RadiusTarget, SOUND_EXTENSIONS,
+    SelectMode, SelectionFrame, ShapeBuilderState, SoundInfo, StatusKind, TxError, parse_rhubarb, sound_info,
+    sound_to_wav,
 };
 pub use editor::{Clipboards, KeyRef, KeySelect, KeyTarget};
 pub use history::History;

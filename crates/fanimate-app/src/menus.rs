@@ -67,6 +67,15 @@ pub fn item_checked(ui: &mut egui::Ui, shell: &mut Shell, action: Action, checke
         Action::SetSwitch(i) => switch_children(shell)
             .and_then(|c| c.into_iter().nth(i))
             .unwrap_or_else(|| action.label().to_owned()),
+        // the submenus already say "Play Action" and "Stop Playing": list the actions by name
+        Action::LinkController(_, i, axis) => {
+            let name = rig_action_name(shell, i);
+            match axis {
+                fanimate_core::actions::ControllerAxis::X => name,
+                fanimate_core::actions::ControllerAxis::Y => format!("{name} (down)"),
+            }
+        }
+        Action::UnlinkController(_, i) => rig_action_name(shell, i),
         a => a.label().to_owned(),
     };
     // the gap applies on both sides of the stretch before the shortcut, so
@@ -82,6 +91,15 @@ pub fn item_checked(ui: &mut egui::Ui, shell: &mut Shell, action: Action, checke
         shell.pending.push(action);
         ui.close();
     }
+}
+
+/// The name of action `i` of the selected bone layer, for a menu that lists them.
+fn rig_action_name(shell: &Shell, i: usize) -> String {
+    shell
+        .editor
+        .actions_layer()
+        .and_then(|l| shell.editor.rig_actions(l).get(i))
+        .map_or_else(|| format!("Action {}", i + 1), |a| a.name.clone())
 }
 
 fn items(ui: &mut egui::Ui, shell: &mut Shell, actions: &[Action]) {
@@ -110,6 +128,20 @@ pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
     items(ui, shell, &[Action::CloseDocument, Action::ShowHome]);
     ui.separator();
     item(ui, shell, Action::Import);
+    item(ui, shell, Action::ImportCaptions);
+    item(ui, shell, Action::ExportCaptions);
+    ui.menu_button("Export for Web and Games", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        items(
+            ui,
+            shell,
+            &[
+                Action::ExportSvgFrame,
+                Action::ExportLottie,
+                Action::ExportSpriteSheet,
+            ],
+        );
+    });
     items(
         ui,
         shell,
@@ -196,8 +228,10 @@ pub fn layer(ui: &mut egui::Ui, shell: &mut Shell) {
             Action::NewGroupLayer,
             Action::NewSwitchLayer,
             Action::NewBoneLayer,
+            Action::NewTextLayer,
         ],
     );
+    text_menu(ui, shell);
     ui.separator();
     items(
         ui,
@@ -254,6 +288,7 @@ pub fn animation(ui: &mut egui::Ui, shell: &mut Shell) {
         &[
             Action::NewAction,
             Action::NewSmartBoneAction,
+            Action::BakeSpring,
             Action::FinishAction,
         ],
     );
@@ -490,9 +525,11 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
                 Action::NewBoneLayer,
                 Action::NewFramesLayer,
                 Action::NewSwitchLayer,
+                Action::NewTextLayer,
             ],
         );
     });
+    text_menu(ui, shell);
     ui.separator();
     items(
         ui,
@@ -547,6 +584,23 @@ pub fn align_items(ui: &mut egui::Ui, shell: &mut Shell) {
 
 /// "Change to": the other kinds a group, bone or switch layer can become.
 /// What that throws away is asked about before it happens.
+/// The text layer commands: the animators to put on it, and turning it into
+/// shapes. Only shown with a text layer selected.
+fn text_menu(ui: &mut egui::Ui, shell: &mut Shell) {
+    if shell.editor.selected_text().is_none() {
+        return;
+    }
+    ui.menu_button("Text animator", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        for preset in fanimate_core::TextPreset::ALL {
+            item(ui, shell, Action::AddTextAnimator(preset));
+        }
+    });
+    item(ui, shell, Action::SetTextPath);
+    item(ui, shell, Action::ClearTextPath);
+    item(ui, shell, Action::ConvertTextToShapes);
+}
+
 fn convert_menu(ui: &mut egui::Ui, shell: &mut Shell) {
     let Some(id) = shell.editor.primary() else {
         return;

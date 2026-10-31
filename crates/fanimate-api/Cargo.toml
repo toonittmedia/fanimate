@@ -1,0 +1,19 @@
+[package]
+name = "fanimate-api"
+description = "The Fanimate scripting API as Rust: explicit-target queries and commands over the editor, all through transactions. No UI toolkit code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+fanimate-core.workspace = true
+fanimate-fnm.workspace = true
+fanimate-editor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

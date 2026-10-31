@@ -1,6 +1,6 @@
 # Fanimate Phase 1: Foundation
 
-Companion to the [product vision](../product-vision.md). The brand assets proposed in section 1 live in [`brand/`](../../brand/). Phase 1 was first planned at about 12 months. M0 to M5 were built in about a week, so the rest is now planned at about 2 to 3 months, set by user testing and the public beta rather than by coding (see [section 4.1](#41-schedule)). It ends at **Gate 1: version 1.0**. This document starts with the brand, because every screen, installer and website in Phase 1 depends on it, and then breaks the engineering work into workstreams, milestones and acceptance tests.
+Companion to the [product vision](../product-vision.md). The brand assets proposed in section 1 live in [`brand/`](../../brand/). Phase 1 was first planned at about 12 months. M0 to M5 were built in about a week, so the rest is set by user testing rather than by coding (see [section 4.1](#41-schedule)). **Phase 1 no longer ends at a public release.** On 2026-10-30 the owner moved **Gate 1: version 1.0** (with the public beta and the launch) to the end of [Phase 2](phase-2.md), so that films, examples and handmade templates exist before the public sees Fanimate; the reasons and the plan are in [release-1.0.md](release-1.0.md). Phase 1 ends at a close-out (the exit checks of M2 to M5 with testers, no known data-loss bugs, the other platforms' benchmarks), while the closed alpha continues. Section 5 below still defines the Gate 1 tests; they are evaluated at the end of Phase 2. This document starts with the brand, because every screen, installer and website in Phase 1 depends on it, and then breaks the engineering work into workstreams, milestones and acceptance tests.
 
 > **What comes from the vision and what is new.** The scope, the Gate 1 criteria and the performance budget are taken from the product vision. The brand proposals, the milestone order, the task lists and the acceptance tests are new proposals, written so the team can challenge and change them.
 
@@ -15,12 +15,14 @@ Companion to the [product vision](../product-vision.md). The brand assets propos
 | M2: Draw | **Built**; the usability pass with an artist and the exit check are outstanding |
 | M3: Rig | **Built**; the exit check (a character from a PSD rigged by a tester) and the reference-hardware benchmark are outstanding |
 | M4: Frame-by-frame and voice | **Built**; the exit check (a hand-drawn cycle and a lip-synced line exported to MP4 by a tester) is outstanding |
-| M5: Bring your files | **Built and released as the public alpha (0.1.0)**; the importer corpus measurement, code signing and the clean-machine exit check are outstanding |
-| M6: Harden | **Started.** The Gate 1 tests that need no testers or reference hardware are automated or measured ([section 5.3](#53-results-so-far)); the public beta, which runs for weeks with real users, has not started |
+| M5: Bring your files | **Built; released as alpha builds from 0.1.0 on, now treated as a closed alpha** (no announcement or launch before Gate 1); the importer corpus measurement, code signing and the clean-machine exit check are outstanding |
+| M6: Harden | **Split on 2026-10-30.** The part that needs no public stays here as the Phase 1 close-out: bug fixing, the exit checks of M2 to M5, the macOS and Linux benchmark numbers and the corpus. The Gate 1 tests that need no testers or reference hardware are automated or measured ([section 5.3](#53-results-so-far)). The public beta, the legal sign-off, the show-reel and the release candidate **moved to the end of Phase 2** (M15 in the [Phase 2 plan](phase-2.md#5-milestones)) |
 
 **UX pass 3 (0.3.0).** A third [UX pass](ux-pass.md#ux-pass-3) reworked the timeline (frame 0 as the rest pose, seconds, key selection, scaling and copying of keys, loop, layer order), made the tool groups follow the layer type and added a Camera group, gave points their own transform with a pivot picker, moved the clipboard shortcuts by focus, added Hide Edge, one Freehand tool with pen pressure, saved styles, "Your files" and more templates on Home, and thumbnails in the file, with format version 6. It was checked by hand on Windows; the macOS and Linux builds are made by the release workflow and have not been tried. A keyed pivot, Offset Path, Eraser snapping, Moho keys for the new tools and video import are left open.
 
 **More templates (after 0.3.1).** Eight new templates on Home and in File > Open Sample, all built from bundled artwork under `crates/fanimate-editor/assets/templates/` ([README](../../crates/fanimate-editor/assets/templates/README.md)): four basic ones (Bouncing ball, Character rig, Talking head, Mouth styles) and four full football-parody scenes (Dressing room, Press conference, Penalty shootout, Studio pundits) with made-up cartoon characters on bone rigs, dialogue spoken by the computer's own voices and mouth shapes keyed to it by frame. Five original SVG mouth styles (Classic, Flat, Ink, Line, Cute) and the supplied photo-real frontal mouth set are in switch layers named for Lip Sync. The speech and its lip sync are rebuilt by `scripts/template-speech/gen-speech.mjs` (Windows) and the art by `scripts/template-art/`. Open: the licence of the supplied mouth set and of the generated speech must be confirmed before a release; the scenes were checked by rendering frames, not yet by a tester playing them in the app.
+
+**Decision of 2026-10-30: these templates are placeholders.** They are generated by script (the art, the keys, the Windows text-to-speech voices), which the owner judges not good enough to ship. Before the public release every template must be made by hand: drawn by artists, keyed by animators in Fanimate, voiced by people who consented in writing, each with a provenance record and an animator review. The generated ones stay in alpha builds for testing and leave the release builds. The inventory, the rules and the replacement plan are in [release-1.0.md, section 5](release-1.0.md#5-handmade-templates).
 
 ### M0: Ground work (done)
 
@@ -377,7 +379,7 @@ Everything below is needed during Phase 1. The first column shows the milestone 
 | M5 | Website and docs theme | CSS tokens | Reuse the Day and Night tokens |
 | M5 | Installer art | PNG, BMP | Windows installer banner, macOS DMG background, Flatpak metadata icons |
 | M5 | Tutorial and "Coming from Moho / Animate" artwork | SVG | Mascot optional |
-| M6 | Release assets | PNG, MP4 | Release banner and the show-reel for 1.0 |
+| M15 (was M6) | Release assets | PNG, MP4 | Release banner and the show-reel for 1.0, cut from the showcase films ([release-1.0.md](release-1.0.md#4-the-showcase-films-and-examples)) |
 
 **Optional: a mascot.** A small character, rigged in Fanimate itself, would double as a demo asset and a test rig. This is a good dogfooding task but not a Phase 1 blocker.
 
@@ -406,7 +408,7 @@ Taken from the vision's roadmap, with the pain points each item addresses:
 
 ### 2.2 Explicitly out of scope for Phase 1
 
-Keeping these out is what makes the Phase 1 timeline believable.
+Keeping these out is what makes the Phase 1 timeline believable. The plans for what comes next are in [Phase 2](phase-2.md), [Phase 3](phase-3.md) and [Phase 4](phase-4.md); the [roadmap index](README.md) shows how they fit together.
 
 | Deferred feature | Moved to |
 |---|---|
@@ -561,8 +563,8 @@ The order is built around risk: prove the engine and renderer first, because eve
 | **M2: Draw** | Built; exit check waits on a tester | Drawing and timeline basics | Vector brush and stabiliser; shape tools; layers; timeline and keyframes; undo; autosave journal; first themes | An artist can draw, animate by keyframes, save and recover after a forced crash |
 | **M3: Rig** | Built; exit check waits on a tester | The reason people use Moho | Bones, FK and IK; Smart Bones; mesh deformation; Actions panel; rig health check; PSD import | A character from a PSD is rigged and animated; 40-bone rig at 60 fps |
 | **M4: Frame-by-frame and voice** | Built; exit check waits on a tester | Traditional animation and dialogue | X-sheet; onion skin and light table; sub-layers; Rhubarb lip sync; SVG import; video export v1 | A hand-drawn cycle and a lip-synced line are exported to MP4 |
-| **M5: Bring your files** | Built; released as the public alpha (0.1.0); corpus measurement, code signing and the clean-machine check wait on people and accounts | Migration | Moho importer; Animate importer; web build; installers and the self-updater for all platforms; opt-in crash reporting; first public alpha; workspaces and command palette polish | Import corpus pass rate at or above 75%; alpha installs on a clean machine and updates itself to the next release |
-| **M6: Harden** | About 2 to 3 months, most of it the public beta | Quality gate | Bug-fix freeze; public beta (at least 8 weeks); performance tuning; crash-free measurement; legal review; documentation; 1.0 release candidate | Every Gate 1 criterion in section 5 passes |
+| **M5: Bring your files** | Built; released as alpha builds (0.1.0 on), now a closed alpha; corpus measurement, code signing and the clean-machine check wait on people and accounts | Migration | Moho importer; Animate importer; web build; installers and the self-updater for all platforms; opt-in crash reports; first alpha; workspaces and command palette polish | Import corpus pass rate at or above 75%; alpha installs on a clean machine and updates itself to the next release |
+| **M6: Phase 1 close-out** | Runs alongside Phase 2. Was "Harden" | Close Phase 1 without a public release | Bug fixing; the exit checks of M2 to M5 with testers; the macOS and Linux benchmark numbers; the corpus above 75%; performance tuning. **Moved to the end of Phase 2 (M15):** the public beta (at least 8 weeks), crash-free measurement, legal sign-off, documentation, show-reel, code signing and the 1.0 release candidate | The exit checks of M2 to M5 pass; no known data-loss bug. Gate 1 (section 5) is decided at the end of Phase 2, see [release-1.0.md](release-1.0.md) |
 
 ### 4.1 Schedule
 
@@ -571,14 +573,15 @@ The first plan gave M0 to M2 the first five months and the whole phase about 12 
 | Constraint | Why it takes calendar time | Gates |
 |---|---|---|
 | Human review | Every change is reviewed by a person (section 6). The M2 changes alone were about 9,000 lines | Every milestone |
-| Artists and Moho animators | The exit checks for M2 to M4, the WS7 usability session and the Gate 1 usability test need real users. No advisers are recruited yet | M2, M3, M4, M6 |
-| Reference hardware | The 60 fps budget is measured on specific machines the team needs access to | M1, M3, M6 |
-| Import test corpus | 100 Moho and 50 Animate files, each with recorded consent. None are collected yet, and the importers cannot be measured without them | M5 |
-| Legal review | External. The [video export note](../legal/video-export.md) asks counsel to settle the codec question before 1.0; since 0.2.0 MP4 uses the system's encoder and Fanimate ships no H.264 encoder | M6 |
-| Code signing | Apple Developer account and a Windows code-signing certificate; identity checks take days to weeks. The installers and the self-updater's signature check need them | M5 |
-| Public beta | 99.5% crash-free sessions means fewer than 1 crash in 200 sessions, which takes thousands of opt-in sessions to show. Users, crash reports and stability releases need weeks, not days | M6 |
+| Artists and Moho animators | The exit checks for M2 to M4, the WS7 usability session and the Gate 1 usability test need real users. No advisers are recruited yet | M2, M3, M4, M6, Gate 1 |
+| Reference hardware | The 60 fps budget is measured on specific machines the team needs access to | M1, M3, M6, Gate 1 |
+| Import test corpus | 100 Moho and 50 Animate files, each with recorded consent. None are collected yet, and the importers cannot be measured without them | M5, Gate 1 |
+| Legal review | External. The [video export note](../legal/video-export.md) asks counsel to settle the codec question before 1.0; since 0.2.0 MP4 uses the system's encoder and Fanimate ships no H.264 encoder. Templates add forms for licences and consent ([release-1.0.md](release-1.0.md#56-provenance-licences-and-consent)) | Gate 1 (end of Phase 2) |
+| Code signing | Apple Developer account and a Windows code-signing certificate; identity checks take days to weeks. Needed for the public launch; until then the installers show the systems' unknown-publisher warnings | Gate 1 (open the accounts early) |
+| Public beta | 99.5% crash-free sessions means fewer than 1 crash in 200 sessions, which takes thousands of opt-in sessions to show. Users, crash reports and stability releases need weeks, not days. **Now runs once, at the end of Phase 2 (M15b)**; the closed alpha gives early numbers only | Gate 1 (end of Phase 2) |
+| Films, examples and handmade templates | Made by people, in builds that have the Phase 2 features; see [release-1.0.md](release-1.0.md) | Gate 1 (end of Phase 2) |
 
-**Build estimates.** The M5 build took about two days. The importers are the part most likely to need more work: they are tuned against real files, and only a handful of openly licensed files were available to build them; the corpus will show what is missing. The M2 to M5 exit checks run alongside the beta, and anything they find is fixed before new features.
+**Build estimates.** The M5 build took about two days. The importers are the part most likely to need more work: they are tuned against real files, and only a handful of openly licensed files were available to build them; the corpus will show what is missing. The M2 to M5 exit checks run alongside the closed alpha, and anything they find is fixed before new features.
 
 **Start now, because they are on the critical path:**
 
@@ -586,15 +589,15 @@ The first plan gave M0 to M2 the first five months and the whole phase about 12 
 2. Collect the import corpus. At least 100 Moho files with consent are needed before the importers can be measured.
 3. Finish the codec part of the legal review (section 4 of the [review scope](../legal/review-scope.md)) before 1.0.
 4. Get the macOS and Linux reference machines, or access to them.
-5. Open the Apple Developer and Windows code-signing accounts. Identity checks can take weeks; until then the installers show the systems' unknown-publisher warnings (the updater's own signature check does not depend on them).
+5. Open the Apple Developer and Windows code-signing accounts. Identity checks can take weeks; they are needed by the public launch at the end of Phase 2, and until then the installers show the systems' unknown-publisher warnings (the updater's own signature check does not depend on them).
 
-The rest of Phase 1 is planned at about 2 to 3 months, nearly all of it M6's public beta of at least 8 weeks, with the corpus and user testing alongside. These take calendar time however fast the code is written. Re-plan a month into the beta, with the importer pass rate and the first crash numbers.
+The rest of Phase 1 (the close-out) runs alongside Phase 2: the corpus, the exit checks with testers and the other platforms' benchmarks. These take calendar time however fast the code is written. The public beta, which this plan used to put here, now runs once at the end of Phase 2. Re-plan when the closed alpha has the importer pass rate and the first crash numbers from testers.
 
 **Rules for the schedule:**
 
 - **Building ahead is fine; closing early is not.** Work on a milestone can start while the previous one waits on an exit check, but a milestone closes only when its exit check passes, and fixing what an exit check finds comes before new features.
 - **No milestone closes with known data-loss bugs.** Data safety (P13, P14) is a standing requirement, not an M6 task.
-- **A public alpha at M5, not at M6.** The beta needs real users to produce the crash-free measurement.
+- **A closed alpha until Gate 1, not a public one.** Alpha builds go to testers and animators through the normal release process, with no announcement or launch activity (changed on 2026-10-30; this rule used to say "a public alpha at M5, not at M6"). The public beta that produces the crash-free measurement runs once, at the end of Phase 2.
 - **Moho and Animate importers wait until M5 on purpose.** They depend on a stable scene model. Starting them at M1 would mean rewriting them whenever the model changes. Start collecting the test corpus in M1, though, since that costs nothing.
 - **If a milestone slips, cut scope, not quality.** The first things to cut are physics (WS5) and the Animate `.fla` importer's shape tweens, in that order.
 
@@ -602,7 +605,7 @@ The rest of Phase 1 is planned at about 2 to 3 months, nearly all of it M6's pub
 
 ## 5. Gate 1 acceptance tests
 
-Gate 1 is the exit from Phase 1. It is a release decision, not a date.
+Gate 1 is the release decision for version 1.0. It is not a date. **Since 2026-10-30 it is decided at the end of Phase 2, not Phase 1**, and it also includes the old Gate 2, the showcase and the handmade templates: the full list is in [release-1.0.md, section 6](release-1.0.md#6-gate-1-criteria-now), and the tests the Phase 2 features add are in [phase-2.md, section 6](phase-2.md#6-gate-1-at-the-end-of-phase-2). The criteria and tests below are unchanged and are measured as the work goes on, so the numbers in section 5.3 keep being updated.
 
 ### 5.1 Criteria from the vision
 
@@ -632,7 +635,7 @@ Gate 1 is the exit from Phase 1. It is a release decision, not a date.
 
 ### 5.3 Results so far
 
-Measured before the beta, on the Windows development laptop (Intel HD Graphics 520, 1366x768) unless stated. Gate 1 is decided on the reference hardware and the beta, so these show where things stand, not that a criterion is met.
+Measured before the public beta, on the Windows development laptop (Intel HD Graphics 520, 1366x768) unless stated. Gate 1 is decided on the reference hardware and the public beta at the end of Phase 2, so these show where things stand, not that a criterion is met.
 
 | Test | Result | How |
 |---|---|---|
@@ -673,7 +676,7 @@ These are in addition to the project-wide risks in the vision.
 | WebGPU limits make the browser build too weak | Medium | Low | Position as learning and review, as the vision says; ship with documented limits |
 | Early contributors and the community are too few | Medium | Medium | Public repo from M0; "good first issue" labels; publish architecture docs early |
 | Code quality problems, especially if AI-assisted coding is used | Medium | High | Human review on every change; benchmarks and tests in CI from M1 |
-| Name or trade-dress challenge | Low | High | Trademark search in M0 (done); original icons and styling; legal review in M6 |
+| Name or trade-dress challenge | Low | High | Trademark search in M0 (done); original icons and styling; legal review before the 1.0 launch (end of Phase 2) |
 | Codec and font licence issues | Medium | Medium | Restrict Phase 1 export to the codecs listed in section 2.2; audit fonts and libraries |
 
 ---
@@ -695,4 +698,4 @@ A concrete starting list, in priority order.
 
 ---
 
-*This breakdown was revisited after M4 (section 4.1). Revisit it again at the public alpha, when the importer pass rate and the first crash numbers show whether the estimates and the milestone order still hold.*
+*This breakdown was revisited after M4 (section 4.1) and again on 2026-10-30, when Gate 1 moved to the end of Phase 2 ([release-1.0.md](release-1.0.md)). Revisit it when the closed alpha has the importer pass rate and the first crash numbers from testers.*

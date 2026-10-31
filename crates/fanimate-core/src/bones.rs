@@ -14,6 +14,12 @@ use crate::anim::{Channel, Frame, Interpolation};
 /// along the bone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Bone {
+    /// Version 7: names the bone for good within its skeleton. The list index
+    /// changes when a bone is reparented or removed; the id never does, so a
+    /// script or a driver can hold on to a bone. 0 means not given yet: files
+    /// from before version 7 get theirs on load (see [`Skeleton::ensure_ids`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub id: u32,
     pub name: String,
     /// Index of the parent bone. Parents always come before children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,6 +49,13 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// The highest bone id a sound skeleton holds, leaving room above it.
+pub const MAX_BONE_ID: u32 = 1 << 30;
+
 impl Bone {
     pub fn new(
         name: impl Into<String>,
@@ -52,6 +65,7 @@ impl Bone {
         angle: f32,
     ) -> Self {
         Self {
+            id: 0,
             name: name.into(),
             parent,
             origin,
@@ -86,9 +100,17 @@ impl Bone {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Skeleton {
     pub bones: Vec<Bone>,
+    /// Version 7: the next bone id to hand out. Ids are not reused, so a bone
+    /// that was removed never has its id given to another.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_bone_id: u32,
     /// Actions and Smart Bone actions (see [`crate::actions`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<crate::actions::RigAction>,
+    /// Master controllers: sliders and pads that play actions (see [`crate::actions::Controller`]).
+    /// A project that has any requires `controllers@1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controllers: Vec<crate::actions::Controller>,
 }
 
 impl Skeleton {
@@ -107,9 +129,62 @@ impl Skeleton {
         if let Some(p) = parent {
             assert!(p < self.bones.len(), "parent bone {p} does not exist");
         }
-        self.bones
-            .push(Bone::new(name, parent, origin, length, rest_angle));
+        let mut bone = Bone::new(name, parent, origin, length, rest_angle);
+        self.ensure_ids();
+        bone.id = self.next_bone_id;
+        self.next_bone_id = self.next_bone_id.saturating_add(1);
+        self.bones.push(bone);
         self.bones.len() - 1
+    }
+
+    /// The index of the bone with this id, if there is one.
+    pub fn index_of(&self, id: u32) -> Option<usize> {
+        self.bones.iter().position(|b| b.id == id)
+    }
+
+    /// Whether every bone has its own id in range and the counter is above
+    /// them all, as [`ensure_ids`](Self::ensure_ids) leaves it.
+    pub fn ids_are_sound(&self) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut top = 0;
+        for b in &self.bones {
+            if b.id == 0 || b.id > MAX_BONE_ID || !seen.insert(b.id) {
+                return false;
+            }
+            top = top.max(b.id);
+        }
+        self.next_bone_id > top && self.next_bone_id <= MAX_BONE_ID + 1
+    }
+
+    /// Give every bone an id of its own. Bones that have a good id keep it;
+    /// those with none (0, as in files from before version 7), one out of
+    /// range or one already taken get the next free ones, in list order, so
+    /// the same file always gets the same ids. Returns whether anything
+    /// changed.
+    pub fn ensure_ids(&mut self) -> bool {
+        if self.ids_are_sound() {
+            return false;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut top = 0;
+        let mut needy = Vec::new();
+        for (i, b) in self.bones.iter().enumerate() {
+            if b.id == 0 || b.id > MAX_BONE_ID || !seen.insert(b.id) {
+                needy.push(i);
+            } else {
+                top = top.max(b.id);
+            }
+        }
+        let mut next = self.next_bone_id.max(top + 1);
+        if next > MAX_BONE_ID {
+            next = top + 1;
+        }
+        for i in needy {
+            self.bones[i].id = next;
+            next = next.saturating_add(1);
+        }
+        self.next_bone_id = next;
+        true
     }
 
     /// Remove bone `index`. Its children join its parent, keeping their
@@ -468,5 +543,100 @@ mod tests {
         let mut poses = Vec::new();
         s.rest_pose(&mut poses);
         assert!(s.tip(&poses, 1).abs_diff_eq(Vec2::new(20.0, 0.0), 1e-5));
+    }
+
+    fn ids(s: &Skeleton) -> Vec<u32> {
+        s.bones.iter().map(|b| b.id).collect()
+    }
+
+    fn legacy(n: usize) -> Skeleton {
+        let mut s = Skeleton::default();
+        for i in 0..n {
+            s.bones.push(Bone::new(
+                format!("b{i}"),
+                i.checked_sub(1),
+                Vec2::ZERO,
+                10.0,
+                0.0,
+            ));
+        }
+        s
+    }
+
+    #[test]
+    fn bones_get_ids_that_are_never_reused() {
+        let mut s = Skeleton::default();
+        let a = s.add("a", None, Vec2::ZERO, 10.0, 0.0);
+        let b = s.add("b", Some(a), Vec2::ZERO, 10.0, 0.0);
+        let c = s.add("c", Some(b), Vec2::ZERO, 10.0, 0.0);
+        assert_eq!(ids(&s), [1, 2, 3]);
+        assert_eq!(s.index_of(3), Some(c));
+        s.remove(c);
+        let d = s.add("d", Some(a), Vec2::ZERO, 10.0, 0.0);
+        assert_eq!(s.bones[d].id, 4, "a removed bone's id is not given to a new one");
+        assert_eq!(s.index_of(3), None);
+        // removing a bone in the middle moves the others' indexes, not their ids
+        s.remove(a);
+        assert_eq!(ids(&s), [2, 4]);
+        assert_eq!(s.index_of(4), Some(1));
+        assert!(s.ids_are_sound());
+    }
+
+    #[test]
+    fn bones_without_ids_get_them_in_list_order_and_keep_good_ones() {
+        let mut s = legacy(3);
+        assert!(!s.ids_are_sound());
+        assert!(s.ensure_ids());
+        assert_eq!(ids(&s), [1, 2, 3]);
+        assert_eq!(s.next_bone_id, 4);
+        assert!(!s.ensure_ids(), "doing it again changes nothing");
+
+        // good ids stay; the bone with none gets the next free one
+        let mut s = legacy(3);
+        s.bones[0].id = 7;
+        s.bones[2].id = 5;
+        s.ensure_ids();
+        assert_eq!(ids(&s), [7, 8, 5]);
+        assert_eq!(s.next_bone_id, 9);
+    }
+
+    #[test]
+    fn duplicate_out_of_range_and_runaway_ids_are_repaired() {
+        let mut s = legacy(4);
+        s.bones[0].id = 2;
+        s.bones[1].id = 2; // taken by the first
+        s.bones[2].id = MAX_BONE_ID + 5; // out of range
+        s.bones[3].id = 3;
+        s.next_bone_id = u32::MAX; // a damaged counter
+        assert!(!s.ids_are_sound());
+        s.ensure_ids();
+        assert!(s.ids_are_sound(), "{:?} next {}", ids(&s), s.next_bone_id);
+        assert_eq!(s.bones[0].id, 2, "the first bone keeps a contested id");
+        assert_eq!(s.bones[3].id, 3);
+        let mut all = ids(&s);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 4);
+        // and it still hands out ids afterwards
+        let n = s.add("new", None, Vec2::ZERO, 1.0, 0.0);
+        assert!(s.bones[n].id > 3 && s.ids_are_sound());
+    }
+
+    #[test]
+    fn ids_are_written_only_when_given() {
+        let mut s = legacy(1);
+        let plain = serde_json::to_string(&s).unwrap();
+        assert!(
+            !plain.contains("\"id\"") && !plain.contains("next_bone_id"),
+            "{plain}"
+        );
+        s.ensure_ids();
+        let given = serde_json::to_string(&s).unwrap();
+        assert!(
+            given.contains("\"id\":1") && given.contains("\"next_bone_id\":2"),
+            "{given}"
+        );
+        assert_eq!(serde_json::from_str::<Skeleton>(&given).unwrap(), s);
+        assert_eq!(serde_json::from_str::<Skeleton>(&plain).unwrap(), legacy(1));
     }
 }

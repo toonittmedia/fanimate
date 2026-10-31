@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+fanimate-text.workspace = true
 glam.workspace = true
 i_overlay.workspace = true
 serde.workspace = true

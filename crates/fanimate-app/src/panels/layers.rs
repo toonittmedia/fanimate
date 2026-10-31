@@ -121,6 +121,7 @@ fn type_icon(kind: &LayerKind) -> Icon {
         LayerKind::Frames { .. } => Icon::FramesLayer,
         LayerKind::Switch { .. } => Icon::SwitchLayer,
         LayerKind::Audio(_) => Icon::AudioLayer,
+        LayerKind::Text(_) => Icon::TextLayer,
     }
 }
 

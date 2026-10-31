@@ -260,6 +260,7 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Shift+L", Tool(Tool::Polygon)),
     ("Shift+O", Tool(Tool::Star)),
     ("Shift+R", Tool(Tool::Triangle)),
+    ("T", Tool(Tool::Text)),
     ("E", Tool(Tool::Eraser)),
     ("Shift+E", Tool(Tool::DeleteEdge)),
     ("Shift+H", Tool(Tool::HideEdge)),

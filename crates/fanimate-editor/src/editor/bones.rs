@@ -48,7 +48,7 @@ impl Editor {
         matches!(self.doc.find(id)?.kind, LayerKind::Bone { .. }).then_some(id)
     }
 
-    fn skeleton(&self, layer: LayerId) -> Option<&Skeleton> {
+    pub fn skeleton(&self, layer: LayerId) -> Option<&Skeleton> {
         match &self.doc.find(layer)?.kind {
             LayerKind::Bone { skeleton, .. } => Some(skeleton),
             _ => None,
@@ -1108,7 +1108,7 @@ fn renumber_bones(layer: &mut fanimate_core::Layer, map: &[Option<usize>]) {
                 }
             }
             // a nested bone layer's shapes refer to its own bones
-            LayerKind::Bone { .. } | LayerKind::Audio(_) => {}
+            LayerKind::Bone { .. } | LayerKind::Audio(_) | LayerKind::Text(_) => {}
             LayerKind::Group { children } | LayerKind::Switch { children, .. } => {
                 children.iter_mut().for_each(|c| go(c, map))
             }
@@ -1520,5 +1520,44 @@ mod tests {
         assert!(!ed.finish_reparent(Vec2::new(300.0, 300.0), 4.0));
         assert_eq!(ed.revision(), revision);
         assert_eq!(ed.skeleton(rig).unwrap().bones[2].parent, None);
+    }
+
+    /// The reason bones have ids: reparenting reorders the list, so an index
+    /// held by a script goes stale, and the id does not.
+    #[test]
+    fn a_bone_keeps_its_id_when_reparenting_moves_it_in_the_list() {
+        let (mut ed, rig) = chain();
+        let ids = |ed: &Editor| {
+            let sk = ed.skeleton(rig).unwrap();
+            sk.bones
+                .iter()
+                .map(|b| (b.name.clone(), b.id))
+                .collect::<Vec<_>>()
+        };
+        let before = ids(&ed);
+        assert_eq!(before.iter().map(|b| b.1).collect::<Vec<_>>(), [1, 2, 3]);
+        // free the last bone, then hang the root under it: the list is reordered
+        assert!(ed.set_bone_parent(BoneRef { layer: rig, bone: 2 }, None));
+        assert!(ed.set_bone_parent(BoneRef { layer: rig, bone: 0 }, Some(2)));
+        let after = ids(&ed);
+        assert_ne!(
+            after.iter().map(|b| &b.0).collect::<Vec<_>>(),
+            before.iter().map(|b| &b.0).collect::<Vec<_>>(),
+            "the order changed"
+        );
+        for (name, id) in &before {
+            assert!(
+                after.contains(&(name.clone(), *id)),
+                "{name} lost its id: {after:?}"
+            );
+        }
+        let sk = ed.skeleton(rig).unwrap();
+        assert!(sk.ids_are_sound());
+        let first = before[0].1;
+        assert_eq!(sk.bones[sk.index_of(first).unwrap()].name, before[0].0);
+        // undo puts the list back, ids with it
+        ed.run(Action::Undo);
+        ed.run(Action::Undo);
+        assert_eq!(ids(&ed), before);
     }
 }

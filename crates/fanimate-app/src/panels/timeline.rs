@@ -1652,8 +1652,9 @@ fn loop_mark(painter: &egui::Painter, c: egui::Pos2, color: egui::Color32, plus:
     }
 }
 
-/// A key's mark: round for smooth, a diamond for linear (and for keys that
-/// differ), square for step.
+/// A key's mark: round for smooth and for the eased and custom curves (all of
+/// them curved motion), a diamond for linear (and for keys that differ), square
+/// for step.
 pub fn key_shape(
     painter: &egui::Painter,
     c: egui::Pos2,
@@ -1662,7 +1663,7 @@ pub fn key_shape(
     outline: Stroke,
 ) {
     match interp {
-        Some(Interpolation::Smooth) => {
+        Some(Interpolation::Smooth | Interpolation::Ease(_) | Interpolation::Bezier(_)) => {
             painter.circle(c, 4.5, fill, outline);
         }
         Some(Interpolation::Step) => {

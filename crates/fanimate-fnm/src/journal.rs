@@ -31,7 +31,7 @@ use fanimate_core::{Document, LayerId};
 use serde::{Deserialize, Serialize};
 
 use crate::history::{self, HistoryRecord, HistoryWriter};
-use crate::io::{document_file, io_err, layer_file, manifest, write_json_atomic};
+use crate::io::{document_file, io_err, layer_file, manifest, required_features, write_json_atomic};
 use crate::{Report, Result};
 
 const LOCK: &str = "lock";
@@ -228,8 +228,14 @@ impl Writer {
     }
 
     fn write(&mut self, doc: &Document, info: &SessionInfo) -> Result<()> {
-        if self.last.is_none() {
-            write_json_atomic(&self.project.join("manifest.json"), &manifest())?;
+        // the manifest lists the features the project needs, which can change
+        // as the work goes on (the first generated layer, say)
+        let features_changed = self
+            .last
+            .as_ref()
+            .is_none_or(|p| required_features(p) != required_features(doc));
+        if features_changed {
+            write_json_atomic(&self.project.join("manifest.json"), &manifest(doc))?;
         }
         let previous = self.last.as_ref();
         let unchanged = |id: LayerId| {
@@ -408,6 +414,33 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// The manifest lists the features the project needs, so when the first
+    /// layer with a provenance record appears mid-session the journal's
+    /// manifest follows, and a recovered project is not mistaken for a plain one.
+    #[test]
+    fn the_journal_manifest_follows_the_features_a_project_needs() {
+        let root = temp_root("features");
+        let journal = Journal::start(&root).unwrap();
+        let manifest = || fs::read_to_string(journal.dir().join(PROJECT).join("manifest.json")).unwrap();
+        let mut doc = edited(2);
+        journal.record(&doc, None, true, None);
+        journal.flush();
+        assert!(!manifest().contains("requires"), "{}", manifest());
+        doc.layers[0].provenance = Some(fanimate_core::Provenance::new("auto-rig"));
+        journal.record(&doc, None, true, None);
+        journal.flush();
+        assert!(manifest().contains("provenance@1"), "{}", manifest());
+        let (loaded, report) = crate::load(journal.dir().join(PROJECT)).unwrap();
+        assert_eq!(loaded, doc);
+        assert!(report.is_clean(), "{report}");
+        // and back, when the layer's record goes
+        doc.layers[0].provenance = None;
+        journal.record(&doc, None, true, None);
+        journal.flush();
+        assert!(!manifest().contains("requires"), "{}", manifest());
+        journal.close();
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn removed_layers_are_removed_from_the_journal() {
         let root = temp_root("removed");

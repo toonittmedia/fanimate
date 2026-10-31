@@ -1,5 +1,27 @@
 //! Every command the user can run, and the tools.
 
+/// A menu label for an interpolation, with a prefix naming what it is for
+/// ("New Keys: "). A macro, because labels are `&'static str` and `concat!`
+/// builds them at compile time; it matches every interpolation and easing, so
+/// adding one is a compile error here until it has a label.
+macro_rules! interp_label {
+    ($prefix:literal, $interp:expr) => {{
+        use fanimate_core::{Easing, Interpolation};
+        match $interp {
+            Interpolation::Smooth => concat!($prefix, "Smooth"),
+            Interpolation::Linear => concat!($prefix, "Linear"),
+            Interpolation::Step => concat!($prefix, "Step"),
+            Interpolation::Ease(Easing::EaseIn) => concat!($prefix, "Ease in"),
+            Interpolation::Ease(Easing::EaseOut) => concat!($prefix, "Ease out"),
+            Interpolation::Ease(Easing::EaseInOut) => concat!($prefix, "Ease in and out"),
+            Interpolation::Ease(Easing::Overshoot) => concat!($prefix, "Overshoot"),
+            Interpolation::Ease(Easing::Bounce) => concat!($prefix, "Bounce"),
+            Interpolation::Ease(Easing::Elastic) => concat!($prefix, "Elastic"),
+            Interpolation::Bezier(_) => concat!($prefix, "Custom curve"),
+        }
+    }};
+}
+
 /// A command. Menus, shortcuts, context menus and the command palette all
 /// run the same actions, so behaviour never depends on how it was invoked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,6 +52,16 @@ pub enum Action {
     SaveAsFolder,
     /// Import pictures, Photoshop or SVG files, or sound.
     Import,
+    /// Read an SRT or WebVTT file into a layer of captions.
+    ImportCaptions,
+    /// Write the selected caption layer as an SRT or WebVTT file.
+    ExportCaptions,
+    /// The frame at the playhead as an SVG picture.
+    ExportSvgFrame,
+    /// The animation as a Lottie or dotLottie, for the web and phones.
+    ExportLottie,
+    /// The frames packed into one picture with an atlas, for games.
+    ExportSpriteSheet,
     /// Render the animation to a video, GIF or PNG sequence.
     ExportVideo,
     /// Show the render queue window.
@@ -84,6 +116,16 @@ pub enum Action {
     NewBoneLayer,
     NewFramesLayer,
     NewSwitchLayer,
+    /// A text layer with some words in it, to set in the Properties panel.
+    NewTextLayer,
+    /// Put a ready-made animator on the selected text layer.
+    AddTextAnimator(fanimate_core::TextPreset),
+    /// Turn the selected text layer into shapes: drawing instead of text.
+    /// Make the selected text layer follow the first shape of the other selected layer.
+    SetTextPath,
+    /// Set the selected text layer straight again.
+    ClearTextPath,
+    ConvertTextToShapes,
     GroupLayers,
     Ungroup,
     MoveLayerUp,
@@ -104,13 +146,27 @@ pub enum Action {
     NewAction,
     /// A new Smart Bone action for the selected bone, opened for editing.
     NewSmartBoneAction,
+    /// Run the spring on the selected bone and the bones below it, and write the swing as keys.
+    BakeSpring,
+    /// Save the whole rig as it is on this frame as a pose (a one-frame action).
+    SavePose,
     /// Edit action n of the bone layer.
     EditAction(usize),
     /// Stop editing the action and go back to the timeline.
     FinishAction,
     /// Copy action n into the timeline at the current frame.
     InsertAction(usize),
+    /// Make the mirror image of pose n, left for right, as a new pose.
+    MirrorPose(usize),
     DeleteAction(usize),
+    /// Add a slider or a pad to the bone layer's master controllers.
+    NewController(fanimate_core::actions::ControllerKind),
+    /// Remove master controller n.
+    DeleteController(usize),
+    /// Make master controller n play action m from its axis, over the whole 0 to 1.
+    LinkController(usize, usize, fanimate_core::actions::ControllerAxis),
+    /// Stop master controller n playing action m.
+    UnlinkController(usize, usize),
     // Animation
     PlayPause,
     NextFrame,
@@ -216,6 +272,11 @@ impl Action {
                 | NewBoneLayer
                 | NewFramesLayer
                 | NewSwitchLayer
+                | NewTextLayer
+                | AddTextAnimator(_)
+                | ConvertTextToShapes
+                | SetTextPath
+                | ClearTextPath
                 | GroupLayers
                 | Ungroup
                 | MoveLayerUp
@@ -228,10 +289,17 @@ impl Action {
                 | Unbind
                 | NewAction
                 | NewSmartBoneAction
+                | BakeSpring
+                | SavePose
                 | EditAction(_)
                 | FinishAction
                 | InsertAction(_)
+                | MirrorPose(_)
                 | DeleteAction(_)
+                | NewController(_)
+                | DeleteController(_)
+                | LinkController(..)
+                | UnlinkController(..)
                 | SetLoop(_)
                 | AddKey
                 | DeleteKey
@@ -287,6 +355,11 @@ impl Action {
             SaveAs => "Save As…",
             SaveAsFolder => "Save As Folder…",
             Import => "Import…",
+            ImportCaptions => "Import Captions…",
+            ExportCaptions => "Export Captions…",
+            ExportSvgFrame => "Export Frame as SVG…",
+            ExportLottie => "Export as Lottie…",
+            ExportSpriteSheet => "Export Sprite Sheet…",
             ExportVideo => "Export Video…",
             RenderQueue => "Render Queue",
             RenderPreviewFrame => "Render Preview Frame",
@@ -322,6 +395,17 @@ impl Action {
             NewBoneLayer => "New Bone Layer",
             NewFramesLayer => "New Frame-by-Frame Layer",
             NewSwitchLayer => "New Switch Layer",
+            NewTextLayer => "New Text Layer",
+            AddTextAnimator(p) => match p {
+                fanimate_core::TextPreset::FadeIn => "Text Animator: Fade In by Character",
+                fanimate_core::TextPreset::Typewriter => "Text Animator: Typewriter",
+                fanimate_core::TextPreset::RiseIn => "Text Animator: Rise In by Word",
+                fanimate_core::TextPreset::PopIn => "Text Animator: Pop In by Character",
+                fanimate_core::TextPreset::Wave => "Text Animator: Wave",
+            },
+            ConvertTextToShapes => "Convert Text to Shapes",
+            SetTextPath => "Set Text Path from Shape",
+            ClearTextPath => "Remove Text Path",
             SetSwitch(_) => "Show This Layer",
             LipSync => "Lip Sync from Sound…",
             NewDrawing => "New Blank Drawing",
@@ -344,10 +428,18 @@ impl Action {
             Unbind => "Release from Bones",
             NewAction => "New Action",
             NewSmartBoneAction => "New Smart Bone Action",
+            BakeSpring => "Bake Spring Motion",
+            SavePose => "Save Pose",
             EditAction(_) => "Edit Action",
             FinishAction => "Finish Editing Action",
             InsertAction(_) => "Insert Action Here",
+            MirrorPose(_) => "Mirror Pose",
             DeleteAction(_) => "Delete Action",
+            NewController(fanimate_core::actions::ControllerKind::Slider) => "New Slider",
+            NewController(fanimate_core::actions::ControllerKind::Pad) => "New Pad",
+            DeleteController(_) => "Delete Controller",
+            LinkController(..) => "Play Action",
+            UnlinkController(..) => "Stop Playing Action",
             PlayPause => "Play/Pause",
             NextFrame => "Next Frame",
             PrevFrame => "Previous Frame",
@@ -363,11 +455,7 @@ impl Action {
             PrevKey => "Previous Keyframe",
             AddKey => "Add Keyframe",
             DeleteKey => "Delete Keyframe",
-            SetInterpolation(i) => match i {
-                fanimate_core::Interpolation::Smooth => "Interpolation: Smooth",
-                fanimate_core::Interpolation::Linear => "Interpolation: Linear",
-                fanimate_core::Interpolation::Step => "Interpolation: Step",
-            },
+            SetInterpolation(i) => interp_label!("Interpolation: ", i),
             ToggleLock => "Lock/Unlock Layer",
             ResetCamera => "Reset Camera",
             LookThroughCamera => "Look Through Camera",
@@ -387,16 +475,8 @@ impl Action {
             AddChannelKey(fanimate_core::ChannelId::Trim(_)) => "Key Stroke Exposure Here",
             AddChannelKey(_) => "Add Keyframe on This Property",
             DeleteChannelKey(_) => "Delete Keyframe on This Property",
-            SetChannelInterpolation(_, i) => match i {
-                fanimate_core::Interpolation::Smooth => "Property Key: Smooth",
-                fanimate_core::Interpolation::Linear => "Property Key: Linear",
-                fanimate_core::Interpolation::Step => "Property Key: Step",
-            },
-            SetKeyInterpolation(i) => match i {
-                fanimate_core::Interpolation::Smooth => "New Keys: Smooth",
-                fanimate_core::Interpolation::Linear => "New Keys: Linear",
-                fanimate_core::Interpolation::Step => "New Keys: Step",
-            },
+            SetChannelInterpolation(_, i) => interp_label!("Property Key: ", i),
+            SetKeyInterpolation(i) => interp_label!("New Keys: ", i),
             ToggleOnionSkin => "Onion Skin",
             ToggleLightTable => "Light Table",
             ZoomIn => "Zoom In",
@@ -416,7 +496,8 @@ impl Action {
         match self {
             New | NewPreset(_) | Open | OpenOther | OpenSample(_) | OpenFolder | CloseDocument
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
-            | SaveAsFolder | Import | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates
+            | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
+            | ExportSpriteSheet | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates
             | InstallUpdate | Quit => "File",
             Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
             | PasteLayers | Duplicate | Delete | DeleteLayers | SelectAll | SelectNone | Rename
@@ -428,6 +509,11 @@ impl Action {
             | NewBoneLayer
             | NewFramesLayer
             | NewSwitchLayer
+            | NewTextLayer
+            | AddTextAnimator(_)
+            | ConvertTextToShapes
+            | SetTextPath
+            | ClearTextPath
             | GroupLayers
             | Ungroup
             | MoveLayerUp
@@ -450,9 +536,16 @@ impl Action {
             | Unbind
             | NewAction
             | NewSmartBoneAction
+            | BakeSpring
+            | SavePose
             | EditAction(_)
             | FinishAction
             | InsertAction(_)
+            | MirrorPose(_)
+            | NewController(_)
+            | DeleteController(_)
+            | LinkController(..)
+            | UnlinkController(..)
             | DeleteAction(_) => "Layer",
             PlayPause
             | NextFrame
@@ -498,6 +591,11 @@ impl Action {
             SaveAs,
             SaveAsFolder,
             Import,
+            ImportCaptions,
+            ExportCaptions,
+            ExportSvgFrame,
+            ExportLottie,
+            ExportSpriteSheet,
             ExportVideo,
             RenderQueue,
             RenderPreviewFrame,
@@ -531,6 +629,10 @@ impl Action {
             NewBoneLayer,
             NewFramesLayer,
             NewSwitchLayer,
+            NewTextLayer,
+            ConvertTextToShapes,
+            SetTextPath,
+            ClearTextPath,
             GroupLayers,
             Ungroup,
             MoveLayerUp,
@@ -544,6 +646,10 @@ impl Action {
             Unbind,
             NewAction,
             NewSmartBoneAction,
+            BakeSpring,
+            SavePose,
+            NewController(fanimate_core::actions::ControllerKind::Slider),
+            NewController(fanimate_core::actions::ControllerKind::Pad),
             FinishAction,
             PlayPause,
             NextFrame,
@@ -566,6 +672,7 @@ impl Action {
             ActualSize,
         ];
         v.extend(fanimate_core::Interpolation::ALL.map(SetInterpolation));
+        v.extend(fanimate_core::TextPreset::ALL.map(AddTextAnimator));
         v.extend(fanimate_core::Interpolation::ALL.map(SetKeyInterpolation));
         v.extend(fanimate_core::LoopMode::ALL.map(SetLoop));
         v.extend(fanimate_core::Part::ALL.map(SetPart));
@@ -597,15 +704,19 @@ pub enum Workspace {
     FrameByFrame,
     /// The canvas and the timeline only, for watching and checking.
     Review,
+    /// Simple mode: the basic tools, Layers, Properties and Style, and the
+    /// timeline; no bones, actions or X-sheet. For a first hour with Fanimate.
+    Simple,
 }
 
 impl Workspace {
-    pub const ALL: [Workspace; 5] = [
+    pub const ALL: [Workspace; 6] = [
         Self::Animate,
         Self::Draw,
         Self::Rig,
         Self::FrameByFrame,
         Self::Review,
+        Self::Simple,
     ];
 
     pub fn label(self) -> &'static str {
@@ -615,6 +726,7 @@ impl Workspace {
             Self::Rig => "Workspace: Rig",
             Self::FrameByFrame => "Workspace: Frame by Frame",
             Self::Review => "Workspace: Review",
+            Self::Simple => "Workspace: Simple",
         }
     }
 
@@ -930,6 +1042,8 @@ pub enum Tool {
     Eraser,
     PaintBucket,
     Eyedropper,
+    /// Click to type new text, or click text to edit it where it stands.
+    Text,
     DeleteEdge,
     /// Click a segment to leave its stroke undrawn (Alt+click shows it).
     HideEdge,
@@ -957,7 +1071,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 33] = [
+    pub const ALL: [Tool; 34] = [
         Self::SelectPoints,
         Self::TranslatePoints,
         Self::AddPoint,
@@ -976,6 +1090,7 @@ impl Tool {
         Self::Magnet,
         Self::PaintBucket,
         Self::Eyedropper,
+        Self::Text,
         Self::DrawShape,
         Self::LineWidth,
         Self::StrokeExposure,
@@ -1013,6 +1128,7 @@ impl Tool {
             Self::Magnet => "Magnet",
             Self::PaintBucket => "Paint Bucket",
             Self::Eyedropper => "Eyedropper",
+            Self::Text => "Text",
             Self::DrawShape => "Draw Shape",
             Self::LineWidth => "Line Width",
             Self::StrokeExposure => "Stroke Exposure",
@@ -1049,6 +1165,7 @@ impl Tool {
             | Self::DeleteEdge
             | Self::HideEdge
             | Self::Magnet
+            | Self::Text
             | Self::ShapeBuilder => ToolGroup::Draw,
             Self::PaintBucket
             | Self::Eyedropper
@@ -1089,6 +1206,7 @@ impl Tool {
                 | Self::Magnet
                 | Self::PaintBucket
                 | Self::Eyedropper
+                | Self::Text
                 | Self::DrawShape
                 | Self::LineWidth
                 | Self::StrokeExposure
@@ -1144,6 +1262,9 @@ impl Tool {
                 "Click a shape to fill it with the fill colour, or a brush stroke to recolour it with the line colour."
             }
             Self::Eyedropper => "Click a shape to use its colours for new artwork.",
+            Self::Text => {
+                "Click to type new words, or click text to edit it. Escape or a click elsewhere finishes."
+            }
             Self::Eraser => {
                 "Drag to erase lines and brush strokes on the selected layer. Shapes it covers completely are removed."
             }
@@ -1344,6 +1465,7 @@ mod tests {
                 | Tool::Eraser
                 | Tool::PaintBucket
                 | Tool::Eyedropper
+                | Tool::Text
                 | Tool::DeleteEdge
                 | Tool::HideEdge
                 | Tool::Magnet
@@ -1364,7 +1486,7 @@ mod tests {
                 | Tool::Zoom => 1,
             };
         }
-        assert_eq!(Tool::ALL.len(), 33);
+        assert_eq!(Tool::ALL.len(), 34);
     }
 
     #[test]

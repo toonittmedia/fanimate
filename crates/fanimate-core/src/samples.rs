@@ -482,6 +482,50 @@ fn map_cmd(c: crate::PathCmd, f: impl Fn(Vec2) -> Vec2) -> crate::PathCmd {
     }
 }
 
+/// A text benchmark: a title of `characters` characters wrapped into a column
+/// and animated by two animators (a fade in by character and a wave), so every
+/// frame moves, scales and fades every glyph. The budget for the text
+/// feature is 60 fps with 1,000 animating glyphs.
+pub fn text_benchmark(characters: usize) -> Document {
+    const WORDS: [&str; 8] = [
+        "Animation",
+        "moves",
+        "words",
+        "one",
+        "character",
+        "at",
+        "a",
+        "time",
+    ];
+    let mut doc = Document::new("Text benchmark", 1920.0, 1080.0, 24.0);
+    doc.end = 120;
+    doc.background = Color::rgba(0.11, 0.04, 0.24, 1.0);
+    let mut content = String::new();
+    let mut word = 0;
+    while content.chars().count() < characters {
+        if !content.is_empty() {
+            content.push(' ');
+        }
+        content.push_str(WORDS[word % WORDS.len()]);
+        word += 1;
+    }
+    let content: String = content.chars().take(characters).collect();
+    let mut text = crate::text::Text::new(content);
+    {
+        let look = text.look_mut();
+        look.size = 36.0;
+        look.width = Some(1760.0);
+        look.fill = Color::WHITE;
+    }
+    text.animators
+        .push(crate::text::TextPreset::FadeIn.animator(1, 60));
+    text.animators.push(crate::text::TextPreset::Wave.animator(1, 48));
+    let mut layer = doc.new_layer("Title", crate::LayerKind::Text(text));
+    layer.transform.position.base = Vec2::new(80.0, 60.0);
+    doc.layers.push(layer);
+    doc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

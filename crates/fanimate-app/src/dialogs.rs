@@ -644,9 +644,29 @@ fn prefs_general(ui: &mut egui::Ui, shell: &mut Shell) {
     let p = shell.palette;
     kit::section(ui, &p, "When Fanimate starts", |ui| startup_choice(ui, shell));
     kit::section(ui, &p, "Updates and crashes", |ui| {
-        ui.checkbox(&mut shell.updates.check, "Check for updates automatically")
-            .on_hover_text("Turn off to stay on this version, for example during a production");
-        if ui.button("Check now").clicked() {
+        // a policy file can force this on, and then it cannot be turned off here
+        let forced = shell.policy().offline && !shell.offline;
+        let mut offline = shell.policy().offline;
+        ui.add_enabled(
+            !forced,
+            egui::Checkbox::new(&mut offline, "Work offline: never use the network"),
+        )
+        .on_hover_text(if forced {
+            "Set by a policy file on this computer"
+        } else {
+            "No update checks and no cloud services. Everything else works as before"
+        });
+        if !forced {
+            shell.offline = offline;
+        }
+        ui.add_space(4.0);
+        let online = shell.policy().network_allowed();
+        ui.add_enabled(
+            online,
+            egui::Checkbox::new(&mut shell.updates.check, "Check for updates automatically"),
+        )
+        .on_hover_text("Turn off to stay on this version, for example during a production");
+        if ui.add_enabled(online, egui::Button::new("Check now")).clicked() {
             shell.pending.push(Action::CheckForUpdates);
         }
         ui.add_space(4.0);

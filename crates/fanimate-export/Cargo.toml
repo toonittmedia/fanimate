@@ -26,5 +26,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+resvg = { version = "0.48", default-features = false }
+
 [lints]
 workspace = true

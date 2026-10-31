@@ -34,7 +34,7 @@ impl Tab {
     /// The region a panel opens in when it is not on screen.
     pub fn region(self) -> Region {
         match self {
-            Self::Timeline | Self::XSheet => Region::Bottom,
+            Self::Timeline | Self::XSheet | Self::Graph => Region::Bottom,
             Self::Layers | Self::Properties | Self::Style | Self::Actions | Self::History | Self::Bones => {
                 Region::Right
             }
@@ -58,6 +58,9 @@ pub struct Layout {
     /// Counts layout resets. Panel sizes are remembered under an id that
     /// includes it, so a reset starts from the sizes above again.
     pub generation: u32,
+    /// Simple mode: the Tools panel shows only the basic tool groups.
+    #[serde(default)]
+    pub simple: bool,
 }
 
 impl Default for Layout {
@@ -76,7 +79,7 @@ impl Layout {
     pub fn for_workspace(w: Workspace) -> Self {
         let mut layout = Self {
             right: DockState::new(vec![Tab::Properties, Tab::Style, Tab::Actions]),
-            bottom: DockState::new(vec![Tab::Timeline, Tab::XSheet]),
+            bottom: DockState::new(vec![Tab::Timeline, Tab::XSheet, Tab::Graph]),
             show_tools: true,
             show_right: true,
             show_bottom: true,
@@ -84,6 +87,7 @@ impl Layout {
             right_width: 300.0,
             bottom_height: 230.0,
             generation: 0,
+            simple: w == Workspace::Simple,
         };
         // History is not shown until it is asked for (Window menu); it then
         // joins Layers. Bones is a tab beside Layers, where the room is.
@@ -119,6 +123,15 @@ impl Layout {
                 );
                 layout.bottom = DockState::new(vec![Tab::Timeline]);
                 layout.right_width = 340.0;
+            }
+            Workspace::Simple => {
+                layout.right = DockState::new(vec![Tab::Properties, Tab::Style]);
+                layout
+                    .right
+                    .main_surface_mut()
+                    .split_below(NodeIndex::root(), 0.5, vec![Tab::Layers]);
+                layout.bottom = DockState::new(vec![Tab::Timeline]);
+                layout.bottom_height = 200.0;
             }
             // only the canvas and the timeline: the next start opens in Animate
             Workspace::Review => {
@@ -261,7 +274,9 @@ fn tools_panel(ui: &mut egui::Ui, shell: &mut Shell, layout: &mut Layout) {
                 .fill(p.panel)
                 .inner_margin(egui::Margin::symmetric(TOOL_MARGIN as i8, 4)),
         )
-        .show(ui, |ui| crate::panels::tools_panel(ui, shell, columns));
+        .show(ui, |ui| {
+            crate::panels::tools_panel(ui, shell, columns, layout.simple)
+        });
     let rect = out.response.rect;
     let edge = egui::Rect::from_x_y_ranges((rect.right() - 3.0)..=(rect.right() + 3.0), rect.y_range());
     let grab = ui.interact(
@@ -287,6 +302,7 @@ fn tools_panel(ui: &mut egui::Ui, shell: &mut Shell, layout: &mut Layout) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::Storage as _;
 
     #[test]
     fn the_tools_width_fits_whole_columns() {
@@ -362,6 +378,27 @@ mod tests {
                 assert!(layout.is_open(Tab::Layers), "{w:?}");
             }
         }
+    }
+
+    #[test]
+    fn simple_mode_leaves_out_the_rig_and_drawn_animation_panels() {
+        let layout = Layout::for_workspace(Workspace::Simple);
+        assert!(layout.simple);
+        for tab in [Tab::Bones, Tab::Actions, Tab::XSheet, Tab::History] {
+            assert!(!layout.is_open(tab), "{tab:?}");
+        }
+        for tab in [Tab::Layers, Tab::Properties, Tab::Style, Tab::Timeline] {
+            assert!(layout.is_open(tab), "{tab:?}");
+        }
+        assert!(!Layout::for_workspace(Workspace::Animate).simple);
+        // a layout saved before the switch existed reads as not simple
+        let mut store = Store::default();
+        eframe::set_value(&mut store, Layout::KEY, &Layout::for_workspace(Workspace::Simple));
+        let text = store.get_string(Layout::KEY).unwrap();
+        assert!(text.contains("simple:true"), "{text}");
+        store.set_string(Layout::KEY, text.replace("simple:true", ""));
+        let old: Layout = eframe::get_value(&store, Layout::KEY).expect("an old layout reads");
+        assert!(!old.simple);
     }
 
     #[test]

@@ -157,6 +157,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
         LayerKind::Frames { .. } => "Frame-by-frame layer",
         LayerKind::Switch { .. } => "Switch layer",
         LayerKind::Audio(_) => "Audio layer",
+        LayerKind::Text(_) => "Text layer",
     };
     let mut name = l.name.clone();
     let mut visible = l.visible;
@@ -482,6 +483,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
             shell.ui.open_tab = Some(crate::panels::Tab::Bones);
         }
     }
+    super::text_props::section(ui, shell, id);
 }
 
 /// Which sub-layer of a drawing the tools draw on.

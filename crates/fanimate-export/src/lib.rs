@@ -23,12 +23,17 @@ mod av1;
 mod avi;
 pub mod ffmpeg;
 pub mod job;
+pub mod lottie;
 pub mod queue;
+pub mod report;
 pub mod run;
 mod sequence;
+pub mod sheet;
 pub mod sound;
+pub mod svg;
 mod yuv;
 
 pub use job::{Format, Settings, Writer};
 pub use queue::{Entry, Job, Queue, State, Status};
+pub use report::Report;
 pub use run::{ExportError, Route, existing_output, export, route};

@@ -3,12 +3,15 @@
 Fanimate is one Rust workspace. The engine knows nothing about windows or files; each layer above it adds one concern.
 
 ```
+fanimate-text      text engine: shaping, bidirectional order, line breaking, glyph outlines, bundled fonts
+  └─ (below core: core calls it to lay text out)
 fanimate-core      scene graph, animation channels, bones, frame evaluation
   ├─ fanimate-fnm      .fnm reader, atomic writer, validator and repair, crash journal
   ├─ fanimate-import   Moho and Adobe Animate importers
   ├─ fanimate-render   tessellation (lyon) and the wgpu renderer
   │    └─ fanimate-export   video, animated image and picture sequence export; the render queue folder
-  └─ fanimate-editor   editing model: selection, commands, undo, keymaps (no UI toolkit)
+  └─ fanimate-editor   editing model: selection, commands, undo, transactions, keymaps (no UI toolkit)
+       ├─ fanimate-api      the scripting API as Rust: explicit-target queries and commands, all through transactions
        └─ fanimate-app      desktop app (eframe/egui): panels, canvas, dialogs, updater, crash reports
 fanimate-cli       headless tool: render, export, import, validate, benchmark
 fanimate-web       browser player (WebGPU): opens, plays and checks projects

@@ -4,6 +4,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::Color;
+use crate::easing::{Bezier, Easing};
 
 /// A frame number on the timeline. Frame 0 is the rest pose (how a thing is
 /// drawn and set up) and frame 1 is the first frame of the animation;
@@ -55,16 +56,34 @@ pub enum Interpolation {
     /// Ease in and out of each key.
     #[default]
     Smooth,
+    /// A named easing: ease in or out, overshoot, bounce, elastic.
+    Ease(Easing),
+    /// A curve drawn in the graph editor.
+    Bezier(Bezier),
 }
 
 impl Interpolation {
-    pub const ALL: [Interpolation; 3] = [Self::Smooth, Self::Linear, Self::Step];
+    /// The choices the interpolation menus offer. A custom curve is not one:
+    /// it is drawn in the graph editor.
+    pub const ALL: [Interpolation; 9] = [
+        Self::Smooth,
+        Self::Linear,
+        Self::Step,
+        Self::Ease(Easing::EaseIn),
+        Self::Ease(Easing::EaseOut),
+        Self::Ease(Easing::EaseInOut),
+        Self::Ease(Easing::Overshoot),
+        Self::Ease(Easing::Bounce),
+        Self::Ease(Easing::Elastic),
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Smooth => "Smooth",
             Self::Linear => "Linear",
             Self::Step => "Step",
+            Self::Ease(e) => e.label(),
+            Self::Bezier(_) => "Custom curve",
         }
     }
 
@@ -78,6 +97,8 @@ impl Interpolation {
             Self::Step => 0.0,
             Self::Linear => t,
             Self::Smooth => t * t * (3.0 - 2.0 * t),
+            Self::Ease(e) => e.apply(t),
+            Self::Bezier(b) => b.apply(t),
         }
     }
 }
@@ -656,5 +677,60 @@ mod tests {
         assert_eq!(c.keys.interp_at(20), Some(Interpolation::Step));
         assert!(c.keys.delete_key(20));
         assert!(!c.is_animated());
+    }
+
+    #[test]
+    fn eased_keys_sample_through_their_easing() {
+        let mut ch = Channel::new(0.0f32);
+        ch.set_key(1, 0.0, Interpolation::Ease(Easing::EaseIn));
+        ch.set_key(11, 100.0, Interpolation::Smooth);
+        assert!(
+            ch.sample(6.0) < 50.0,
+            "ease in is behind a straight line at the middle"
+        );
+        assert_eq!(ch.sample(11.0), 100.0);
+        // an overshoot goes past the next key's value on the way
+        ch.set_key(1, 0.0, Interpolation::Ease(Easing::Overshoot));
+        let top = (1..=11).map(|f| ch.sample(f as f32)).fold(f32::MIN, f32::max);
+        assert!(top > 105.0, "{top}");
+        assert_eq!(ch.sample(11.0), 100.0, "and settles on it");
+        // a hand-drawn curve works the same way
+        ch.set_key(1, 0.0, Interpolation::Bezier(Bezier([0, 0, 1000, 1000])));
+        assert!((ch.sample(6.0) - 50.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_colour_cannot_follow_an_overshoot_out_of_range() {
+        let mut ch = Channel::new(Color::BLACK);
+        ch.set_key(
+            1,
+            Color::rgba(0.0, 0.5, 1.0, 1.0),
+            Interpolation::Ease(Easing::Elastic),
+        );
+        ch.set_key(21, Color::rgba(1.0, 1.0, 1.0, 1.0), Interpolation::Smooth);
+        for f in 1..=21 {
+            let c = ch.sample(f as f32);
+            for v in [c.r, c.g, c.b, c.a] {
+                assert!((0.0..=1.0).contains(&v), "frame {f}: {c:?}");
+            }
+        }
+        // inside the range nothing changes: a plain mix is a plain mix
+        let mix = Color::lerp(Color::BLACK, Color::WHITE, 0.25);
+        assert_eq!((mix.r, mix.a), (0.25, 1.0));
+    }
+
+    #[test]
+    fn every_menu_choice_has_a_distinct_label_and_the_custom_curve_is_not_one() {
+        let labels: std::collections::BTreeSet<_> = Interpolation::ALL.iter().map(|i| i.label()).collect();
+        assert_eq!(labels.len(), Interpolation::ALL.len());
+        assert!(
+            !Interpolation::ALL
+                .iter()
+                .any(|i| matches!(i, Interpolation::Bezier(_)))
+        );
+        assert_eq!(
+            Interpolation::Bezier(Bezier([0, 0, 1000, 1000])).label(),
+            "Custom curve"
+        );
     }
 }

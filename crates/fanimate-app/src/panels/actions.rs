@@ -46,6 +46,16 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                 shell.pending.push(action);
             }
         }
+        let can_save = shell.editor.can_run(Action::SavePose);
+        if ui
+            .add_enabled(can_save, egui::Button::new(Action::SavePose.label()))
+            .on_hover_text(
+                "Save the whole rig as it is on this frame. Insert Action Here puts it back on any frame",
+            )
+            .clicked()
+        {
+            shell.pending.push(Action::SavePose);
+        }
         if shell.editor.editing_action().is_some() {
             let done = egui::Button::new(RichText::new("Finish editing").color(p.on_button)).fill(p.button);
             if ui.add(done).clicked() {
@@ -120,9 +130,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                     if !smart {
                         menus::item(ui, shell, Action::InsertAction(i));
                     }
+                    if shell.editor.can_run(Action::MirrorPose(i)) {
+                        menus::item(ui, shell, Action::MirrorPose(i));
+                    }
                     ui.separator();
                     menus::item(ui, shell, Action::DeleteAction(i));
                 });
             }
+            super::controllers::section(ui, shell, layer);
         });
 }

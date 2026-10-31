@@ -35,7 +35,54 @@ pub const FORMAT_NAME: &str = "fnm";
 ///   (`loop_mode`), layers inside groups may be reordered over time (`order`),
 ///   and a project may hold a preview picture (`thumbnail.png`). Older files
 ///   are converted on load: every frame moves up by one.
-pub const FORMAT_VERSION: u32 = 6;
+/// - 7: the manifest may list the features a reader needs (`requires`), and
+///   layers may carry a record of what made their content (`provenance`).
+///   Older files need no conversion: they require nothing and record no
+///   provenance.
+pub const FORMAT_VERSION: u32 = 7;
+
+/// The feature a project needs when a layer carries a `provenance` record. A
+/// reader that dropped the record would hide that a tool made the content.
+pub const FEATURE_PROVENANCE: &str = "provenance@1";
+
+/// The feature a project needs when it has a text layer: older readers have no
+/// text layer kind to draw it with.
+pub const FEATURE_TEXT: &str = "text@1";
+
+/// The feature a project needs when a rig has master controllers: a reader that
+/// ignored them would show the rig unposed.
+pub const FEATURE_CONTROLLERS: &str = "controllers@1";
+
+/// The features this build can read faithfully. A project whose manifest
+/// requires anything else is refused, naming it (see [`required_features`]).
+pub const SUPPORTED_FEATURES: &[&str] = &[FEATURE_PROVENANCE, FEATURE_TEXT, FEATURE_CONTROLLERS];
+
+/// The longest feature name quoted back in an error, so a damaged manifest
+/// cannot flood a message.
+const MAX_FEATURE_NAME_SHOWN: usize = 80;
+
+/// The features `doc` needs from a reader, written to the manifest. Empty for
+/// a project that uses only what every version 7 reader understands.
+pub fn required_features(doc: &Document) -> Vec<String> {
+    let mut features = Vec::new();
+    let (mut provenance, mut text, mut controllers) = (false, false, false);
+    doc.walk(|l| {
+        provenance |= l.provenance.is_some();
+        text |= matches!(l.kind, LayerKind::Text(_));
+        controllers |=
+            matches!(&l.kind, LayerKind::Bone { skeleton, .. } if !skeleton.controllers.is_empty());
+    });
+    if provenance {
+        features.push(FEATURE_PROVENANCE.to_owned());
+    }
+    if text {
+        features.push(FEATURE_TEXT.to_owned());
+    }
+    if controllers {
+        features.push(FEATURE_CONTROLLERS.to_owned());
+    }
+    features
+}
 
 /// The first version whose frames count from 1. Files before it start at
 /// frame 0 and are shifted up by one on load, so they look the same.
@@ -52,6 +99,9 @@ pub(crate) struct Manifest {
     version: u32,
     #[serde(default)]
     generator: String,
+    /// Version 7: the features a reader needs to open the project faithfully.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requires: Vec<String>,
 }
 
 /// `document.json`: everything except the layers themselves.
@@ -174,6 +224,15 @@ fn read_from(base: &Path, files: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> R
             supported: FORMAT_VERSION,
         });
     }
+    if let Some(missing) = manifest
+        .requires
+        .iter()
+        .find(|f| !SUPPORTED_FEATURES.contains(&f.as_str()))
+    {
+        return Err(FnmError::MissingFeature {
+            feature: missing.chars().take(MAX_FEATURE_NAME_SHOWN).collect(),
+        });
+    }
 
     let file: DocumentFile = parse_json(&base.join("document.json"), &json("document.json")?)?;
     let layers = file
@@ -205,6 +264,9 @@ fn read_from(base: &Path, files: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> R
     if manifest.version < ONE_BASED_FRAMES {
         doc.shift_frames(1);
     }
+    // bones get ids of their own (version 7); older files get theirs here, and
+    // the same ones on every load
+    doc.assign_ids();
     // pictures used by image layers; a missing one is reported by the
     // validator and drawn as a grey placeholder, never a failed load
     for name in media_names(&doc) {
@@ -382,7 +444,7 @@ fn project_files(doc: &Document, thumbnail: Option<&[u8]>) -> Result<Vec<(String
     let mut files = vec![
         (
             "manifest.json".to_owned(),
-            json_bytes(Path::new("manifest.json"), &manifest())?,
+            json_bytes(Path::new("manifest.json"), &manifest(doc))?,
         ),
         (
             "document.json".to_owned(),
@@ -447,7 +509,7 @@ fn write_all(doc: &Document, dir: &Path, thumbnail: Option<&[u8]>) -> Result<()>
     let layers_dir = dir.join("layers");
     fs::create_dir_all(&layers_dir).map_err(|e| io_err(&layers_dir, e))?;
 
-    write_json(&dir.join("manifest.json"), &manifest())?;
+    write_json(&dir.join("manifest.json"), &manifest(doc))?;
     write_json(&dir.join("document.json"), &document_file(doc))?;
     for layer in &doc.layers {
         write_json(&dir.join(layer_file(layer)), layer)?;
@@ -466,11 +528,12 @@ pub(crate) fn folder_version(dir: &Path) -> Option<u32> {
     serde_json::from_slice::<Manifest>(&bytes).ok().map(|m| m.version)
 }
 
-pub(crate) fn manifest() -> Manifest {
+pub(crate) fn manifest(doc: &Document) -> Manifest {
     Manifest {
         format: FORMAT_NAME.into(),
         version: FORMAT_VERSION,
         generator: concat!("fanimate ", env!("CARGO_PKG_VERSION")).into(),
+        requires: required_features(doc),
     }
 }
 
@@ -1544,6 +1607,451 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(read_thumbnail(&path), Some(picture));
         assert_eq!(load(&path).unwrap().0, hello);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A project that uses nothing version 7 added writes no `requires`, so its
+    /// manifest is what it was, and a version 6 project opens unchanged.
+    #[test]
+    fn a_version_6_project_opens_unchanged_and_requires_nothing() {
+        let dir = temp_dir("v6");
+        let path = dir.join("old.fnm");
+        let doc = samples::hello();
+        save_folder(&doc, &path).unwrap();
+        let manifest = fs::read_to_string(path.join("manifest.json")).unwrap();
+        assert!(!manifest.contains("requires"), "{manifest}");
+        let layers = fs::read_to_string(path.join("layers").join("0002.json"))
+            .or_else(|_| fs::read_to_string(path.join("layers").join("0001.json")))
+            .unwrap();
+        assert!(!layers.contains("provenance"), "{layers}");
+        fs::write(path.join("manifest.json"), r#"{"format":"fnm","version":6}"#).unwrap();
+        let (loaded, report) = load(&path).unwrap();
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(loaded, doc, "frames are already counted from 1 in version 6");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn provenance_round_trips_and_the_manifest_requires_it() {
+        let dir = temp_dir("provenance");
+        let mut doc = samples::hello();
+        let mut record = fanimate_core::Provenance::new("line-clean-up");
+        record.model = "clean-lines".into();
+        record.version = "1.2".into();
+        record.date = "2026-10-30".into();
+        doc.layers[0].provenance = Some(record.clone());
+        assert_eq!(required_features(&doc), [FEATURE_PROVENANCE]);
+
+        for name in ["folder.fnm", "file.fnm"] {
+            let path = dir.join(name);
+            if name == "folder.fnm" {
+                save_folder(&doc, &path).unwrap();
+                let manifest = fs::read_to_string(path.join("manifest.json")).unwrap();
+                assert!(manifest.contains("provenance@1"), "{manifest}");
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{name}: {report}");
+            assert_eq!(loaded, doc, "{name}");
+            assert_eq!(loaded.layers[0].provenance.as_ref(), Some(&record));
+            assert!(loaded.layers[1..].iter().all(|l| l.provenance.is_none()));
+        }
+        // provenance on a layer inside a group still counts
+        let mut grouped = samples::hello();
+        let child = grouped.new_layer("child", LayerKind::vector(vec![]));
+        let mut group = grouped.new_layer(
+            "group",
+            LayerKind::Group {
+                children: vec![child],
+            },
+        );
+        if let LayerKind::Group { children } = &mut group.kind {
+            children[0].provenance = Some(fanimate_core::Provenance::new("auto-rig"));
+        }
+        grouped.layers.push(group);
+        assert_eq!(required_features(&grouped), [FEATURE_PROVENANCE]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A project that needs something this build lacks is refused with its
+    /// name, not opened with that part missing; every way in checks it.
+    #[test]
+    fn a_project_that_needs_an_unknown_feature_is_refused_naming_it() {
+        let dir = temp_dir("requires");
+        let path = dir.join("p.fnm");
+        save_folder(&samples::hello(), &path).unwrap();
+        let manifest = r#"{"format":"fnm","version":7,"requires":["provenance@1","text@1","raster@1"]}"#;
+        fs::write(path.join("manifest.json"), manifest).unwrap();
+        match load(&path) {
+            Err(FnmError::MissingFeature { feature }) => assert_eq!(feature, "raster@1"),
+            other => panic!("expected a missing feature, got {other:?}"),
+        }
+        let read = |rel: &str| fs::read(path.join(rel));
+        assert!(matches!(
+            load_from("p.fnm", &read),
+            Err(FnmError::MissingFeature { .. })
+        ));
+        let message = load(&path).unwrap_err().to_string();
+        assert!(
+            message.contains("raster@1") && message.contains("newer Fanimate"),
+            "{message}"
+        );
+
+        // features this build knows are fine, and an empty list needs nothing
+        for ok in [r#"["provenance@1"]"#, "[]"] {
+            fs::write(
+                path.join("manifest.json"),
+                format!(r#"{{"format":"fnm","version":7,"requires":{ok}}}"#),
+            )
+            .unwrap();
+            assert!(load(&path).is_ok(), "{ok}");
+        }
+        // a damaged manifest cannot flood the message
+        let long = "x".repeat(10_000);
+        fs::write(
+            path.join("manifest.json"),
+            format!(r#"{{"format":"fnm","version":7,"requires":["{long}"]}}"#),
+        )
+        .unwrap();
+        let message = load(&path).unwrap_err().to_string();
+        assert!(message.len() < 300, "{}", message.len());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_provenance_record_is_reported_and_repaired() {
+        let dir = temp_dir("provenance-damaged");
+        let path = dir.join("p.fnm");
+        let mut doc = samples::hello();
+        doc.layers[0].provenance = Some(fanimate_core::Provenance {
+            tool: String::new(),
+            model: "m".repeat(fanimate_core::MAX_PROVENANCE_TEXT + 10),
+            version: String::new(),
+            date: "soon".into(),
+        });
+        save_folder(&doc, &path).unwrap();
+        // reported, not repaired
+        let (loaded, report) = load(&path).unwrap();
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| !i.repaired && i.message.contains("record of what made")),
+            "{report}"
+        );
+        assert!(!loaded.layers[0].provenance.as_ref().unwrap().is_sound());
+        // repaired: still recorded, now usable
+        let (repaired, report) = load_and_repair(&path).unwrap();
+        assert!(report.repaired_count() >= 1, "{report}");
+        let record = repaired.layers[0].provenance.as_ref().unwrap();
+        assert!(record.is_sound());
+        assert_eq!(record.tool, "unknown");
+        assert!(validate::validate(&repaired).is_clean());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A project written before bones had ids opens with ids given in list
+    /// order, the same ones every time, and they match what a new project
+    /// gives its bones.
+    #[test]
+    fn bones_in_older_files_get_ids_on_load_and_keep_them() {
+        let dir = temp_dir("bone-ids");
+        let path = dir.join("old.fnm");
+        let doc = samples::benchmark(6);
+        save_folder(&doc, &path).unwrap();
+        let mut stripped = 0;
+        for entry in fs::read_dir(path.join("layers")).unwrap() {
+            let file = entry.unwrap().path();
+            let mut json: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            let Some(skeleton) = json.get_mut("skeleton") else {
+                continue;
+            };
+            skeleton.as_object_mut().unwrap().remove("next_bone_id");
+            for bone in skeleton["bones"].as_array_mut().unwrap() {
+                bone.as_object_mut().unwrap().remove("id");
+                stripped += 1;
+            }
+            fs::write(&file, serde_json::to_vec(&json).unwrap()).unwrap();
+        }
+        assert!(stripped >= 6, "the benchmark has a bone layer");
+        fs::write(path.join("manifest.json"), r#"{"format":"fnm","version":6}"#).unwrap();
+
+        let (loaded, report) = load(&path).unwrap();
+        assert!(report.is_clean(), "giving ids to old files is silent: {report}");
+        assert_eq!(loaded, doc, "ids come out as a new project's would");
+        let (again, _) = load(&path).unwrap();
+        assert_eq!(again, loaded, "the same ids on every load");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bones_that_share_an_id_are_reported_and_given_new_ones() {
+        let mut doc = samples::benchmark(4);
+        doc.walk_mut(|l| {
+            if let LayerKind::Bone { skeleton, .. } = &mut l.kind {
+                skeleton.bones[2].id = skeleton.bones[1].id;
+            }
+        });
+        let report = validate::validate(&doc);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| !i.repaired && i.message.contains("share an id")),
+            "{report}"
+        );
+        let report = validate::repair(&mut doc);
+        assert!(report.repaired_count() >= 1, "{report}");
+        assert!(validate::validate(&doc).is_clean());
+        doc.walk(|l| {
+            if let LayerKind::Bone { skeleton, .. } = &l.kind {
+                assert!(skeleton.ids_are_sound());
+            }
+        });
+    }
+
+    #[test]
+    fn eased_and_curved_keys_round_trip_and_a_bad_curve_is_repaired() {
+        use fanimate_core::{Bezier, Easing, Interpolation};
+        let dir = temp_dir("easing");
+        let path = dir.join("e.fnm");
+        let mut doc = samples::hello();
+        let ch = &mut doc.layers[0].opacity;
+        ch.set_key(1, 1.0, Interpolation::Ease(Easing::Bounce));
+        ch.set_key(10, 0.5, Interpolation::Bezier(Bezier([250, 100, 750, 1400])));
+        ch.set_key(20, 1.0, Interpolation::Smooth);
+        save(&doc, &path).unwrap();
+        let (loaded, report) = load(&path).unwrap();
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(loaded, doc);
+        let text = serde_json::to_string(&loaded.layers[0].opacity).unwrap();
+        assert!(
+            text.contains(r#""interp":{"ease":"bounce"}"#)
+                && text.contains(r#"{"bezier":[250,100,750,1400]}"#),
+            "{text}"
+        );
+
+        // a curve whose control points are out of range is reported, and repaired
+        let mut bad = doc.clone();
+        bad.layers[0]
+            .opacity
+            .set_key(10, 0.5, Interpolation::Bezier(Bezier([-50, 100, 5000, 9999])));
+        let report = validate::validate(&bad);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| !i.repaired && i.message.contains("curve outside the allowed range")),
+            "{report}"
+        );
+        let report = validate::repair(&mut bad);
+        assert!(report.repaired_count() >= 1, "{report}");
+        assert!(validate::validate(&bad).is_clean());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn doc_with_text() -> Document {
+        use fanimate_core::{Animator, Channel, Interpolation, Text, TextUnit};
+        let mut doc = samples::hello();
+        let mut text = Text::new("Hello, world");
+        text.look_mut().size = 90.0;
+        text.look_mut().weight = 700.0;
+        text.look_mut().fill = Color::rgba(1.0, 0.8, 0.2, 1.0);
+        let mut rise = Animator::new("Rise", TextUnit::Word);
+        rise.position.base = fanimate_core::Vec2::new(0.0, 40.0);
+        rise.opacity.base = 0.0;
+        rise.selector.end.set_key(1, 0.0, Interpolation::Linear);
+        rise.selector.end.set_key(24, 100.0, Interpolation::Smooth);
+        rise.fill = Some(Channel::new(Color::WHITE));
+        text.animators.push(rise);
+        let layer = doc.new_layer("Title", LayerKind::Text(text));
+        doc.layers.push(layer);
+        doc
+    }
+
+    #[test]
+    fn a_text_layer_round_trips_and_the_manifest_requires_text() {
+        let dir = temp_dir("text");
+        let doc = doc_with_text();
+        assert_eq!(required_features(&doc), [FEATURE_TEXT]);
+        for name in ["folder.fnm", "file.fnm"] {
+            let path = dir.join(name);
+            if name == "folder.fnm" {
+                save_folder(&doc, &path).unwrap();
+                let manifest = fs::read_to_string(path.join("manifest.json")).unwrap();
+                assert!(manifest.contains("text@1"), "{manifest}");
+                let layer = fs::read_to_string(path.join("layers").join("0007.json"))
+                    .or_else(|_| {
+                        let last = doc.layers.last().unwrap().id.0;
+                        fs::read_to_string(path.join("layers").join(format!("{last:04}.json")))
+                    })
+                    .unwrap();
+                assert!(
+                    layer.contains("\"type\": \"text\"") && layer.contains("Hello, world"),
+                    "{layer}"
+                );
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{name}: {report}");
+            assert_eq!(loaded, doc, "{name}");
+            // the loaded text draws the same
+            let a = evaluate(&doc, 12.0);
+            let b = evaluate(&loaded, 12.0);
+            assert_eq!(a.len(), b.len());
+            assert!(
+                a.iter()
+                    .zip(&b)
+                    .all(|(x, y)| x.transform == y.transform && x.opacity == y.opacity)
+            );
+        }
+        // both features together
+        let mut both = doc.clone();
+        both.layers[0].provenance = Some(fanimate_core::Provenance::new("title-maker"));
+        assert_eq!(required_features(&both), [FEATURE_PROVENANCE, FEATURE_TEXT]);
+        // text inside a group still counts
+        let mut grouped = samples::hello();
+        let inner = grouped.new_layer("t", LayerKind::Text(fanimate_core::Text::new("x")));
+        let group = grouped.new_layer(
+            "g",
+            LayerKind::Group {
+                children: vec![inner],
+            },
+        );
+        grouped.layers.push(group);
+        assert_eq!(required_features(&grouped), [FEATURE_TEXT]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn text_with_settings_out_of_range_is_reported_and_repaired_and_a_missing_font_is_noticed() {
+        use fanimate_core::{Animator, TextUnit};
+        let mut doc = doc_with_text();
+        fn wild(doc: &mut Document) -> &mut fanimate_core::Text {
+            match &mut doc.layers.last_mut().unwrap().kind {
+                LayerKind::Text(t) => t,
+                _ => unreachable!(),
+            }
+        }
+        {
+            let t = wild(&mut doc);
+            t.look_mut().size = f32::NAN;
+            t.look_mut().weight = -5.0;
+            t.look_mut().width = Some(-1.0);
+            t.animators[0].position.base = fanimate_core::Vec2::new(f32::NAN, 0.0);
+            t.animators[0].selector.end.keys.push(fanimate_core::Key {
+                frame: -4,
+                value: 1.0,
+                interp: fanimate_core::Interpolation::Linear,
+            });
+            for _ in 0..70 {
+                t.animators.push(Animator::new("many", TextUnit::Line));
+            }
+        }
+        let report = validate::validate(&doc);
+        let text = report.to_string();
+        for expected in [
+            "outside what is allowed",
+            "animators; only the first 64",
+            "not a finite number",
+            "negative frames",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        let report = validate::repair(&mut doc);
+        assert!(report.repaired_count() >= 4, "{report}");
+        assert!(
+            validate::validate(&doc).is_clean(),
+            "{}",
+            validate::validate(&doc)
+        );
+        assert!(wild(&mut doc).look().is_sound());
+        assert_eq!(wild(&mut doc).animators.len(), 64);
+        // the repaired text still draws
+        assert!(!evaluate(&doc, 1.0).is_empty());
+
+        // a family Fanimate does not have is a warning that cannot be repaired
+        let mut odd = doc_with_text();
+        wild(&mut odd).look_mut().family = "Papyrus".into();
+        let report = validate::repair(&mut odd);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| !i.repaired && i.message.contains("Papyrus") && i.message.contains("Inter")),
+            "{report}"
+        );
+        assert_eq!(
+            wild(&mut odd).look().family,
+            "Papyrus",
+            "the name is kept for a machine that has the font"
+        );
+    }
+
+    fn rig_with_controllers() -> Document {
+        use fanimate_core::actions::{Controller, ControllerAxis, ControllerKind, ControllerLink, RigAction};
+        use fanimate_core::{Channel, Interpolation, Skeleton, Vec2};
+        let mut doc = samples::hello();
+        let mut skeleton = Skeleton::default();
+        let jaw = skeleton.add("jaw", None, Vec2::ZERO, 20.0, 0.0);
+        let mut open = RigAction::new("open", None, 10);
+        open.bones.push(fanimate_core::actions::BoneKeys {
+            bone: jaw,
+            angle: Channel::new(0.0)
+                .with_key(0, 0.0, Interpolation::Linear)
+                .with_key(10, 0.8, Interpolation::Linear),
+        });
+        skeleton.actions.push(open);
+        let mut pad = Controller::new("Mouth", ControllerKind::Pad);
+        pad.x = Channel::new(0.3)
+            .with_key(1, 0.0, Interpolation::Linear)
+            .with_key(20, 1.0, Interpolation::Smooth);
+        pad.links.push(ControllerLink {
+            action: 0,
+            axis: ControllerAxis::X,
+            from: 0.2,
+            to: 0.8,
+        });
+        skeleton.controllers.push(pad);
+        let layer = doc.new_layer(
+            "Rig",
+            LayerKind::Bone {
+                skeleton,
+                children: vec![],
+            },
+        );
+        doc.layers.push(layer);
+        doc
+    }
+
+    #[test]
+    fn a_rig_with_controllers_round_trips_and_the_manifest_requires_controllers() {
+        let dir = temp_dir("controllers");
+        let doc = rig_with_controllers();
+        assert_eq!(required_features(&doc), [FEATURE_CONTROLLERS]);
+        for name in ["folder.fnm", "file.fnm"] {
+            let path = dir.join(name);
+            if name == "folder.fnm" {
+                save_folder(&doc, &path).unwrap();
+                let manifest = fs::read_to_string(path.join("manifest.json")).unwrap();
+                assert!(manifest.contains("controllers@1"), "{manifest}");
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{name}: {report}");
+            assert_eq!(loaded, doc, "{name}");
+        }
+        // a rig without them needs nothing
+        let mut plain = doc.clone();
+        if let LayerKind::Bone { skeleton, .. } = &mut plain.layers.last_mut().unwrap().kind {
+            skeleton.controllers.clear();
+        }
+        assert!(required_features(&plain).is_empty());
+        // this build reads the feature it writes
+        assert!(SUPPORTED_FEATURES.contains(&FEATURE_CONTROLLERS));
         fs::remove_dir_all(dir).unwrap();
     }
 }
