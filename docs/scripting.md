@@ -65,6 +65,7 @@ A request without an `id` is a notification: it runs and nothing is answered. A 
 | `controllers` | `layer`, optional `frame` | The bone layer's master controllers: `index`, `name`, `kind` (`slider`, `pad`), `x`, `y` (0 to 1 on that frame), `links` |
 | `add_controller` | `layer`, `name`, `kind` (`slider` or `pad`) | The controller's index |
 | `rename_controller` | `layer`, `index`, `name` | |
+| `retarget_action` | `from`, `action`, `to` | Copies an action of bone layer `from` onto bone layer `to` by bone names (case, spaces, dots and underscores do not matter), keeping each bone's turn from its own rest angle; bones with no match and shapes' point keys are left out; returns the new action's index in `to` |
 | `curves` | `layer` | The layer's keyed curves, what the graph editor draws: `channel` (`position`, `rotation`, `scale`, `opacity`, `order`, `bone:<id>`), `component` (0, or 0 and 1 for x and y), and `keys` of `frame`, `value` (degrees for angles, percent for opacity) and `interp` (as the file writes it) |
 | `move_key` | `layer`, `channel`, `component`, `frame`, `to_frame`, `value` | Moves the key on `frame` to `to_frame` and sets that curve's value there; the key stays between its neighbours; returns the frame it landed on |
 | `set_key_interpolation` | `layer`, `channel`, `frame`, `interp` | `"smooth"`, `"linear"`, `"step"`, `{"ease": "bounce"}` or `{"bezier": [x1, y1, x2, y2]}` in thousandths; returns whether it changed |

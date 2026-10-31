@@ -614,6 +614,7 @@ impl Editor {
             MirrorPose(i) => {
                 self.mirror_pose_action(i);
             }
+            RetargetAction(i, to) => self.retarget_action_command(i, LayerId(to)),
             DeleteAction(i) => {
                 self.delete_action(i);
             }
@@ -791,6 +792,12 @@ impl Editor {
                         .controllers(l)
                         .get(c)
                         .is_some_and(|k| k.links.iter().any(|x| x.action == a))
+            }),
+            RetargetAction(i, to) => self.actions_layer().is_some_and(|l| {
+                !self.playing
+                    && self.editing_action().is_none()
+                    && i < self.rig_actions(l).len()
+                    && self.other_bone_layers(l).iter().any(|(id, _)| id.0 == to)
             }),
             MirrorPose(i) => self.actions_layer().is_some_and(|l| {
                 self.editing_action().is_none()

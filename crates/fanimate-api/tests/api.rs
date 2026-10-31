@@ -1495,3 +1495,35 @@ fn key_edits_that_cannot_be_made_are_refused_and_undo_brings_a_move_back() {
         "undo put the key's value back"
     );
 }
+
+#[test]
+fn an_action_is_retargeted_to_another_rig_through_the_api() {
+    let mut ed = fresh();
+    let mut api = Api::new(&mut ed);
+    let tall = api.add_bone_layer("Tall").unwrap();
+    let t_body = api.add_bone(tall, "body", None, 0.0, 0.0, 80.0).unwrap();
+    let t_arm = api.add_bone(tall, "arm L", Some(t_body), 0.0, 0.0, 50.0).unwrap();
+    api.set_bone_angle(tall, t_arm, 60.0, Some(10)).unwrap();
+    let small = api.add_bone_layer("Small").unwrap();
+    let s_body = api.add_bone(small, "Body", None, 0.0, 0.0, 40.0).unwrap();
+    api.add_bone(small, "Arm_L", Some(s_body), 0.0, 0.0, 25.0)
+        .unwrap();
+    let pose = api.save_pose(tall, Some("Reach"), Some(10)).unwrap();
+    assert_eq!(api.retarget_action(tall, pose, small).unwrap(), 0);
+    let actions = api.actions(small).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].name, "Reach");
+    for (from, action, to) in [
+        (tall, pose, tall),
+        (tall, 9, small),
+        (tall, pose, 9999),
+        (9999, pose, small),
+    ] {
+        assert!(
+            api.retarget_action(from, action, to).is_err(),
+            "{from} {action} {to}"
+        );
+    }
+    assert!(api.undo().unwrap());
+    assert!(api.actions(small).unwrap().is_empty());
+}

@@ -1349,6 +1349,20 @@ impl<'a> Api<'a> {
         })
     }
 
+    /// Copy action `action` of bone layer `from` onto bone layer `to` by bone
+    /// names (case, spaces, dots and underscores do not matter), keeping each
+    /// bone's turn from its own rest angle. Returns the new action's index in
+    /// `to`. Bones with no match and shapes' point keys are left out.
+    pub fn retarget_action(&mut self, from: u32, action: usize, to: u32) -> Result<usize, ApiError> {
+        self.skeleton(from)?;
+        self.skeleton(to)?;
+        self.edit("Copy action to rig", |ed| {
+            ed.retarget_action_to(LayerId(from), action, LayerId(to))
+                .map(|(index, _)| index)
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
     /// Rename a master controller (1 to 200 characters).
     pub fn rename_controller(&mut self, layer: u32, index: usize, name: &str) -> Result<(), ApiError> {
         let name = check_name(name, "a controller")?;

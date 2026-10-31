@@ -156,6 +156,7 @@ pub fn add_controller(&mut self, layer: u32, name: &str, kind: &str) -> Result<u
 pub fn curves(&self, layer: u32) -> Result<Vec<CurveInfo>, ApiError> {
 pub fn move_key( &mut self, layer: u32, channel: &str, component: usize, frame: i32, to_frame: i32, value: f32, ) -> Result<i32, ApiError> {
 pub fn set_key_interpolation( &mut self, layer: u32, channel: &str, frame: i32, interp: serde_json::Value, ) -> Result<bool, ApiError> {
+pub fn retarget_action(&mut self, from: u32, action: usize, to: u32) -> Result<usize, ApiError> {
 pub fn rename_controller(&mut self, layer: u32, index: usize, name: &str) -> Result<(), ApiError> {
 pub fn remove_controller(&mut self, layer: u32, index: usize) -> Result<(), ApiError> {
 pub fn link_controller( &mut self, layer: u32, controller: usize, action: usize, axis: &str, from: f32, to: f32, ) -> Result<(), ApiError> {

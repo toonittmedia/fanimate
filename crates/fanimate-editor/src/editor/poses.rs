@@ -4,6 +4,7 @@
 
 use fanimate_core::actions::RigAction;
 use fanimate_core::poses;
+use fanimate_core::retarget;
 use fanimate_core::{LayerId, LayerKind};
 
 use super::{Editor, StatusKind};
@@ -119,6 +120,104 @@ impl Editor {
         };
         skeleton.actions.insert(index + 1, new);
         Ok((index + 1, note))
+    }
+}
+
+impl Editor {
+    /// The bone layers of the document with their names, other than `except`:
+    /// where an action can be copied to.
+    pub fn other_bone_layers(&self, except: LayerId) -> Vec<(LayerId, String)> {
+        let mut out = Vec::new();
+        self.doc.walk(|l| {
+            if l.id != except && matches!(l.kind, LayerKind::Bone { .. }) {
+                out.push((l.id, l.name.clone()));
+            }
+        });
+        out
+    }
+
+    /// Copy action `index` of rig `from` onto rig `to` by bone names, keeping
+    /// each bone's turn from its own rest angle (see `fanimate_core::retarget`).
+    /// One undo step. Returns the new action's index in `to` and a note about
+    /// what was left out (empty when nothing was).
+    pub fn retarget_action_to(
+        &mut self,
+        from: LayerId,
+        index: usize,
+        to: LayerId,
+    ) -> Result<(usize, String), String> {
+        if self.editing_blocked() {
+            return Err("Pause the animation to copy an action.".to_owned());
+        }
+        if self.editing_action().is_some() {
+            return Err("Finish editing the action first.".to_owned());
+        }
+        if from == to {
+            return Err("Choose another rig: an action already plays on its own.".to_owned());
+        }
+        let skeleton_of = |ed: &Self, id: LayerId| match ed.doc.find(id).map(|l| &l.kind) {
+            Some(LayerKind::Bone { skeleton, .. }) => Some(skeleton.clone()),
+            _ => None,
+        };
+        let (Some(src), Some(dst)) = (skeleton_of(self, from), skeleton_of(self, to)) else {
+            return Err("That is not a bone layer.".to_owned());
+        };
+        let Some(action) = src.actions.get(index) else {
+            return Err("There is no such action.".to_owned());
+        };
+        if dst.actions.len() >= MAX_ACTIONS {
+            return Err(format!("A rig has at most {MAX_ACTIONS} actions and poses."));
+        }
+        let made = retarget::retarget(&src, action, &dst)?;
+        let taken: Vec<&str> = dst.actions.iter().map(|a| a.name.as_str()).collect();
+        let mut new = made.action;
+        new.name = unique_name(&new.name, &taken);
+        let mut notes = Vec::new();
+        if !made.unmatched.is_empty() {
+            notes.push(format!(
+                "{} bone(s) had no match ({})",
+                made.unmatched.len(),
+                made.unmatched.join(", ")
+            ));
+        }
+        if made.shapes_dropped > 0 {
+            notes.push(format!(
+                "{} shape(s) with point keys were left out",
+                made.shapes_dropped
+            ));
+        }
+        self.checkpoint("Copy action to rig");
+        let Some(LayerKind::Bone { skeleton, .. }) = self.doc.find_mut(to).map(|l| &mut l.kind) else {
+            return Err("That is not a bone layer.".to_owned());
+        };
+        skeleton.actions.push(new);
+        let note = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", notes.join("; "))
+        };
+        Ok((skeleton.actions.len() - 1, note))
+    }
+
+    /// Copy to Rig in the Actions panel's menu.
+    pub(super) fn retarget_action_command(&mut self, index: usize, to: LayerId) {
+        let Some(from) = self.actions_layer() else {
+            return;
+        };
+        match self.retarget_action_to(from, index, to) {
+            Ok((new, note)) => {
+                let name = self
+                    .rig_actions(to)
+                    .get(new)
+                    .map_or(String::new(), |a| a.name.clone());
+                let rig = self.doc.find(to).map_or(String::new(), |l| l.name.clone());
+                self.set_status(
+                    StatusKind::Success,
+                    format!("Copied to \"{rig}\" as \"{name}\"{note}"),
+                );
+            }
+            Err(e) => self.set_status(StatusKind::Info, e),
+        }
     }
 }
 
@@ -281,5 +380,79 @@ mod tests {
         ed.save_pose_named(id, "Flap").unwrap();
         let (_, note) = ed.mirror_pose_at(id, 0).unwrap();
         assert!(note.contains("no partner"), "{note}");
+    }
+
+    /// A second bone layer with the same bones named another way and another rest pose.
+    fn second_rig(ed: &mut Editor) -> LayerId {
+        let mut skeleton = Skeleton::default();
+        let spine = skeleton.add("Spine", None, Vec2::ZERO, 40.0, 0.0);
+        skeleton.add("Arm_L", Some(spine), Vec2::ZERO, 30.0, -0.5);
+        skeleton.add("tail", Some(spine), Vec2::ZERO, 30.0, 0.0);
+        let layer = ed.doc.new_layer(
+            "Small rig",
+            LayerKind::Bone {
+                skeleton,
+                children: vec![],
+            },
+        );
+        let id = layer.id;
+        ed.doc.layers.push(layer);
+        id
+    }
+
+    #[test]
+    fn an_action_is_copied_to_another_rig_by_bone_names_in_one_undo_step() {
+        let (mut ed, tall) = rig();
+        ed.go_to(13);
+        ed.save_pose_named(tall, "Reach").unwrap();
+        let small = second_rig(&mut ed);
+        assert_eq!(ed.other_bone_layers(tall), [(small, "Small rig".to_owned())]);
+        assert!(ed.other_bone_layers(small).iter().all(|(id, _)| *id == tall));
+        let before = ed.revision();
+        assert!(ed.can_run(Action::RetargetAction(0, small.0)));
+        ed.run(Action::RetargetAction(0, small.0));
+        assert_eq!(ed.revision(), before + 1);
+        let copied = &ed.rig_actions(small)[0];
+        assert_eq!(copied.name, "Reach");
+        // the arm turned 1.2 from a rest of 0 on the tall rig: 1.2 from -0.5 on this one
+        assert_eq!(
+            copied.bones.len(),
+            2,
+            "the spine and the arm; arm R has no partner"
+        );
+        let arm = copied.bones.iter().find(|b| b.bone == 1).unwrap();
+        assert!(
+            (arm.angle.keys[0].value - 0.7).abs() < 1e-5,
+            "{:?}",
+            arm.angle.keys
+        );
+        // the original is untouched, a second copy gets its own name
+        assert_eq!(ed.rig_actions(tall).len(), 1);
+        ed.run(Action::RetargetAction(0, small.0));
+        assert_eq!(ed.rig_actions(small)[1].name, "Reach 1");
+        ed.run(Action::Undo);
+        ed.run(Action::Undo);
+        assert!(ed.rig_actions(small).is_empty(), "each copy was one step");
+    }
+
+    #[test]
+    fn copies_that_cannot_be_made_are_refused_and_change_nothing() {
+        let (mut ed, tall) = rig();
+        ed.save_pose_named(tall, "Pose").unwrap();
+        let small = second_rig(&mut ed);
+        let before = ed.doc.clone();
+        assert!(ed.retarget_action_to(tall, 0, tall).is_err(), "not onto itself");
+        assert!(ed.retarget_action_to(tall, 5, small).is_err(), "no such action");
+        assert!(
+            ed.retarget_action_to(tall, 0, LayerId(999)).is_err(),
+            "no such rig"
+        );
+        assert!(!ed.can_run(Action::RetargetAction(0, tall.0)), "the rig it is on");
+        assert!(!ed.can_run(Action::RetargetAction(3, small.0)));
+        assert!(!ed.can_run(Action::RetargetAction(0, 999)));
+        ed.playing = true;
+        assert!(!ed.can_run(Action::RetargetAction(0, small.0)));
+        assert!(ed.retarget_action_to(tall, 0, small).is_err());
+        assert_eq!(ed.doc, before);
     }
 }

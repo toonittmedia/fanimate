@@ -76,6 +76,12 @@ pub fn item_checked(ui: &mut egui::Ui, shell: &mut Shell, action: Action, checke
             }
         }
         Action::UnlinkController(_, i) => rig_action_name(shell, i),
+        // the submenu already says "Copy to Rig": list the rigs by name
+        Action::RetargetAction(_, to) => shell
+            .editor
+            .doc
+            .find(fanimate_core::LayerId(to))
+            .map_or_else(|| action.label().to_owned(), |l| l.name.clone()),
         a => a.label().to_owned(),
     };
     // the gap applies on both sides of the stretch before the shortcut, so

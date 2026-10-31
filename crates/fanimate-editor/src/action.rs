@@ -158,6 +158,8 @@ pub enum Action {
     InsertAction(usize),
     /// Make the mirror image of pose n, left for right, as a new pose.
     MirrorPose(usize),
+    /// Copy action n to another bone layer (by layer id), matching bones by name.
+    RetargetAction(usize, u32),
     DeleteAction(usize),
     /// Add a slider or a pad to the bone layer's master controllers.
     NewController(fanimate_core::actions::ControllerKind),
@@ -295,6 +297,7 @@ impl Action {
                 | FinishAction
                 | InsertAction(_)
                 | MirrorPose(_)
+                | RetargetAction(..)
                 | DeleteAction(_)
                 | NewController(_)
                 | DeleteController(_)
@@ -434,6 +437,7 @@ impl Action {
             FinishAction => "Finish Editing Action",
             InsertAction(_) => "Insert Action Here",
             MirrorPose(_) => "Mirror Pose",
+            RetargetAction(..) => "Copy to Rig",
             DeleteAction(_) => "Delete Action",
             NewController(fanimate_core::actions::ControllerKind::Slider) => "New Slider",
             NewController(fanimate_core::actions::ControllerKind::Pad) => "New Pad",
@@ -542,6 +546,7 @@ impl Action {
             | FinishAction
             | InsertAction(_)
             | MirrorPose(_)
+            | RetargetAction(..)
             | NewController(_)
             | DeleteController(_)
             | LinkController(..)

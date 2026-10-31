@@ -133,6 +133,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                     if shell.editor.can_run(Action::MirrorPose(i)) {
                         menus::item(ui, shell, Action::MirrorPose(i));
                     }
+                    let rigs = shell.editor.other_bone_layers(layer);
+                    if !rigs.is_empty() {
+                        ui.menu_button("Copy to Rig", |ui| {
+                            ui.set_min_width(menus::MENU_MIN_WIDTH);
+                            for (id, _) in &rigs {
+                                menus::item(ui, shell, Action::RetargetAction(i, id.0));
+                            }
+                        });
+                    }
                     ui.separator();
                     menus::item(ui, shell, Action::DeleteAction(i));
                 });

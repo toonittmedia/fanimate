@@ -137,6 +137,11 @@ pub const METHODS: &[Method] = &[
         "Change how the curve leaves a key; returns whether it changed",
     ),
     edit(
+        "retarget_action",
+        "from: number (bone layer), action: number, to: number (bone layer)",
+        "Copy an action to another rig by bone names, keeping each bone's turn from its rest angle; returns the new action's index",
+    ),
+    edit(
         "rename_controller",
         "layer: number, index: number, name: string",
         "Rename a master controller",
@@ -364,6 +369,11 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             &param::<String>(params, "channel")?,
             param(params, "frame")?,
             param(params, "interp")?,
+        )?),
+        "retarget_action" => json_of(api.retarget_action(
+            param(params, "from")?,
+            param(params, "action")?,
+            param(params, "to")?,
         )?),
         "rename_controller" => {
             api.rename_controller(

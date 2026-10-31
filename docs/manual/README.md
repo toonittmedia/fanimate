@@ -41,6 +41,8 @@ This is the outline of the manual, with the essentials of each chapter. Chapters
 - **Controllers** (Actions panel, New Slider or New Pad) are one control for a whole movement: right-click one and choose Play Action for each action it should play. Dragging a slider from 0 to 1 plays the action from its first frame to its last, and a pad has two values (across and down). Like any value, a controller is keyed on frames after the rest pose.
 - The rig health check in Properties lists bones that move nothing and Smart Bones that need attention.
 
+To use an action on a different rig, right-click it in the Actions panel and choose **Copy to Rig**. Bones are paired by name ("arm L", "Arm_L" and "arm.l" are the same bone) and each one's turn away from its own rest angle is kept, so a walk made on a tall character plays on a short one. Bones the other rig has no match for are left out, and the status bar says how many.
+
 ## 6. Frame-by-frame and lip sync
 
 - Frame-by-frame layers hold one drawing per exposure, with rough, colour, line and overlay parts. **New Drawing** (F7) copies the drawing on show.
