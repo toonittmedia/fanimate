@@ -1,4 +1,4 @@
-//! Importing pictures (PNG, JPEG) and Photoshop files.
+//! Importing pictures (PNG, JPEG), Photoshop files and OpenRaster files.
 //!
 //! A Photoshop file comes in as a group named after it, holding one image
 //! layer per Photoshop layer where it was, and groups for its groups, so a
@@ -139,6 +139,83 @@ impl Editor {
             format!("Imported {placed} layers from {}", file_name(name)),
         );
         Ok(id)
+    }
+
+    /// Import an OpenRaster file (`.ora`, saved by Krita, MyPaint, GIMP and
+    /// others) as a group of image layers, groups kept, each layer where it
+    /// was with its opacity and visibility. One undo step. What Fanimate
+    /// cannot show (blend modes other than normal, layers that could not be
+    /// read) is counted in the status message.
+    pub fn import_ora(&mut self, name: &str, bytes: &[u8]) -> Result<LayerId, String> {
+        let ora = fanimate_import::ora::parse(bytes)?;
+        self.checkpoint("Import OpenRaster file");
+        let mut root = labelled(
+            self.doc
+                .new_layer(stem(name), LayerKind::Group { children: vec![] }),
+        );
+        let children = self.ora_layers(&ora.nodes);
+        if let Some(c) = root.kind.children_mut() {
+            *c = children;
+        }
+        // the picture's canvas, placed at the centre of ours
+        root.transform.position.base =
+            (self.doc.size() - Vec2::new(ora.width as f32, ora.height as f32)) / 2.0;
+        let id = root.id;
+        self.place_imported(root);
+        let mut message = format!("Imported {} layers from {}", ora.layers, file_name(name));
+        let notes = ora.notes.phrases();
+        if !notes.is_empty() {
+            message = format!("{message} ({})", notes.join(", "));
+        }
+        self.set_status(
+            if notes.is_empty() {
+                StatusKind::Success
+            } else {
+                StatusKind::Info
+            },
+            message,
+        );
+        Ok(id)
+    }
+
+    /// Fanimate layers for `nodes` (bottom first, the order Fanimate draws in).
+    fn ora_layers(&mut self, nodes: &[fanimate_import::ora::OraNode]) -> Vec<Layer> {
+        use fanimate_import::ora::OraNode;
+        let mut out = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            match node {
+                OraNode::Layer(l) => {
+                    let media = self.store_media(l.png.clone(), "png");
+                    let mut layer = labelled(self.doc.new_layer(
+                        l.name.clone(),
+                        LayerKind::Image(Image::new(media, l.width as f32, l.height as f32)),
+                    ));
+                    layer.visible = l.visible;
+                    layer.opacity.base = l.opacity;
+                    layer.transform.position.base = Vec2::new(l.x as f32, l.y as f32);
+                    out.push(layer);
+                }
+                OraNode::Group {
+                    name,
+                    opacity,
+                    visible,
+                    children,
+                } => {
+                    let children = self.ora_layers(children);
+                    let mut group = labelled(
+                        self.doc
+                            .new_layer(name.clone(), LayerKind::Group { children: vec![] }),
+                    );
+                    group.visible = *visible;
+                    group.opacity.base = *opacity;
+                    if let Some(c) = group.kind.children_mut() {
+                        *c = children;
+                    }
+                    out.push(group);
+                }
+            }
+        }
+        out
     }
 
     /// Keep a picture's bytes in the document's media store; returns its
@@ -311,5 +388,77 @@ mod tests {
         assert_eq!(stem("noext"), "noext");
         assert_eq!(stem(".png"), "Picture");
         assert_eq!(file_name("C:\\art\\a.png"), "a.png");
+    }
+
+    /// An `.ora` with the given stack and pictures.
+    fn ora_file(stack: &str, pictures: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut files: Vec<(&str, &[u8])> =
+            vec![("mimetype", b"image/openraster"), ("stack.xml", stack.as_bytes())];
+        for (name, bytes) in pictures {
+            files.push((name, bytes));
+        }
+        fanimate_import::zip::write(&files).unwrap()
+    }
+
+    const ORA_STACK: &str = r#"<image w="40" h="20"><stack>
+        <layer name="Lines" src="data/a.png" x="3" y="2" opacity="0.5"/>
+        <stack name="Colour" visibility="hidden">
+            <layer name="Skin" src="data/b.png" composite-op="svg:multiply"/>
+        </stack>
+    </stack></image>"#;
+
+    #[test]
+    fn an_openraster_file_becomes_a_group_of_image_layers_in_one_undo_step() {
+        let mut ed = Editor::new(fanimate_core::Document::new("t", 100.0, 60.0, 24.0));
+        let file = ora_file(
+            ORA_STACK,
+            &[("data/a.png", png(10, 8)), ("data/b.png", png(6, 6))],
+        );
+        let id = ed.import_ora("/art/hero.ora", &file).unwrap();
+        let root = ed.doc.find(id).unwrap();
+        assert_eq!(root.name, "hero");
+        // the picture's canvas sits at the middle of ours
+        assert_eq!(root.transform.position.base, Vec2::new(30.0, 20.0));
+        let kids = root.kind.children().unwrap();
+        // bottom first: the Colour group, then Lines on top
+        assert_eq!(kids.len(), 2);
+        assert_eq!((kids[0].name.as_str(), kids[0].visible), ("Colour", false));
+        let skin = &kids[0].kind.children().unwrap()[0];
+        assert_eq!(skin.name, "Skin");
+        let lines = &kids[1];
+        assert_eq!(lines.name, "Lines");
+        assert_eq!(lines.opacity.base, 0.5);
+        assert_eq!(lines.transform.position.base, Vec2::new(3.0, 2.0));
+        let LayerKind::Image(img) = &lines.kind else {
+            panic!("an image layer")
+        };
+        assert_eq!((img.width, img.height), (10.0, 8.0));
+        assert!(
+            ed.doc.media.contains_key(&img.media),
+            "the picture is stored in the project"
+        );
+        // the status says what Fanimate could not show
+        let (_, message) = ed.status.clone().unwrap();
+        assert!(message.contains("Imported 2 layers from hero.ora"), "{message}");
+        assert!(
+            message.contains("1 layer with a blend mode shown as normal"),
+            "{message}"
+        );
+        assert_eq!(ed.selection, vec![id]);
+        // one undo step takes it all back
+        ed.run(crate::Action::Undo);
+        assert!(ed.doc.layers.is_empty());
+        ed.run(crate::Action::Redo);
+        assert_eq!(ed.doc.layers.len(), 1);
+    }
+
+    #[test]
+    fn a_file_that_is_not_openraster_is_refused_without_a_trace() {
+        let mut ed = Editor::new(fanimate_core::Document::new("t", 100.0, 60.0, 24.0));
+        let rev = ed.revision();
+        assert!(ed.import_ora("x.ora", b"PK nonsense").is_err());
+        assert!(ed.import_ora("x.ora", b"").is_err());
+        assert_eq!(ed.revision(), rev, "no undo step");
+        assert!(ed.doc.layers.is_empty() && ed.doc.media.is_empty());
     }
 }

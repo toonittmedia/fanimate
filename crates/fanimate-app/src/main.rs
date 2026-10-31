@@ -158,6 +158,8 @@ fn main() -> eframe::Result {
         }
     };
     crash::install_hook();
+    // text may name a font installed on this computer (the render queue too)
+    fanimate_editor::system_fonts::install();
     if args.render_queue {
         return render_queue::run(args.theme.unwrap_or_default());
     }
@@ -173,6 +175,8 @@ fn main() -> eframe::Result {
             instance::Role::Alone => None,
         }
     };
+    // read the installed fonts in the background, so the font menu opens at once
+    fanimate_editor::system_fonts::warm();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Fanimate")

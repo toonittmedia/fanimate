@@ -3,7 +3,7 @@
 Fanimate is one Rust workspace. The engine knows nothing about windows or files; each layer above it adds one concern.
 
 ```
-fanimate-text      text engine: shaping, bidirectional order, line breaking, glyph outlines, bundled fonts
+fanimate-text      text engine: shaping, bidirectional order, line breaking, glyph outlines, bundled fonts, the hook for the computer's fonts
   └─ (below core: core calls it to lay text out)
 fanimate-core      scene graph, animation channels, bones, frame evaluation
   ├─ fanimate-fnm      .fnm reader, atomic writer, validator and repair, crash journal

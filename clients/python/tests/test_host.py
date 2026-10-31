@@ -57,6 +57,15 @@ class HostTests(unittest.TestCase):
             # and the session goes on
             self.assertEqual(host.layers(), [])
 
+    def test_a_host_given_fewer_permissions_refuses_the_rest(self):
+        with fanimate.Host(cli=CLI, permissions=["read"]) as host:
+            self.assertEqual(host.layers(), [])
+            with self.assertRaises(fanimate.Error) as e:
+                host.add_text_layer(content="x", x=0, y=0)
+            self.assertEqual(e.exception.code, "permission_denied")
+            # the refusal changed nothing, and the session goes on
+            self.assertEqual(host.layers(), [])
+
     def test_undo_redo_and_the_method_list(self):
         with fanimate.Host(cli=CLI) as host:
             host.add_layer(kind="vector", name="Art")

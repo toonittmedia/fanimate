@@ -15,5 +15,9 @@ fanimate-editor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+fanimate-text.workspace = true
+image.workspace = true
+
 [lints]
 workspace = true

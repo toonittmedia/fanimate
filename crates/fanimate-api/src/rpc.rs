@@ -11,7 +11,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{Api, ApiError, ErrorCode, TextStyle};
+use crate::{Api, ApiError, ErrorCode, Permission, Permissions, TextStyle};
 
 /// One method a host can call: its name, what it takes and what it does.
 pub struct Method {
@@ -21,6 +21,31 @@ pub struct Method {
     /// Whether it changes the document (and so is refused while playing).
     pub edits: bool,
     pub about: &'static str,
+}
+
+impl Method {
+    /// What a client needs to call it: `edit` for a call that changes the
+    /// document, `read` for the rest.
+    pub fn permission(&self) -> Permission {
+        if self.edits {
+            Permission::Edit
+        } else {
+            Permission::Read
+        }
+    }
+}
+
+/// The permission a call needs, `None` when it needs none (`auth` and `quit`
+/// only affect the caller's own session). Covers the host's own methods too:
+/// `save` writes to disk, and `shutdown` stops the host for everyone, which
+/// takes the trust of editing.
+pub fn required(method: &str) -> Option<Permission> {
+    match method {
+        "auth" | "quit" => None,
+        "save" => Some(Permission::Save),
+        "shutdown" => Some(Permission::Edit),
+        other => METHODS.iter().find(|m| m.name == other).map(Method::permission),
+    }
 }
 
 const fn query(name: &'static str, params: &'static str, about: &'static str) -> Method {
@@ -50,6 +75,11 @@ pub const METHODS: &[Method] = &[
     query("layer", "id: number", "One layer"),
     query("bones", "layer: number", "The bones of a bone layer"),
     query("text", "layer: number", "A text layer with its words and look"),
+    query(
+        "fonts",
+        "",
+        "The font families text can use: shipped and installed",
+    ),
     edit("rename_layer", "id: number, name: string", "Rename a layer"),
     edit(
         "rename_bone",
@@ -111,6 +141,11 @@ pub const METHODS: &[Method] = &[
         "svg: string, name: string",
         "Import SVG text as layers; text elements become text layers",
     ),
+    edit(
+        "import_ora",
+        "data: string (the .ora file, base64), name: string",
+        "Import an OpenRaster file as a group of image layers; returns the group's id",
+    ),
     query(
         "controllers",
         "layer: number, frame: number (optional)",
@@ -135,6 +170,11 @@ pub const METHODS: &[Method] = &[
         "set_key_interpolation",
         "layer: number, channel: string, frame: number, interp: \"smooth\" | \"linear\" | \"step\" | {\"ease\": name} | {\"bezier\": [x1, y1, x2, y2]}",
         "Change how the curve leaves a key; returns whether it changed",
+    ),
+    edit(
+        "bake_expression",
+        "layer: number, channel: string, component: number, expression: string, first: number, last: number",
+        "Work out an expression on every frame of a range and write the answers as keys of one curve; returns how many keys",
     ),
     edit(
         "retarget_action",
@@ -213,6 +253,11 @@ pub const METHODS: &[Method] = &[
         "A caption layer's captions as SRT or WebVTT text",
     ),
     edit(
+        "restyle_captions",
+        "layer: number",
+        "Make the other captions in this caption's set look like it; returns how many changed",
+    ),
+    edit(
         "add_layer",
         "kind: \"vector\", \"group\" or \"switch\", name: string, parent: number (optional)",
         "Add an empty layer, returns its id",
@@ -271,7 +316,7 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
         "api.methods" => Ok(Value::Array(
             METHODS
                 .iter()
-                .map(|m| json!({"name": m.name, "params": m.params, "edits": m.edits, "about": m.about}))
+                .map(|m| json!({"name": m.name, "params": m.params, "edits": m.edits, "permission": m.permission().as_str(), "about": m.about}))
                 .collect(),
         )),
         "document" => json_of(api.document()),
@@ -279,6 +324,7 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
         "layer" => json_of(api.layer(param(params, "id")?)?),
         "bones" => json_of(api.bones(param(params, "layer")?)?),
         "text" => json_of(api.text(param(params, "layer")?)?),
+        "fonts" => json_of(api.fonts()),
         "rename_layer" => {
             api.rename_layer(param(params, "id")?, &param::<String>(params, "name")?)?;
             Ok(Value::Null)
@@ -342,6 +388,10 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             &param::<String>(params, "svg")?,
             &param::<String>(params, "name")?,
         )?),
+        "import_ora" => json_of(api.import_ora(
+            &param::<String>(params, "name")?,
+            &base64_decode(&param::<String>(params, "data")?)?,
+        )?),
         "controllers" => {
             let frame = params
                 .get("frame")
@@ -369,6 +419,14 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             &param::<String>(params, "channel")?,
             param(params, "frame")?,
             param(params, "interp")?,
+        )?),
+        "bake_expression" => json_of(api.bake_expression(
+            param(params, "layer")?,
+            &param::<String>(params, "channel")?,
+            param(params, "component")?,
+            &param::<String>(params, "expression")?,
+            param(params, "first")?,
+            param(params, "last")?,
         )?),
         "retarget_action" => json_of(api.retarget_action(
             param(params, "from")?,
@@ -501,6 +559,7 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
         "export_captions" => {
             json_of(api.export_captions(param(params, "layer")?, &param::<String>(params, "format")?)?)
         }
+        "restyle_captions" => json_of(api.restyle_captions(param(params, "layer")?)?),
         "add_layer" => json_of(
             api.add_layer(
                 &param::<String>(params, "kind")?,
@@ -556,6 +615,12 @@ const SERVER_ERROR: i64 = -32000;
 /// is answered with an error and a `null` id, and the host carries on.
 /// (`"jsonrpc"` may be left out of a request; every answer has it.)
 pub fn handle_line(api: &mut Api<'_>, line: &str) -> Option<String> {
+    handle_line_as(api, line, Permissions::all())
+}
+
+/// [`handle_line`] for a client that has only the `permissions` given: a call
+/// that needs another is answered `permission_denied` and does nothing.
+pub fn handle_line_as(api: &mut Api<'_>, line: &str, permissions: Permissions) -> Option<String> {
     let request: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
@@ -578,7 +643,18 @@ pub fn handle_line(api: &mut Api<'_>, line: &str) -> Option<String> {
         ));
     };
     let params = request.get("params").cloned().unwrap_or(Value::Null);
-    let answer = if METHODS.iter().any(|m| m.name == method) {
+    let denied = required(method).filter(|p| !permissions.contains(*p));
+    let answer = if let Some(needed) = denied {
+        let e = ApiError::new(
+            ErrorCode::PermissionDenied,
+            format!(
+                "\"{method}\" needs the \"{}\" permission ({})",
+                needed.as_str(),
+                needed.about()
+            ),
+        );
+        failure(id, e)
+    } else if METHODS.iter().any(|m| m.name == method) {
         match call(api, method, &params) {
             Ok(result) => reply(id, result),
             Err(e) => failure(id, e),
@@ -592,6 +668,45 @@ pub fn handle_line(api: &mut Api<'_>, line: &str) -> Option<String> {
         )
     };
     (!notification).then_some(answer)
+}
+
+/// Decode standard base64 (padding optional, white space ignored), as a
+/// binary file travels in a JSON request.
+fn base64_decode(text: &str) -> Result<Vec<u8>, ApiError> {
+    let bad = || ApiError::new(ErrorCode::InvalidArgument, "\"data\" is not base64");
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut bits, mut have) = (0u32, 0);
+    let mut padding = 0;
+    for c in text.bytes().filter(|c| !c.is_ascii_whitespace()) {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                continue;
+            }
+            _ => return Err(bad()),
+        };
+        // nothing may follow padding
+        if padding > 0 {
+            return Err(bad());
+        }
+        bits = bits << 6 | u32::from(v);
+        have += 6;
+        if have >= 8 {
+            have -= 8;
+            out.push((bits >> have) as u8);
+            bits &= (1 << have) - 1;
+        }
+    }
+    // a lone leftover character cannot be a byte, and padding is at most two
+    if have >= 6 || padding > 2 {
+        return Err(bad());
+    }
+    Ok(out)
 }
 
 /// A successful answer.

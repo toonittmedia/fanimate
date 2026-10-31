@@ -38,6 +38,8 @@
   --keyframe: #FFB84D;
   --keyframe-linear: #5AA9FF;
   --keyframe-step: #FF5D5D;
+  --keyframe-ease: #6FD65B;
+  --keyframe-curve: #E07BFF;
   --bone: #5EEAD4;
   --success: #3DDC97;
   --error: #FF6B8E;
@@ -63,6 +65,8 @@
     --keyframe: #9A5B00;
     --keyframe-linear: #1D5FD1;
     --keyframe-step: #C42B2B;
+    --keyframe-ease: #2E7D1F;
+    --keyframe-curve: #9C27B0;
     --bone: #0F766E;
     --success: #157347;
     --error: #C2294F;
@@ -87,6 +91,8 @@
   --keyframe: #9A5B00;
   --keyframe-linear: #1D5FD1;
   --keyframe-step: #C42B2B;
+  --keyframe-ease: #2E7D1F;
+  --keyframe-curve: #9C27B0;
   --bone: #0F766E;
   --success: #157347;
   --error: #C2294F;
@@ -110,6 +116,8 @@
   --keyframe: #FFB84D;
   --keyframe-linear: #5AA9FF;
   --keyframe-step: #FF5D5D;
+  --keyframe-ease: #6FD65B;
+  --keyframe-curve: #E07BFF;
   --bone: #5EEAD4;
   --success: #3DDC97;
   --error: #FF7A99;

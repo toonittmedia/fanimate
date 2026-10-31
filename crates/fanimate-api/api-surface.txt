@@ -1,5 +1,8 @@
+pub mod permissions;
 pub mod rpc;
+pub use permissions::{MAX_MANIFEST_BYTES, Manifest, Permission, Permissions};
 pub const API_VERSION: &str = "0.1.0-unstable";
+pub const MAX_IMPORT_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_NAME_CHARS: usize = 200;
 pub enum ErrorCode {
 pub fn as_str(self) -> &'static str {
@@ -31,6 +34,9 @@ pub id: u32,
 pub name: String,
 pub parent: Option<u32>,
 pub length: f32,
+pub struct FontsInfo {
+pub bundled: Vec<String>,
+pub installed: Vec<String>,
 pub struct TextInfo {
 pub content: String,
 pub family: String,
@@ -126,6 +132,7 @@ pub fn document(&self) -> DocumentInfo {
 pub fn layers(&self) -> Vec<LayerInfo> {
 pub fn layer(&self, id: u32) -> Result<LayerInfo, ApiError> {
 pub fn bones(&self, layer: u32) -> Result<Vec<BoneInfo>, ApiError> {
+pub fn fonts(&self) -> FontsInfo {
 pub fn text(&self, layer: u32) -> Result<TextInfo, ApiError> {
 pub fn rename_layer(&mut self, id: u32, name: &str) -> Result<(), ApiError> {
 pub fn rename_bone(&mut self, layer: u32, bone: u32, name: &str) -> Result<(), ApiError> {
@@ -136,6 +143,7 @@ pub fn set_text_content(&mut self, layer: u32, content: &str) -> Result<(), ApiE
 pub fn set_text_style(&mut self, layer: u32, style: TextStyle) -> Result<(), ApiError> {
 pub fn add_text_animator(&mut self, layer: u32, preset: &str) -> Result<usize, ApiError> {
 pub fn import_captions(&mut self, content: &str, name: &str) -> Result<CaptionInfo, ApiError> {
+pub fn restyle_captions(&mut self, layer: u32) -> Result<u32, ApiError> {
 pub fn export_captions(&self, layer: u32, format: &str) -> Result<String, ApiError> {
 pub fn add_layer(&mut self, kind: &str, name: &str, parent: Option<u32>) -> Result<u32, ApiError> {
 pub fn delete_layer(&mut self, id: u32) -> Result<(), ApiError> {
@@ -151,10 +159,12 @@ pub fn save_pose( &mut self, layer: u32, name: Option<&str>, frame: Option<i32>,
 pub fn mirror_pose(&mut self, layer: u32, index: usize) -> Result<usize, ApiError> {
 pub fn insert_action(&mut self, layer: u32, index: usize, frame: i32) -> Result<(), ApiError> {
 pub fn import_svg(&mut self, svg: &str, name: &str) -> Result<u32, ApiError> {
+pub fn import_ora(&mut self, name: &str, bytes: &[u8]) -> Result<u32, ApiError> {
 pub fn controllers(&self, layer: u32, frame: Option<i32>) -> Result<Vec<ControllerInfo>, ApiError> {
 pub fn add_controller(&mut self, layer: u32, name: &str, kind: &str) -> Result<usize, ApiError> {
 pub fn curves(&self, layer: u32) -> Result<Vec<CurveInfo>, ApiError> {
 pub fn move_key( &mut self, layer: u32, channel: &str, component: usize, frame: i32, to_frame: i32, value: f32, ) -> Result<i32, ApiError> {
+pub fn bake_expression( &mut self, layer: u32, channel: &str, component: usize, expression: &str, first: i32, last: i32, ) -> Result<u32, ApiError> {
 pub fn set_key_interpolation( &mut self, layer: u32, channel: &str, frame: i32, interp: serde_json::Value, ) -> Result<bool, ApiError> {
 pub fn retarget_action(&mut self, from: u32, action: usize, to: u32) -> Result<usize, ApiError> {
 pub fn rename_controller(&mut self, layer: u32, index: usize, name: &str) -> Result<(), ApiError> {

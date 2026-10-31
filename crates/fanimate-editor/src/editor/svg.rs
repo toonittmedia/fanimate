@@ -135,11 +135,8 @@ impl Editor {
         look.size = t.size;
         look.weight = t.weight;
         look.fill = t.fill;
-        if let Some(family) = fanimate_core::text::families()
-            .into_iter()
-            .find(|f| f.eq_ignore_ascii_case(&t.family))
-        {
-            look.family = family.to_owned();
+        if let Some(family) = fanimate_core::text::canonical_family(&t.family) {
+            look.family = family;
         }
         look.align = match t.anchor {
             Anchor::Start => fanimate_core::TextAlign::Start,

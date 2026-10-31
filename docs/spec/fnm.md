@@ -214,7 +214,7 @@ Words, drawn as shapes and animated a character, a word or a line at a time (ver
 | Field | Type | Meaning |
 |---|---|---|
 | `content` | string | The words. At most 100 000 characters; `\n` starts a new line |
-| `family` | string | `"Inter"`, `"JetBrains Mono"`, `"Noto Sans Arabic"`, `"Noto Sans Hebrew"`, `"Noto Sans Devanagari"` or `"Noto Sans Thai"`; another name is set in Inter, and the validator says so. Default `"Inter"`. A character the family does not have is set in the bundled font that has it for its script, so one text can mix scripts; the Noto fonts have one weight, so `weight` only changes Inter |
+| `family` | string | `"Inter"`, `"JetBrains Mono"`, `"Noto Sans Arabic"`, `"Noto Sans Hebrew"`, `"Noto Sans Devanagari"` or `"Noto Sans Thai"` (bundled, the same on every computer), or the name of a font installed on the computer that reads the file (a bundled name wins a clash); a name the computer does not have is set in Inter, and the validator says so. Default `"Inter"`. A character the family does not have is set in the bundled font that has it for its script, so one text can mix scripts; the Noto fonts have one weight, so `weight` only changes Inter |
 | `size` | number | The em size in document units, 1 to 4096. Default 72 |
 | `weight` | number | 1 to 1000 (100 to 900 in practice), for fonts with a weight axis (Inter). Default 400 |
 | `tracking` | number | Optional, default 0. Extra space after every character, in thousandths of an em, -1000 to 1000 |
@@ -635,7 +635,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | Opacity outside 0 to 1 | Warning | None; clamped when drawn |
 | A `bezier` key whose control points are outside the ranges above | Warning | Hold each within its range |
 | Text `size`, `weight`, `tracking`, `line_height`, `width`, `language`, `features`, `fill` or `stroke` outside the ranges above, or `content` over 100 000 characters | Warning | Hold each within its range; cut the content |
-| Text `family` Fanimate does not have | Warning | None; the text is set in Inter, and the name is kept for a computer that has the font |
+| Text `family` that is neither bundled nor installed on this computer | Warning | None; the text is set in Inter, and the name is kept for a computer that has the font |
 | More than 64 text animators | Warning | Keep the first 64 |
 | Text animator channels with bad values or keys | Error | As for channel keys |
 | `provenance` with no `tool`, text over 200 characters, or a `date` that is not `YYYY-MM-DD` | Warning | Cut the text, forget the date, name a missing tool `"unknown"`; the record is kept |

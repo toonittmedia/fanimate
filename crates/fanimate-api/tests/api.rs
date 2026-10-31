@@ -1,6 +1,6 @@
 //! The API through an editor, the way a script would use it.
 
-use fanimate_api::{API_VERSION, Api, ErrorCode, MAX_NAME_CHARS};
+use fanimate_api::{API_VERSION, Api, ErrorCode, MAX_NAME_CHARS, TextStyle};
 use fanimate_core::{Document, LayerKind, Provenance, samples};
 use fanimate_editor::{Action, Editor};
 
@@ -162,6 +162,7 @@ fn error_codes_are_stable() {
     assert_eq!(ErrorCode::Playing.as_str(), "playing");
     assert_eq!(ErrorCode::Io.as_str(), "io_error");
     assert_eq!(ErrorCode::Unauthorized.as_str(), "unauthorized");
+    assert_eq!(ErrorCode::PermissionDenied.as_str(), "permission_denied");
 }
 
 #[test]
@@ -561,6 +562,42 @@ fn captions_are_imported_exported_and_each_is_one_undo_step() {
     );
     assert!(api.undo().unwrap());
     assert!(api.layers().is_empty());
+}
+
+#[test]
+fn restyling_captions_copies_one_look_to_the_set_in_one_undo_step() {
+    let mut ed = Editor::new(Document::new("t", 1280.0, 720.0, 24.0));
+    let mut api = Api::new(&mut ed);
+    let made = api.import_captions(CAPTIONS, "Dialogue").unwrap();
+    let texts: Vec<u32> = api
+        .layers()
+        .iter()
+        .filter(|l| l.kind == "text")
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(texts.len(), 2);
+    api.set_text_style(
+        texts[0],
+        TextStyle {
+            size: Some(77.0),
+            ..TextStyle::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(api.restyle_captions(texts[0]).unwrap(), 1);
+    assert_eq!(api.text(texts[1]).unwrap().size, 77.0);
+    assert_eq!(api.text(texts[1]).unwrap().content, "Second");
+    // alike now: nothing changes
+    assert_eq!(api.restyle_captions(texts[0]).unwrap(), 0);
+    // one undo step
+    assert!(api.undo().unwrap());
+    assert_ne!(api.text(texts[1]).unwrap().size, 77.0);
+    // not a text layer, and not a caption
+    assert_eq!(
+        api.restyle_captions(made.layer).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(api.restyle_captions(999).unwrap_err().code, ErrorCode::NotFound);
 }
 
 #[test]
@@ -1526,4 +1563,128 @@ fn an_action_is_retargeted_to_another_rig_through_the_api() {
     }
     assert!(api.undo().unwrap());
     assert!(api.actions(small).unwrap().is_empty());
+}
+
+#[test]
+fn an_expression_is_baked_into_keys_in_one_undo_step_and_a_bad_one_changes_nothing() {
+    let mut ed = fresh();
+    let mut api = Api::new(&mut ed);
+    let layer = api.add_layer("vector", "Eye", None).unwrap();
+
+    // a blink: opacity drops to 0 for 3 frames in every 24, the same on every run
+    let baked = api
+        .bake_expression(layer, "opacity", 0, "100 - blink(frame, 7, 24, 3) * 100", 1, 72)
+        .unwrap();
+    assert_eq!(baked, 72);
+    let curves = api.curves(layer).unwrap();
+    let opacity = curves.iter().find(|c| c.channel == "opacity").unwrap();
+    assert_eq!(opacity.keys.len(), 72);
+    assert_eq!(
+        opacity.keys.iter().filter(|k| k.value < 50.0).count(),
+        9,
+        "3 closed frames in each of 3 periods: {:?}",
+        opacity.keys.iter().map(|k| k.value).collect::<Vec<_>>()
+    );
+    // a wobble on a rotation uses degrees, and `value` is the curve it had
+    api.bake_expression(layer, "rotation", 0, "value + 10 * sin(frame)", 1, 10)
+        .unwrap();
+    let curves = api.curves(layer).unwrap();
+    let rotation = curves.iter().find(|c| c.channel == "rotation").unwrap();
+    let k = rotation.keys.iter().find(|k| k.frame == 3).unwrap();
+    assert!(
+        (f64::from(k.value) - 10.0 * 3f64.sin()).abs() < 1e-2,
+        "{}",
+        k.value
+    );
+
+    // the whole bake is one undo step
+    assert!(api.undo().unwrap());
+    assert!(api.curves(layer).unwrap().iter().all(|c| c.channel != "rotation"));
+    assert!(api.curves(layer).unwrap().iter().any(|c| c.channel == "opacity"));
+
+    // what is wrong is named, and nothing changes
+    let before = api.curves(layer).unwrap().len();
+    let bad = |r: Result<u32, fanimate_api::ApiError>| r.unwrap_err();
+    let e = bad(api.bake_expression(layer, "opacity", 0, "10 / (frame - 2)", 1, 5));
+    assert_eq!(e.code, ErrorCode::InvalidArgument);
+    assert!(
+        e.message.contains("Frame 2") && e.message.contains("zero"),
+        "{}",
+        e.message
+    );
+    assert_eq!(
+        bad(api.bake_expression(layer, "opacity", 0, "nope", 1, 5)).code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        bad(api.bake_expression(layer, "wobble", 0, "1", 1, 5)).code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        bad(api.bake_expression(layer, "opacity", 5, "1", 1, 5)).code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        bad(api.bake_expression(layer, "opacity", 0, "1", 9_999_999, 9_999_999)).code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        bad(api.bake_expression(999, "opacity", 0, "1", 1, 5)).code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(api.curves(layer).unwrap().len(), before);
+}
+
+/// A file of one-colour PNG layers in an OpenRaster archive.
+fn ora_bytes() -> Vec<u8> {
+    let png = |w: u32, h: u32| {
+        let mut out = Vec::new();
+        image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let stack = r#"<image w="32" h="16"><stack>
+        <layer name="Top" src="data/top.png" x="2" y="3"/>
+        <layer name="Bottom" src="data/bottom.png"/>
+    </stack></image>"#;
+    let (top, bottom) = (png(8, 8), png(32, 16));
+    fanimate_fnm::zip::write(&[
+        ("mimetype", b"image/openraster".as_slice()),
+        ("stack.xml", stack.as_bytes()),
+        ("data/top.png", &top),
+        ("data/bottom.png", &bottom),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn an_openraster_file_is_imported_as_a_group_of_image_layers_in_one_undo_step() {
+    let mut ed = fresh();
+    let mut api = Api::new(&mut ed);
+    let group = api.import_ora("sketch.ora", &ora_bytes()).unwrap();
+    let layers = api.layers();
+    let kinds: Vec<(&str, &str)> = layers.iter().map(|l| (l.kind, l.name.as_str())).collect();
+    // depth first: the group, then its layers bottom first
+    assert_eq!(
+        kinds,
+        [("group", "sketch"), ("image", "Bottom"), ("image", "Top")]
+    );
+    assert_eq!(layers[0].id, group);
+    assert!(api.undo().unwrap());
+    assert!(api.layers().is_empty());
+    // not an OpenRaster file, an empty one, and a name that is too long
+    assert_eq!(
+        api.import_ora("x.ora", b"not a zip").unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        api.import_ora("x.ora", b"").unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        api.import_ora(&"n".repeat(300), &ora_bytes()).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    assert!(api.layers().is_empty(), "nothing was added");
 }

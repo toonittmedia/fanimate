@@ -125,6 +125,8 @@ pub enum Action {
     SetTextPath,
     /// Set the selected text layer straight again.
     ClearTextPath,
+    /// Make the other captions in the selected caption's set look like it.
+    RestyleCaptions,
     ConvertTextToShapes,
     GroupLayers,
     Ungroup,
@@ -279,6 +281,7 @@ impl Action {
                 | ConvertTextToShapes
                 | SetTextPath
                 | ClearTextPath
+                | RestyleCaptions
                 | GroupLayers
                 | Ungroup
                 | MoveLayerUp
@@ -409,6 +412,7 @@ impl Action {
             ConvertTextToShapes => "Convert Text to Shapes",
             SetTextPath => "Set Text Path from Shape",
             ClearTextPath => "Remove Text Path",
+            RestyleCaptions => "Restyle All Captions",
             SetSwitch(_) => "Show This Layer",
             LipSync => "Lip Sync from Sound…",
             NewDrawing => "New Blank Drawing",
@@ -518,6 +522,7 @@ impl Action {
             | ConvertTextToShapes
             | SetTextPath
             | ClearTextPath
+            | RestyleCaptions
             | GroupLayers
             | Ungroup
             | MoveLayerUp
@@ -638,6 +643,7 @@ impl Action {
             ConvertTextToShapes,
             SetTextPath,
             ClearTextPath,
+            RestyleCaptions,
             GroupLayers,
             Ungroup,
             MoveLayerUp,

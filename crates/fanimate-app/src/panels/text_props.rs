@@ -25,6 +25,72 @@ pub fn section(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId) {
     });
 }
 
+/// The font menu: the fonts Fanimate ships, then the ones installed on the
+/// computer under a search box (there can be hundreds). Returns the response of
+/// the choice when one was made.
+fn font_picker(ui: &mut egui::Ui, id: LayerId, family: &mut String) -> Option<egui::Response> {
+    let mut chosen = None;
+    let search_id = ui.make_persistent_id(("text-font-search", id.0));
+    egui::ComboBox::from_id_salt(("text-font", id.0))
+        .selected_text(family.clone())
+        .width(FONT_MENU_WIDTH)
+        .height(FONT_MENU_HEIGHT)
+        // the search box must be clickable without closing the menu, so a
+        // choice closes it by hand
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            ui.set_min_width(FONT_MENU_WIDTH);
+            chosen = font_rows(ui, family, search_id);
+            if chosen.is_some() {
+                ui.close();
+            }
+        });
+    chosen
+}
+
+/// The rows of the font menu; the response of the row picked, if one was.
+fn font_rows(ui: &mut egui::Ui, family: &mut String, search_id: egui::Id) -> Option<egui::Response> {
+    let mut chosen = None;
+    for name in fanimate_core::text::families() {
+        let r = ui.selectable_value(family, name.to_owned(), name);
+        if r.clicked() {
+            chosen = Some(r);
+        }
+    }
+    let installed = fanimate_core::text::system_families();
+    if installed.is_empty() {
+        return chosen;
+    }
+    ui.separator();
+    let mut query: String = ui.data_mut(|d| d.get_temp(search_id)).unwrap_or_default();
+    ui.add(
+        egui::TextEdit::singleline(&mut query)
+            .hint_text("Search installed fonts")
+            .desired_width(f32::INFINITY),
+    );
+    let needle = query.trim().to_lowercase();
+    ui.data_mut(|d| d.insert_temp(search_id, query));
+    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+        let mut shown = 0;
+        for name in installed.iter().filter(|n| n.to_lowercase().contains(&needle)) {
+            let r = ui.selectable_value(family, name.clone(), name);
+            if r.clicked() {
+                chosen = Some(r);
+            }
+            shown += 1;
+        }
+        if shown == 0 {
+            ui.weak("No installed font matches");
+        }
+    });
+    chosen
+}
+
+/// Wide enough for the longest common family names.
+const FONT_MENU_WIDTH: f32 = 240.0;
+/// Tall enough for the shipped fonts and a few rows of installed ones under the search box.
+const FONT_MENU_HEIGHT: f32 = 420.0;
+
 fn words_and_look(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId) {
     let Some(text) = shell.editor.text(id) else {
         return;
@@ -48,7 +114,7 @@ fn words_and_look(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId) {
     if !look.font_is_available() {
         ui.label(
             RichText::new(format!(
-                "The font \"{}\" is not one Fanimate has, so the text is set in {}.",
+                "The font \"{}\" is not installed here, so the text is set in {}.",
                 look.family,
                 fanimate_core::text::DEFAULT_FONT
             ))
@@ -61,16 +127,9 @@ fn words_and_look(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId) {
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
             ui.label("Font");
-            egui::ComboBox::from_id_salt(("text-font", id.0))
-                .selected_text(edited.family.clone())
-                .show_ui(ui, |ui| {
-                    for family in fanimate_core::text::families() {
-                        let r = ui.selectable_value(&mut edited.family, family.to_owned(), family);
-                        if r.clicked() {
-                            changed = Some(r);
-                        }
-                    }
-                });
+            if let Some(r) = font_picker(ui, id, &mut edited.family) {
+                changed = Some(r);
+            }
             ui.end_row();
 
             ui.label("Size");

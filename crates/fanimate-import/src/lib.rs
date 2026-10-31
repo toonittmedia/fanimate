@@ -17,6 +17,7 @@
 pub mod animate;
 pub mod moho;
 mod notes;
+pub mod ora;
 pub mod zip;
 
 use std::path::Path;

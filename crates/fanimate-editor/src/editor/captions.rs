@@ -136,6 +136,100 @@ impl Editor {
         })
     }
 
+    /// The switch layer that holds `child` as one of its layers, if there is one.
+    fn switch_holding(&self, child: LayerId) -> Option<LayerId> {
+        let mut found = None;
+        self.doc.walk(|l| {
+            if let LayerKind::Switch { children, .. } = &l.kind
+                && children.iter().any(|c| c.id == child)
+            {
+                found = Some(l.id);
+            }
+        });
+        found
+    }
+
+    /// How many other captions `Restyle All Captions` would change when the
+    /// text layer `id` is the model: the other text layers of its switch layer.
+    pub fn restylable_captions(&self, id: LayerId) -> usize {
+        let Some(switch) = self.switch_holding(id) else {
+            return 0;
+        };
+        match self.doc.find(switch).map(|l| &l.kind) {
+            Some(LayerKind::Switch { children, .. }) => children
+                .iter()
+                .filter(|c| c.id != id && matches!(c.kind, LayerKind::Text(_)))
+                .count(),
+            _ => 0,
+        }
+    }
+
+    /// Make every other caption in the switch layer that holds `model` look like
+    /// it: the font and everything else about how the words are set, the
+    /// animators, and where it stands, but not the words. One undo step.
+    /// Returns how many captions changed.
+    pub fn restyle_captions(&mut self, model: LayerId) -> Result<usize, String> {
+        if self.editing_blocked() {
+            return Err("Pause the animation to restyle captions.".to_owned());
+        }
+        let Some(LayerKind::Text(text)) = self.doc.find(model).map(|l| &l.kind) else {
+            return Err("Select the caption to copy the look from.".to_owned());
+        };
+        let (look, animators) = (text.look().clone(), text.animators.clone());
+        let transform = self.doc.find(model).map(|l| l.transform.clone());
+        let Some(switch) = self.switch_holding(model) else {
+            return Err("That text layer is not one of a set of captions.".to_owned());
+        };
+        let others: Vec<LayerId> = match self.doc.find(switch).map(|l| &l.kind) {
+            Some(LayerKind::Switch { children, .. }) => children
+                .iter()
+                .filter(|c| c.id != model && matches!(c.kind, LayerKind::Text(_)))
+                .map(|c| c.id)
+                .collect(),
+            _ => Vec::new(),
+        };
+        if others.is_empty() {
+            return Err("There are no other captions to restyle.".to_owned());
+        }
+        // only the captions that differ are touched, so a set that already
+        // matches leaves no undo step
+        let differing: Vec<LayerId> = others
+            .into_iter()
+            .filter(|id| {
+                let Some(layer) = self.doc.find(*id) else {
+                    return false;
+                };
+                let LayerKind::Text(text) = &layer.kind else {
+                    return false;
+                };
+                let mut next = look.clone();
+                next.content = text.look().content.clone();
+                next != *text.look()
+                    || text.animators != animators
+                    || transform.as_ref().is_some_and(|t| *t != layer.transform)
+            })
+            .collect();
+        if differing.is_empty() {
+            return Ok(0);
+        }
+        self.checkpoint("Restyle captions");
+        for id in &differing {
+            let Some(layer) = self.doc.find_mut(*id) else {
+                continue;
+            };
+            if let LayerKind::Text(text) = &mut layer.kind {
+                let mut next = look.clone();
+                next.content = text.look().content.clone();
+                *text.look_mut() = next;
+                text.animators = animators.clone();
+            }
+            if let Some(t) = &transform {
+                layer.transform = t.clone();
+            }
+        }
+        Ok(differing.len())
+    }
+
     /// The captions a switch layer shows, with the times they show at: each
     /// key that names a text layer with words in it, until the next key (or the
     /// end of the animation). `None` when the layer is not a switch layer.
@@ -197,6 +291,87 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(Document::new("t", 1920.0, 1080.0, 24.0))
+    }
+
+    fn captions_of_import(ed: &mut Editor) -> Vec<LayerId> {
+        let made = ed.import_captions(SRT, "Dialogue").unwrap();
+        let LayerKind::Switch { children, .. } = &ed.doc.find(made.layer).unwrap().kind else {
+            panic!("a switch layer");
+        };
+        children
+            .iter()
+            .filter(|c| matches!(c.kind, LayerKind::Text(_)))
+            .map(|c| c.id)
+            .collect()
+    }
+
+    #[test]
+    fn restyling_copies_the_look_the_animators_and_the_place_but_not_the_words() {
+        let mut ed = editor();
+        let ids = captions_of_import(&mut ed);
+        assert_eq!(ids.len(), 2);
+        let (model, other) = (ids[0], ids[1]);
+        ed.edit_text(model, "Style", |l| {
+            l.size = 90.0;
+            l.family = "JetBrains Mono".to_owned();
+            l.fill = Color::rgb(1.0, 0.8, 0.0);
+        });
+        ed.add_text_animator(model, fanimate_core::TextPreset::FadeIn);
+        ed.doc.find_mut(model).unwrap().transform.position.base = Vec2::new(40.0, 900.0);
+        assert_eq!(ed.restylable_captions(model), 1);
+
+        let words_before = ed.text(other).unwrap().look().content.clone();
+        ed.selection = vec![model];
+        ed.run(Action::RestyleCaptions);
+        let (m, o) = (ed.text(model).unwrap(), ed.text(other).unwrap());
+        assert_eq!(o.look().size, 90.0);
+        assert_eq!(o.look().family, "JetBrains Mono");
+        assert_eq!(o.look().fill, m.look().fill);
+        assert_eq!(o.animators, m.animators);
+        assert_eq!(o.look().content, words_before, "the words stay");
+        assert_ne!(o.look().content, m.look().content);
+        assert_eq!(
+            ed.doc.find(other).unwrap().transform.position.base,
+            Vec2::new(40.0, 900.0)
+        );
+
+        // already alike: nothing to do, and no undo step is made
+        assert_eq!(ed.restyle_captions(model), Ok(0));
+
+        // one undo step puts the other caption back
+        ed.run(Action::Undo);
+        assert_ne!(ed.text(other).unwrap().look().size, 90.0);
+        assert!(ed.text(other).unwrap().animators.is_empty());
+    }
+
+    #[test]
+    fn restyling_says_what_is_wrong_and_changes_nothing() {
+        let mut ed = editor();
+        // a text layer that is not in a set of captions
+        ed.add_text_layer(Vec2::new(10.0, 10.0), "Alone");
+        let alone = ed.selected_text().unwrap();
+        assert!(ed.restyle_captions(alone).is_err());
+        assert_eq!(ed.restylable_captions(alone), 0);
+        assert!(!ed.can_run(Action::RestyleCaptions));
+        // a layer that is not text at all
+        let made = ed
+            .import_captions("1\n00:00:01,000 --> 00:00:02,000\nOnly\n\n", "One")
+            .unwrap();
+        assert!(ed.restyle_captions(made.layer).is_err());
+        // one caption alone has no others to restyle
+        let LayerKind::Switch { children, .. } = &ed.doc.find(made.layer).unwrap().kind else {
+            panic!("a switch layer");
+        };
+        let only = children[0].id;
+        assert!(
+            ed.restyle_captions(only)
+                .unwrap_err()
+                .contains("no other captions")
+        );
+        // not while playing
+        let ids = captions_of_import(&mut ed);
+        ed.playing = true;
+        assert!(ed.restyle_captions(ids[0]).is_err());
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub struct Outliner {
 impl Outliner {
     /// `None` if the font cannot be read (the bundled ones can).
     pub fn new(font: &'static Font, weight: f32, size: f32) -> Option<Self> {
-        let mut face = Face::from_slice(font.data, 0)?;
+        let mut face = Face::from_slice(font.data, font.index)?;
         if font.variable && weight.is_finite() {
             let _ = face.set_variation(Tag::from_bytes(b"wght"), weight.clamp(1.0, 1000.0));
         }
@@ -111,7 +111,7 @@ mod tests {
     use crate::fonts::find_or_default;
 
     fn glyph_id(font: &'static Font, c: char) -> u16 {
-        Face::from_slice(font.data, 0)
+        Face::from_slice(font.data, font.index)
             .unwrap()
             .glyph_index(c)
             .expect("the font has the glyph")

@@ -199,8 +199,8 @@ pub fn layout(text: &str, params: &Params) -> Laid {
         .filter(|w| w.is_finite() && *w > 0.0)
         .map(|w| w.max(1.0));
 
-    let font = fonts::find_or_default(params.family);
-    let Some(mut face) = Face::from_slice(font.data, 0) else {
+    let font = fonts::find_weighted_or_default(params.family, params.weight);
+    let Some(mut face) = Face::from_slice(font.data, font.index) else {
         return Laid::default();
     };
     if font.variable {
@@ -363,7 +363,7 @@ impl Faces {
         if let Some(i) = self.list.iter().position(|e| std::ptr::eq(e.font, font)) {
             return Some(i);
         }
-        let mut face = Face::from_slice(font.data, 0)?;
+        let mut face = Face::from_slice(font.data, font.index)?;
         if font.variable {
             let _ = face.set_variation(Tag::from_bytes(b"wght"), self.weight);
         }
@@ -405,7 +405,7 @@ impl Faces {
 
 /// Whether `font` has a glyph for `c`.
 fn covers(font: &Font, c: char) -> bool {
-    rustybuzz::ttf_parser::Face::parse(font.data, 0)
+    rustybuzz::ttf_parser::Face::parse(font.data, font.index)
         .ok()
         .is_some_and(|face| face.glyph_index(c).is_some())
 }

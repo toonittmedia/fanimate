@@ -1115,9 +1115,9 @@ fn zoom_by(shell: &mut Shell, factor: f32) {
 /// Pick pictures, Photoshop or SVG files, or sounds, and import them as
 /// layers.
 /// The kinds of file File > Import (and dropping a file on the window) brings
-/// in as layers: pictures, Photoshop and SVG files, and sound.
+/// in as layers: pictures, Photoshop, OpenRaster and SVG files, and sound.
 fn importable_extensions() -> Vec<&'static str> {
-    let mut all = vec!["png", "jpg", "jpeg", "psd", "svg", "srt", "vtt"];
+    let mut all = vec!["png", "jpg", "jpeg", "psd", "ora", "svg", "srt", "vtt"];
     all.extend(fanimate_editor::SOUND_EXTENSIONS);
     all
 }
@@ -1143,6 +1143,7 @@ fn import_file(shell: &mut Shell, path: &Path) -> bool {
             .unwrap_or_default();
         match ext.as_str() {
             "psd" => shell.editor.import_psd(&name, &bytes),
+            "ora" => shell.editor.import_ora(&name, &bytes),
             "svg" => shell.editor.import_svg(&name, &bytes),
             "srt" | "vtt" => import_captions_bytes(shell, path, &bytes),
             e if fanimate_editor::SOUND_EXTENSIONS.contains(&e) => shell.editor.import_audio(&name, bytes),
@@ -1168,9 +1169,9 @@ fn import_dialog(shell: &mut Shell) {
         return;
     }
     let Some(paths) = rfd::FileDialog::new()
-        .set_title("Import pictures, a Photoshop or SVG file, or sound")
+        .set_title("Import pictures, a Photoshop, OpenRaster or SVG file, or sound")
         .add_filter(
-            "Pictures, Photoshop and SVG files, and sound",
+            "Pictures, Photoshop, OpenRaster and SVG files, and sound",
             &importable_extensions(),
         )
         .pick_files()

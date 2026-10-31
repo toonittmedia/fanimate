@@ -12,6 +12,7 @@ mod history;
 mod keymap;
 pub mod snap;
 mod styles;
+pub mod system_fonts;
 mod tabs;
 mod templates;
 

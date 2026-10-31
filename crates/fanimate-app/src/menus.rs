@@ -604,6 +604,7 @@ fn text_menu(ui: &mut egui::Ui, shell: &mut Shell) {
     });
     item(ui, shell, Action::SetTextPath);
     item(ui, shell, Action::ClearTextPath);
+    item(ui, shell, Action::RestyleCaptions);
     item(ui, shell, Action::ConvertTextToShapes);
 }
 

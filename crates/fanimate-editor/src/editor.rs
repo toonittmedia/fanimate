@@ -580,6 +580,16 @@ impl Editor {
             ConvertTextToShapes => self.text_to_shapes(),
             BakeSpring => self.bake_spring_selected(),
             SetTextPath => self.set_text_path_from_selection(),
+            RestyleCaptions => match self.selected_text() {
+                Some(id) => match self.restyle_captions(id) {
+                    Ok(0) => {
+                        self.set_status(StatusKind::Info, "The other captions already look like this one.")
+                    }
+                    Ok(n) => self.set_status(StatusKind::Info, format!("Restyled {n} captions.")),
+                    Err(e) => self.set_status(StatusKind::Info, e),
+                },
+                None => self.set_status(StatusKind::Info, "Select a caption first."),
+            },
             ClearTextPath => match self.selected_text() {
                 Some(id) => {
                     self.clear_text_path(id);
@@ -827,6 +837,9 @@ impl Editor {
                 .is_some_and(|cues| !cues.is_empty()),
             ImportCaptions => !self.playing,
             SetTextPath => self.selected_text().is_some() && self.selection.len() > 1,
+            RestyleCaptions => self
+                .selected_text()
+                .is_some_and(|id| self.restylable_captions(id) > 0),
             ClearTextPath => self
                 .selected_text()
                 .and_then(|id| self.text(id))

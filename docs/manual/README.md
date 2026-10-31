@@ -15,7 +15,7 @@ This is the outline of the manual, with the essentials of each chapter. Chapters
 - **File › New**, **Open**, **Save** and **Save As**. A project is one `.fnm` file (a ZIP archive of readable files; [format](../spec/fnm.md)). Older projects saved as folders still open and stay folders.
 - Fanimate keeps a copy of your work after every change. If it closes unexpectedly, the next start offers to recover it.
 - **File › Open Moho or Animate Project…** brings in `.moho` and `.fla` files: see [Importing](../import.md).
-- **File › Import** (Ctrl+I) adds pictures (PNG, JPEG), Photoshop files (as layers), SVG drawings and sound (WAV, MP3, Ogg, FLAC, AAC and M4A, turned into WAV when imported) to the open project. You can also drop these files on the window.
+- **File › Import** (Ctrl+I) adds pictures (PNG, JPEG), Photoshop files and OpenRaster (`.ora`, from Krita, MyPaint and GIMP) files (as layers, groups kept; an OpenRaster layer's blend mode other than normal is shown as normal, and the status bar says how many), SVG drawings and sound (WAV, MP3, Ogg, FLAC, AAC and M4A, turned into WAV when imported) to the open project. You can also drop these files on the window.
 
 ## 3. Drawing
 
@@ -26,7 +26,7 @@ This is the outline of the manual, with the essentials of each chapter. Chapters
 ## 4. Animating
 
 - Every value on the timeline can have keys. Editing an animated value sets a key on the current frame; editing an unanimated one changes it for the whole animation.
-- Drag keys to retime them; right-click a key for its interpolation (smooth, linear, step).
+- Drag keys to retime them; right-click a key for its interpolation. A key's mark says how it moves on: a round amber key is smooth, a blue diamond linear, a red square step, a green circle with a curve in it is one of the plain eases (ease in, ease out, ease in and out; each has its own curve), and a purple circle is a livelier one (overshoot, bounce, elastic) or a custom curve. The interpolation menu next to the transport controls shows the same marks, larger.
 - Points of a drawing can be keyed too, to change its shape over time.
 
 ### The graph editor
@@ -53,10 +53,10 @@ To use an action on a different rig, right-click it in the Actions panel and cho
 
 *New in the development version (format 7); not in a release yet.*
 
-- **Layer › New Text Layer** puts a text layer on the canvas. Type the words in the **Properties** panel, which also sets the font (Inter or JetBrains Mono), size, weight (Inter), letter spacing, line height, alignment, direction, wrapping at a width, colour and outline. Text is laid out with the font's own ligatures and kerning, and wraps at the places the Unicode rules allow.
+- **Layer › New Text Layer** puts a text layer on the canvas. Type the words in the **Properties** panel, which also sets the font (any font installed on the computer, or one of the bundled ones), size, weight, letter spacing, line height, alignment, direction, wrapping at a width, colour and outline. Text is laid out with the font's own ligatures and kerning, and wraps at the places the Unicode rules allow.
 - Text is drawn as shapes, so it moves, scales and fades like any layer, and it exports like any other layer. **Layer › Convert Text to Shapes** turns it into drawing you can edit point by point; it stops being text and loses its animators.
 - **Text on a path.** Select the text layer and, with it, a layer that has a shape (hold Ctrl and click), then choose **Layer › Set Text Path from Shape** (or the button under **On a path** in Properties). The letters stand on the shape and turn with it. A closed shape carries the text round; an open one cuts off what does not fit. **Read from the end** runs it the other way, and **Start along path** (a percentage of the length, keyed like other values) slides the text along. The shape is copied, so later changes to it do not move the text, and **Remove Text Path** sets the text straight again.
-- A project that uses a font this computer does not have is set in Inter instead, and Properties says so. Arabic, Hebrew, Devanagari and Thai are bundled (Noto Sans): type or paste them into any text and the right font is used for those letters, with the joined forms, conjuncts and mark placement the language needs; one text can mix scripts. Their fonts have one weight, so the weight control only changes Inter. Chinese, Japanese and Korean are not bundled yet.
+- **Fonts.** The font menu lists the fonts Fanimate ships (Inter, JetBrains Mono and the Noto fonts below) and, under a search box, every font installed on the computer. A text keeps the name of the font it was set in. Bold works where the font has a bold file (or, like Inter, a weight axis): text of weight 600 or more uses it. A project that uses a font this computer does not have is set in Inter instead, and Properties says so; the name is kept, so the project looks right again on a computer that has the font. The bundled fonts look the same everywhere, so use one of them (or convert the text to shapes) when a project must look identical on every computer. Arabic, Hebrew, Devanagari and Thai are bundled (Noto Sans): type or paste them into any text and the right font is used for those letters, with the joined forms, conjuncts and mark placement the language needs; one text can mix scripts. Their fonts have one weight, so the weight control only changes Inter. Chinese, Japanese and Korean are not bundled yet.
 
 ### Text animators
 
@@ -74,6 +74,8 @@ Every value can have keys: the diamond beside it adds or removes a key on the cu
 
 **File › Import Captions…** (or dropping an `.srt` or `.vtt` file on the window) reads a subtitle file into a new **switch layer** with one text layer for each caption. Each caption is white with a dark outline, centred low on the canvas, and shows from its start to its end; the animation is made longer if the last caption runs past its end. The captions are ordinary text layers: open the layer to change a caption’s words, style or position, or give one a text animator. A caption that overlaps the next one ends where the next begins. Lines of the file that cannot be read (a bad time, no words) are left out, and the status bar says how many.
 
+**Layer › Text › Restyle All Captions** (with one caption selected) makes every other caption in its set look like it: the font, size, colour, outline, alignment, animators and where it stands, but not the words. Style one caption, then run it once. It is one undo step.
+
 **File › Export Captions…** writes the selected caption layer back as SubRip (`.srt`) or WebVTT (`.vtt`), by the file name you choose. Formatting tags and screen positions in the file are not kept: a caption’s look is its layer’s.
 
 ### Secondary motion (springs)
@@ -88,7 +90,7 @@ A tail, an ear or a scarf should lag behind the body and swing back, not turn ri
 
 Press **T** (or choose the **T** in the Draw tools) and click the canvas to type: the words appear where you clicked, set in the font and colour of any new text (the line colour). Click existing text to edit it in place. **Escape** or a click elsewhere finishes; the Properties panel still sets the font, size and the rest. The tool makes the layer when you type the first letter, so a click that types nothing leaves nothing behind.
 
-Not built yet: text following a shape live (a copy of the path is used), templates, a command that restyles every caption at once, and animator rows in the timeline.
+Not built yet: text following a shape live (a copy of the path is used), templates, and animator rows in the timeline.
 
 ## 7. Exporting
 

@@ -17,6 +17,7 @@ pub mod captions;
 pub mod color;
 pub mod easing;
 pub mod eval;
+pub mod expr;
 pub mod frames;
 pub mod graph;
 pub mod health;

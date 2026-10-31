@@ -5,13 +5,15 @@
 //!
 //! Two methods belong to the host rather than the API because they touch the
 //! disk: `save` (to the path the host was started with, or to `path`) and
-//! `quit`. Everything else is `fanimate_api::rpc::call`.
+//! `quit`. Everything else is `fanimate_api::rpc::call`. A host is given the
+//! [`Permissions`] its client has (everything, unless it was started with
+//! `--permissions` or `--plugin`), and a call that needs another is refused.
 
 use std::io::{BufRead, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use fanimate_api::{API_VERSION, Api, ApiError, ErrorCode, rpc};
+use fanimate_api::{API_VERSION, Api, ApiError, ErrorCode, Permissions, rpc};
 use fanimate_core::Document;
 use fanimate_editor::Editor;
 use serde_json::{Value, json};
@@ -37,12 +39,14 @@ enum Step {
 }
 
 /// Serve requests from `input` until it ends, a `quit` or a `shutdown`.
-/// `save_to` is where `save` writes when it is given no path. Returns an
+/// `save_to` is where `save` writes when it is given no path, and `permissions`
+/// is what the client may do. Returns an
 /// error only when the output cannot be written; a bad request is an answer,
 /// not a failure.
 pub fn serve(
     editor: &mut Editor,
     save_to: Option<&str>,
+    permissions: Permissions,
     mut input: impl BufRead,
     mut out: impl Write,
 ) -> std::io::Result<Flow> {
@@ -66,7 +70,7 @@ pub fn serve(
         if line.trim().is_empty() {
             continue;
         }
-        let (answer, step) = answer(editor, save_to, line.trim());
+        let (answer, step) = answer(editor, save_to, permissions, line.trim());
         if let Some(answer) = answer {
             writeln!(out, "{answer}")?;
             out.flush()?;
@@ -81,17 +85,36 @@ pub fn serve(
 
 /// The answer to one line (none for a notification, which has no id) and
 /// what the session does next.
-fn answer(editor: &mut Editor, save_to: Option<&str>, line: &str) -> (Option<String>, Step) {
+fn answer(
+    editor: &mut Editor,
+    save_to: Option<&str>,
+    permissions: Permissions,
+    line: &str,
+) -> (Option<String>, Step) {
     let host = serde_json::from_str::<Value>(line).ok().and_then(|request| {
         let method = request.get("method")?.as_str()?.to_owned();
         matches!(method.as_str(), "save" | "quit" | "shutdown").then_some((method, request))
     });
     let Some((method, request)) = host else {
-        return (rpc::handle_line(&mut Api::new(editor), line), Step::Go);
+        return (
+            rpc::handle_line_as(&mut Api::new(editor), line, permissions),
+            Step::Go,
+        );
     };
     let notification = request.get("id").is_none();
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let reply = |text: String| (!notification).then_some(text);
+    if let Some(needed) = rpc::required(&method).filter(|p| !permissions.contains(*p)) {
+        let e = ApiError::new(
+            ErrorCode::PermissionDenied,
+            format!(
+                "\"{method}\" needs the \"{}\" permission ({})",
+                needed.as_str(),
+                needed.about()
+            ),
+        );
+        return (reply(rpc::failure(id, e)), Step::Go);
+    }
     match method.as_str() {
         "quit" => return (reply(rpc::reply(id, Value::Null)), Step::Quit),
         "shutdown" => return (reply(rpc::reply(id, Value::Null)), Step::Shutdown),
@@ -143,6 +166,7 @@ fn same_token(a: &str, b: &str) -> bool {
 pub fn serve_socket(
     mut editor: Editor,
     save_to: Option<&str>,
+    permissions: Permissions,
     port: u16,
     mut announce: impl Write,
 ) -> Result<(), String> {
@@ -156,7 +180,7 @@ pub fn serve_socket(
         .map_err(|e| e.to_string())?;
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        match connection(&mut editor, save_to, stream, &token) {
+        match connection(&mut editor, save_to, permissions, stream, &token) {
             Ok(Flow::Shutdown) => break,
             // a connection that fails or ends is not the host's end
             Ok(Flow::Ended) | Err(_) => {}
@@ -168,6 +192,7 @@ pub fn serve_socket(
 fn connection(
     editor: &mut Editor,
     save_to: Option<&str>,
+    permissions: Permissions,
     stream: TcpStream,
     token: &str,
 ) -> std::io::Result<Flow> {
@@ -198,7 +223,7 @@ fn connection(
     writeln!(writer, "{}", rpc::reply(id, Value::Bool(true)))?;
     writer.flush()?;
     writer.set_read_timeout(None)?;
-    serve(editor, save_to, reader, writer)
+    serve(editor, save_to, permissions, reader, writer)
 }
 
 /// A project to script: the file named, or an empty one with `--new`.
@@ -224,7 +249,14 @@ mod tests {
 
     fn run(mut editor: Editor, save_to: Option<String>, input: &str) -> Vec<Value> {
         let mut out = Vec::new();
-        serve(&mut editor, save_to.as_deref(), input.as_bytes(), &mut out).unwrap();
+        serve(
+            &mut editor,
+            save_to.as_deref(),
+            Permissions::all(),
+            input.as_bytes(),
+            &mut out,
+        )
+        .unwrap();
         String::from_utf8(out)
             .unwrap()
             .lines()

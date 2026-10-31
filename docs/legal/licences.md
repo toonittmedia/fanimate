@@ -14,11 +14,11 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | Lucide icons | ISC | `crates/fanimate-app/icons/lucide` |
 | Rhubarb Lip Sync 1.14.0 (separate program) | MIT | `scripts/fetch-rhubarb.sh` |
 
-## Rust crates (526)
+## Rust crates (530)
 
 | Licence used | Crates |
 |---|---|
-| MIT | 474 |
+| MIT | 478 |
 | Apache-2.0 | 19 |
 | MPL-2.0 | 12 |
 | BSD-3-Clause | 6 |
@@ -183,6 +183,8 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | float_next_after | 1.0.0 | MIT | MIT |
 | foldhash | 0.2.0 | Zlib | Zlib |
 | font-types | 0.12.6 | MIT OR Apache-2.0 | MIT |
+| fontconfig-parser | 0.5.8 | MIT | MIT |
+| fontdb | 0.24.0 | MIT | MIT |
 | foreign-types | 0.5.0 | MIT/Apache-2.0 | MIT |
 | foreign-types-macros | 0.2.4 | MIT/Apache-2.0 | MIT |
 | foreign-types-shared | 0.3.1 | MIT/Apache-2.0 | MIT |
@@ -391,6 +393,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | rfd | 0.17.2 | MIT | MIT |
 | rgb | 0.8.53 | MIT | MIT |
 | ron | 0.12.2 | MIT OR Apache-2.0 | MIT |
+| roxmltree | 0.20.0 | MIT OR Apache-2.0 | MIT |
 | roxmltree | 0.21.1 | MIT OR Apache-2.0 | MIT |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT | MIT |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | MIT |
@@ -453,6 +456,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | tiny-skia | 0.12.0 | BSD-3-Clause | BSD-3-Clause |
 | tiny-skia-path | 0.11.4 | BSD-3-Clause | BSD-3-Clause |
 | tiny-skia-path | 0.12.0 | BSD-3-Clause | BSD-3-Clause |
+| tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | MIT |
 | tokio | 1.53.2 | MIT | MIT |
 | toml_datetime | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | MIT |
 | toml_edit | 0.25.17+spec-1.1.0 | MIT OR Apache-2.0 | MIT |

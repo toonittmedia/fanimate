@@ -19,7 +19,10 @@
 
 use std::fmt;
 
+pub mod permissions;
 pub mod rpc;
+
+pub use permissions::{MAX_MANIFEST_BYTES, Manifest, Permission, Permissions};
 
 use fanimate_core::{Layer, LayerId, LayerKind, Provenance, Skeleton};
 use fanimate_editor::{Editor, TxError};
@@ -29,6 +32,9 @@ use serde::Serialize;
 /// 1.0 makes it `1.0.0`, after which changes follow semantic versioning and
 /// deprecated calls keep working for two major releases.
 pub const API_VERSION: &str = "0.1.0-unstable";
+
+/// The largest picture file `import_ora` takes, in bytes.
+pub const MAX_IMPORT_BYTES: usize = 256 * 1024 * 1024;
 
 /// The longest layer name the API accepts, in characters.
 pub const MAX_NAME_CHARS: usize = 200;
@@ -47,6 +53,8 @@ pub enum ErrorCode {
     Io,
     /// The host refused the call: a connection that has not shown the right token.
     Unauthorized,
+    /// The client was not given the permission the call needs (see [`Permissions`]).
+    PermissionDenied,
 }
 
 impl ErrorCode {
@@ -57,6 +65,7 @@ impl ErrorCode {
             Self::Playing => "playing",
             Self::Io => "io_error",
             Self::Unauthorized => "unauthorized",
+            Self::PermissionDenied => "permission_denied",
         }
     }
 }
@@ -155,6 +164,17 @@ pub struct BoneInfo {
     /// The parent bone's id; `null` for a root bone.
     pub parent: Option<u32>,
     pub length: f32,
+}
+
+/// The font families a text layer can name.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FontsInfo {
+    /// The ones Fanimate ships, which look the same on every computer.
+    pub bundled: Vec<String>,
+    /// The ones installed on this computer (empty in a program that has not
+    /// installed them, and in the browser), sorted. A project that names one
+    /// is set in the default font on a computer without it.
+    pub installed: Vec<String>,
 }
 
 /// A text layer's words and how they are set.
@@ -425,6 +445,18 @@ impl<'a> Api<'a> {
             .collect())
     }
 
+    /// The font families a text layer can use: the shipped ones and the ones
+    /// installed on this computer.
+    pub fn fonts(&self) -> FontsInfo {
+        FontsInfo {
+            bundled: fanimate_core::text::families()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            installed: fanimate_core::text::system_families(),
+        }
+    }
+
     /// The words and look of a text layer, and its animators.
     pub fn text(&self, layer: u32) -> Result<TextInfo, ApiError> {
         let text = self
@@ -624,6 +656,18 @@ impl<'a> Api<'a> {
                     cut_off: made.cut_off,
                 })
                 .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
+    /// Make every other caption in the set that holds the text layer `layer`
+    /// look like it (the look, the animators and where it stands, not the
+    /// words), as one undo step. Returns how many captions changed.
+    pub fn restyle_captions(&mut self, layer: u32) -> Result<u32, ApiError> {
+        self.require_text(layer)?;
+        self.edit("Restyle captions", |ed| {
+            ed.restyle_captions(LayerId(layer))
+                .map(|n| n as u32)
+                .map_err(|m| ApiError::new(ErrorCode::InvalidArgument, m))
         })
     }
 
@@ -1154,6 +1198,25 @@ impl<'a> Api<'a> {
         })
     }
 
+    /// Import an OpenRaster file (the bytes of a `.ora`, as Krita, MyPaint and
+    /// GIMP save it) as a group of image layers named after `name`, groups
+    /// kept, each layer with its place, opacity and visibility. Returns the
+    /// group's id. A file that is not OpenRaster, or too large, is refused.
+    pub fn import_ora(&mut self, name: &str, bytes: &[u8]) -> Result<u32, ApiError> {
+        let name = check_name(name, "an import")?;
+        if bytes.len() > MAX_IMPORT_BYTES {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                format!("the file is larger than {} MB", MAX_IMPORT_BYTES / (1024 * 1024)),
+            ));
+        }
+        self.edit("Import OpenRaster file", |ed| {
+            ed.import_ora(name, bytes)
+                .map(|id| id.0)
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
     /// The master controllers of a bone layer, with their values on `frame`
     /// (the rest pose, frame 0, when none is given).
     pub fn controllers(&self, layer: u32, frame: Option<i32>) -> Result<Vec<ControllerInfo>, ApiError> {
@@ -1267,6 +1330,37 @@ impl<'a> Api<'a> {
         }
         self.edit("Move key", |ed| {
             ed.change_key(LayerId(layer), ch, component, frame, to_frame, value / scale)
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
+    /// Work out an expression (see the scripting guide for the language) on
+    /// every frame from `first` to `last` and write the answers as one key a
+    /// frame on curve `component` of `channel` (as `curves` names them), replacing
+    /// the keys in that range. `value` in the expression is what the curve has
+    /// on that frame, in the units `curves` reports (degrees, percent). One
+    /// undo step; a bad expression or a frame with no answer changes nothing.
+    /// Returns how many keys were written.
+    pub fn bake_expression(
+        &mut self,
+        layer: u32,
+        channel: &str,
+        component: usize,
+        expression: &str,
+        first: i32,
+        last: i32,
+    ) -> Result<u32, ApiError> {
+        self.require(layer)?;
+        let ch = self.channel_of(layer, channel)?;
+        if !(-MAX_FRAME..=MAX_FRAME).contains(&first) || !(-MAX_FRAME..=MAX_FRAME).contains(&last) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                format!("a frame must be within {MAX_FRAME} of 0"),
+            ));
+        }
+        self.edit("Bake expression", |ed| {
+            ed.bake_expression(LayerId(layer), ch, component, expression, first, last)
+                .map(|n| n as u32)
                 .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
         })
     }

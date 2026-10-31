@@ -337,7 +337,7 @@ impl Checker {
                 Severity::Warning,
                 loc,
                 format!(
-                    "the font \"{}\" is not one Fanimate has; the text is set in {}",
+                    "the font \"{}\" is not installed on this computer and is not bundled; the text is set in {}",
                     text.look().family,
                     fanimate_core::text::DEFAULT_FONT
                 ),

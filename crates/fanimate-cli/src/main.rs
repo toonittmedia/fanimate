@@ -30,12 +30,15 @@ usage:
                       (a sprite sheet for games: the frames of the clips packed into one PNG, and
                        <sheet>.json beside it, a TexturePacker JSON-hash atlas with a clips list)
   fanimate-cli formats [--ffmpeg PATH]
-  fanimate-cli script [<project.fnm>] [--save <out.fnm>]
+  fanimate-cli script [<project.fnm>] [--save <out.fnm>] [--permissions read,edit,save | --plugin <plugin.json>]
                       (the scripting API over stdin and stdout: one JSON request per line,
-                       one JSON answer per line; the method api.methods lists the calls)
-  fanimate-cli serve [<project.fnm>] [--save <out.fnm>] [--port N]
+                       one JSON answer per line; the method api.methods lists the calls. With
+                       --permissions or --plugin the client may do only what is listed there)
+  fanimate-cli serve [<project.fnm>] [--save <out.fnm>] [--port N] [--permissions ... | --plugin <plugin.json>]
                       (the same calls over a local socket: prints one line of JSON with the port and
                        a token; the first request on a connection must be auth with that token)
+  fanimate-cli plugin check <plugin.json>
+                      (reads a plugin manifest and says what it asks for, or what is wrong with it)
   fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--text CHARS] [--actions] [--gpu [--width W] [--height H]]
 
 Frame numbers (--frame, --start, --end) are the project's own: its first frame is 1 and
@@ -44,6 +47,8 @@ animation.";
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // text may name a font installed on this computer
+    fanimate_editor::system_fonts::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("sample") => sample(&args[1..]),
@@ -57,6 +62,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         Some("script") => script_cmd(&args[1..]),
         Some("serve") => serve_cmd(&args[1..]),
+        Some("plugin") => plugin_cmd(&args[1..]),
         Some("-V" | "--version") => {
             println!("fanimate-cli {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -77,28 +83,112 @@ fn main() -> ExitCode {
 }
 
 fn serve_cmd(args: &[String]) -> CmdResult {
-    let a = Args::parse(args, &["--save", "--port"])?;
+    let a = Args::parse(args, &["--save", "--port", "--permissions", "--plugin"])?;
     let project = a.positional.first().map(String::as_str);
+    let permissions = client_permissions(&a)?;
     let editor = script::open(project)?;
     let save_to = a.get::<String>("--save")?.or_else(|| project.map(str::to_owned));
     let port = a.get::<u16>("--port")?.unwrap_or(0);
-    script::serve_socket(editor, save_to.as_deref(), port, std::io::stdout().lock())?;
+    script::serve_socket(
+        editor,
+        save_to.as_deref(),
+        permissions,
+        port,
+        std::io::stdout().lock(),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn script_cmd(args: &[String]) -> CmdResult {
-    let a = Args::parse(args, &["--save"])?;
+    let a = Args::parse(args, &["--save", "--permissions", "--plugin"])?;
     let project = a.positional.first().map(String::as_str);
+    let permissions = client_permissions(&a)?;
     let editor = script::open(project)?;
     let save_to = a.get::<String>("--save")?.or_else(|| project.map(str::to_owned));
     let mut editor = editor;
     script::serve(
         &mut editor,
         save_to.as_deref(),
+        permissions,
         std::io::stdin().lock(),
         std::io::stdout().lock(),
     )
     .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What the client of a script host may do: everything (the user who starts the
+/// host is the author), or what `--permissions` lists, or what the manifest
+/// named by `--plugin` asks for. Both at once is a mistake.
+fn client_permissions(a: &Args) -> Result<fanimate_api::Permissions, String> {
+    match (a.get::<String>("--permissions")?, a.get::<String>("--plugin")?) {
+        (Some(_), Some(_)) => Err("use --permissions or --plugin, not both".to_owned()),
+        (Some(list), None) => fanimate_api::Permissions::parse_list(&list),
+        (None, Some(path)) => {
+            let manifest = read_manifest(&path)?;
+            eprintln!(
+                "fanimate-cli: plugin {} {} may {}",
+                manifest.name,
+                manifest.version,
+                describe(manifest.permissions)
+            );
+            Ok(manifest.permissions)
+        }
+        (None, None) => Ok(fanimate_api::Permissions::all()),
+    }
+}
+
+fn read_manifest(path: &str) -> Result<fanimate_api::Manifest, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(file, fanimate_api::MAX_MANIFEST_BYTES as u64 + 1),
+        &mut text,
+    )
+    .map_err(|e| format!("{path}: {e}"))?;
+    fanimate_api::Manifest::parse(&text).map_err(|e| format!("{path}: {e}"))
+}
+
+fn describe(p: fanimate_api::Permissions) -> String {
+    let names: Vec<&str> = fanimate_api::Permission::ALL
+        .into_iter()
+        .filter(|n| p.contains(*n))
+        .map(|n| n.about())
+        .collect();
+    if names.is_empty() {
+        "do nothing (it asks for no permissions)".to_owned()
+    } else {
+        names.join(", ")
+    }
+}
+
+fn plugin_cmd(args: &[String]) -> CmdResult {
+    let [sub, path] = args else {
+        return Err(USAGE.into());
+    };
+    if sub != "check" {
+        return Err(format!(
+            "unknown plugin command {sub}
+{USAGE}"
+        ));
+    }
+    let m = read_manifest(path)?;
+    println!("{} {} (for API {})", m.name, m.version, m.api);
+    if !m.description.is_empty() {
+        println!("{}", m.description);
+    }
+    if let Some(entry) = &m.entry {
+        println!("starts: {entry}");
+    }
+    println!(
+        "permissions: {}",
+        if m.permissions == fanimate_api::Permissions::NONE {
+            "none".to_owned()
+        } else {
+            m.permissions.names().join(", ")
+        }
+    );
+    println!("may {}", describe(m.permissions));
     Ok(ExitCode::SUCCESS)
 }
 

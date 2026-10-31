@@ -36,7 +36,8 @@ class Error(Exception):
 
     def __init__(self, code: str, message: str, rpc_code: Optional[int] = None):
         super().__init__(f"{code}: {message}")
-        #: The API's stable code: ``not_found``, ``invalid_argument``, ``playing``, ``io_error``.
+        #: The API's stable code: ``not_found``, ``invalid_argument``, ``playing``, ``io_error``,
+        #: ``unauthorized`` and ``permission_denied``.
         self.code = code
         self.message = message
         #: The JSON-RPC error number, when there was one (``-32601`` for an unknown method).
@@ -59,6 +60,11 @@ class Host:
 
     ``project`` opens that file (``save()`` writes it back, or to ``save`` given here);
     left out, it starts an empty 1920 by 1080 project.
+
+    ``permissions`` (for example ``["read", "edit"]``) limits what this host will do for you:
+    a call that needs another raises ``Error`` with the code ``permission_denied``. ``plugin``
+    is the path of a ``plugin.json`` whose permissions are used instead. Left out, everything
+    is allowed.
     """
 
     def __init__(
@@ -67,12 +73,18 @@ class Host:
         *,
         save: Optional[str] = None,
         cli: Optional[str] = None,
+        permissions: Optional[list] = None,
+        plugin: Optional[str] = None,
     ):
         command = [find_cli(cli), "script"]
         if project:
             command.append(project)
         if save:
             command += ["--save", save]
+        if permissions is not None:
+            command += ["--permissions", ",".join(permissions)]
+        if plugin:
+            command += ["--plugin", plugin]
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,

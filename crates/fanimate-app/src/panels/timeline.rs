@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use eframe::egui::{self, CursorIcon, Id, Pos2, Rangef, Rect, RichText, Sense, Shape, Stroke, pos2, vec2};
 use fanimate_core::anim::KeyList;
 use fanimate_core::{
-    Camera, ChannelId, Frame, Interpolation, Layer, LayerId, LayerKind, LoopMode, REST_FRAME,
+    Camera, ChannelId, Easing, Frame, Interpolation, Layer, LayerId, LayerKind, LoopMode, REST_FRAME,
 };
 use fanimate_editor::{Action, Focus, KeyRef, KeySelect, SelectMode};
 
@@ -1654,7 +1654,8 @@ fn loop_mark(painter: &egui::Painter, c: egui::Pos2, color: egui::Color32, plus:
 
 /// A key's mark: round for smooth and for the eased and custom curves (all of
 /// them curved motion), a diamond for linear (and for keys that differ), square
-/// for step.
+/// for step. The eased and custom marks carry a small picture of their curve
+/// (see [`curve_glyph`]), so they can be told apart as well as by colour.
 pub fn key_shape(
     painter: &egui::Painter,
     c: egui::Pos2,
@@ -1662,16 +1663,36 @@ pub fn key_shape(
     fill: egui::Color32,
     outline: Stroke,
 ) {
+    key_shape_scaled(painter, c, interp, fill, outline, 1.0);
+}
+
+/// [`key_shape`] drawn `scale` times as large (the menus show the marks bigger
+/// than a timeline row can).
+pub fn key_shape_scaled(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    interp: Option<Interpolation>,
+    fill: egui::Color32,
+    outline: Stroke,
+    scale: f32,
+) {
     match interp {
-        Some(Interpolation::Smooth | Interpolation::Ease(_) | Interpolation::Bezier(_)) => {
-            painter.circle(c, 4.5, fill, outline);
+        Some(Interpolation::Smooth) => {
+            painter.circle(c, KEY_RADIUS * scale, fill, outline);
+        }
+        Some(curved @ (Interpolation::Ease(_) | Interpolation::Bezier(_))) => {
+            painter.circle(c, KEY_RADIUS * scale, fill, outline);
+            // a faded ghost key (the loop preview) is too faint to carry a picture
+            if fill.a() >= 200 {
+                curve_glyph(painter, c, curved, ink_on(fill), scale);
+            }
         }
         Some(Interpolation::Step) => {
-            let r = Rect::from_center_size(c, vec2(8.0, 8.0));
+            let r = Rect::from_center_size(c, vec2(8.0, 8.0) * scale);
             painter.rect(r, 1.0, fill, outline, egui::StrokeKind::Outside);
         }
         _ => {
-            let s = 5.0;
+            let s = 5.0 * scale;
             painter.add(Shape::convex_polygon(
                 vec![
                     c + vec2(0.0, -s),
@@ -1683,6 +1704,70 @@ pub fn key_shape(
                 outline,
             ));
         }
+    }
+}
+
+/// The radius of a round key.
+const KEY_RADIUS: f32 = 5.5;
+
+/// Dark ink on a light fill and white on a dark one.
+fn ink_on(fill: egui::Color32) -> egui::Color32 {
+    let lum = 0.2126 * f32::from(fill.r()) + 0.7152 * f32::from(fill.g()) + 0.0722 * f32::from(fill.b());
+    if lum > 128.0 {
+        egui::Color32::from_rgb(0x1A, 0x14, 0x24)
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
+/// The points of an interpolation's own curve in a box of half-size 1 (y up,
+/// from the first key at the bottom left to the next at the top right), scaled
+/// so an overshoot or a spring still fits. Empty for the kinds with no curve.
+fn curve_points(interp: Interpolation) -> Vec<(f32, f32)> {
+    let steps: usize = match interp {
+        Interpolation::Ease(Easing::Bounce | Easing::Elastic) => 20,
+        _ => 12,
+    };
+    let value = |t: f32| match interp {
+        Interpolation::Ease(e) => e.apply(t),
+        Interpolation::Bezier(b) => b.apply(t),
+        _ => t,
+    };
+    let values: Vec<(f32, f32)> = (0..=steps)
+        .map(|i| {
+            let t = i as f32 / steps as f32;
+            (t, value(t))
+        })
+        .collect();
+    let (lo, hi) = values
+        .iter()
+        .fold((0.0f32, 1.0f32), |(lo, hi), (_, v)| (lo.min(*v), hi.max(*v)));
+    let span = (hi - lo).max(1e-3);
+    values
+        .into_iter()
+        .map(|(t, v)| (t * 2.0 - 1.0, (v - lo) / span * 2.0 - 1.0))
+        .collect()
+}
+
+/// The picture in a curved key: the curve the value follows to the next key
+/// (slow start for ease in, slow end for ease out, both for ease in and out, a
+/// hump past the end for overshoot, shrinking arches for bounce, a decaying
+/// wave for elastic). A custom curve also gets a dot where its middle is.
+fn curve_glyph(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    interp: Interpolation,
+    ink: egui::Color32,
+    scale: f32,
+) {
+    let half = 3.2 * scale;
+    let points: Vec<egui::Pos2> = curve_points(interp)
+        .into_iter()
+        .map(|(x, y)| c + vec2(x * half, -y * half))
+        .collect();
+    painter.add(Shape::line(points, Stroke::new(1.2 * scale.max(1.0), ink)));
+    if matches!(interp, Interpolation::Bezier(_)) {
+        painter.circle_filled(c, 1.1 * scale, ink);
     }
 }
 
@@ -2043,8 +2128,11 @@ fn action_banner(ui: &mut egui::Ui, shell: &mut Shell) {
         });
 }
 
-const INTERP_ROW_WIDTH: f32 = 104.0;
-const INTERP_ROW_HEIGHT: f32 = 22.0;
+// wide enough for "Ease in and out" beside its mark, with room to spare
+const INTERP_ROW_WIDTH: f32 = 160.0;
+const INTERP_ROW_HEIGHT: f32 = 24.0;
+/// The marks in the menu are larger than on the timeline, so their pictures read.
+const MENU_KEY_SCALE: f32 = 1.5;
 
 /// How keys added from now on move on to the next key, with the shape and
 /// colour they have on the timeline: smooth (round, amber), linear (a
@@ -2065,7 +2153,7 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
     mark(ui, current);
     let mut chosen = None;
     egui::ComboBox::from_id_salt("key-interpolation")
-        .width(70.0)
+        .width(112.0)
         .selected_text(current.label())
         .show_ui(ui, |ui| {
             // a fixed width, so the list does not change size as it opens
@@ -2081,15 +2169,16 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
                 } else if interp == current {
                     painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.18));
                 }
-                key_shape(
+                key_shape_scaled(
                     painter,
                     pos2(row.rect.left() + 16.0, row.rect.center().y),
                     Some(interp),
                     p.key_color(Some(interp)),
                     Stroke::new(1.0, p.bg),
+                    MENU_KEY_SCALE,
                 );
                 painter.text(
-                    pos2(row.rect.left() + 32.0, row.rect.center().y),
+                    pos2(row.rect.left() + 34.0, row.rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     interp.label(),
                     egui::FontId::proportional(13.0),
@@ -2279,6 +2368,39 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_curved_key_has_its_own_picture_inside_its_box() {
+        let mut seen: Vec<Vec<(i32, i32)>> = Vec::new();
+        for interp in Interpolation::ALL {
+            let curved = matches!(interp, Interpolation::Ease(_));
+            let points = curve_points(interp);
+            assert!(!points.is_empty());
+            for (x, y) in &points {
+                assert!(
+                    (-1.001..=1.001).contains(x) && (-1.001..=1.001).contains(y),
+                    "{interp:?}"
+                );
+            }
+            if curved {
+                // every eased mark is a different drawing (rounded to a pixel or so)
+                let key: Vec<(i32, i32)> = points
+                    .iter()
+                    .map(|(x, y)| ((x * 6.0).round() as i32, (y * 6.0).round() as i32))
+                    .collect();
+                assert!(!seen.contains(&key), "{interp:?} looks like another key");
+                seen.push(key);
+            }
+        }
+        // ease in starts slowly: the first step rises less than the last
+        let ease_in = curve_points(Interpolation::Ease(Easing::EaseIn));
+        let rise = |i: usize| ease_in[i + 1].1 - ease_in[i].1;
+        assert!(rise(0) < rise(ease_in.len() - 2));
+        // overshoot goes past the end, so the end is not the top of its box
+        let over = curve_points(Interpolation::Ease(Easing::Overshoot));
+        let top = over.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+        assert!((top - 1.0).abs() < 1e-3 && over.last().unwrap().1 < 0.99);
+    }
 
     /// Where a frame is drawn, in pixels from the left of the frame area.
     fn x_of(frame: f32, start: f32, scroll: f32, width: f32) -> f32 {

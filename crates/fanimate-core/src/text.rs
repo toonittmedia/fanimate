@@ -37,9 +37,21 @@ use fanimate_text as engine;
 /// The font used when a text layer names one Fanimate does not have.
 pub const DEFAULT_FONT: &str = engine::fonts::DEFAULT_FAMILY;
 
-/// The font families Fanimate has, in the order a font menu lists them.
+/// The font families Fanimate ships, in the order a font menu lists them.
 pub fn families() -> Vec<&'static str> {
     engine::fonts::families().collect()
+}
+
+/// The fonts installed on the computer that a font menu adds below the shipped
+/// ones, sorted. Empty until the host has installed them
+/// (`fanimate_editor::system_fonts::install`).
+pub fn system_families() -> Vec<String> {
+    engine::fonts::system_families()
+}
+
+/// `name` spelled as Fanimate has the family (shipped or installed), if it has it.
+pub fn canonical_family(name: &str) -> Option<String> {
+    engine::fonts::find(name).map(|f| f.family.to_owned())
 }
 /// The most animators one text layer holds.
 pub const MAX_ANIMATORS: usize = 64;
@@ -206,7 +218,7 @@ impl Look {
         engine::fonts::find(&self.family).is_some_and(|f| f.variable)
     }
 
-    /// Whether the family is one Fanimate has. If not the text is set in the
+    /// Whether the family is one Fanimate ships or the computer has. If not the text is set in the
     /// default font, and the project can say so.
     pub fn font_is_available(&self) -> bool {
         engine::fonts::find(&self.family).is_some()

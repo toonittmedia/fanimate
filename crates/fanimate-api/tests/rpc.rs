@@ -326,3 +326,178 @@ fn a_rig_and_its_spring_are_built_from_json_alone() {
     );
     assert_eq!(keys, 60);
 }
+
+#[test]
+fn a_client_without_a_permission_is_refused_before_anything_runs() {
+    use fanimate_api::{Permission, Permissions};
+    let mut ed = editor();
+    let as_client = |ed: &mut Editor, perms: Permissions, request: Value| -> Value {
+        let answer = rpc::handle_line_as(&mut Api::new(ed), &request.to_string(), perms).expect("answered");
+        serde_json::from_str(&answer).unwrap()
+    };
+    let add = json!({"id": 1, "method": "add_layer", "params": {"kind": "vector", "name": "Ink"}});
+
+    // read only: queries work, an edit is refused and changes nothing
+    let reader = Permissions::NONE.with(Permission::Read);
+    assert_eq!(
+        as_client(&mut ed, reader, json!({"id": 1, "method": "layers"}))["result"],
+        json!([])
+    );
+    let refused = as_client(&mut ed, reader, add.clone());
+    assert_eq!(refused["error"]["data"]["code"], "permission_denied");
+    assert!(refused["error"]["message"].as_str().unwrap().contains("\"edit\""));
+    assert!(ed.doc.layers.is_empty());
+    // undo is an edit too
+    let undo = as_client(&mut ed, reader, json!({"id": 2, "method": "undo"}));
+    assert_eq!(undo["error"]["data"]["code"], "permission_denied");
+    // saving is a permission of its own, even though only the host does it
+    let save = as_client(
+        &mut ed,
+        reader.with(Permission::Edit),
+        json!({"id": 3, "method": "save"}),
+    );
+    assert_eq!(save["error"]["data"]["code"], "permission_denied");
+
+    // with edit, the same call runs
+    let editing = reader.with(Permission::Edit);
+    assert!(as_client(&mut ed, editing, add).get("error").is_none());
+    assert_eq!(ed.doc.layers.len(), 1);
+
+    // no permissions: even a query is refused, but a method that does not exist is still not_found
+    let nothing = as_client(&mut ed, Permissions::NONE, json!({"id": 4, "method": "layers"}));
+    assert_eq!(nothing["error"]["data"]["code"], "permission_denied");
+    let unknown = as_client(&mut ed, Permissions::NONE, json!({"id": 5, "method": "no.such"}));
+    assert_eq!(unknown["error"]["data"]["code"], "not_found");
+
+    // a notification that is refused is still silent, and still does nothing
+    let note = rpc::handle_line_as(
+        &mut Api::new(&mut ed),
+        &json!({"method": "delete_layer", "params": {"id": 1}}).to_string(),
+        reader,
+    );
+    assert!(note.is_none());
+    assert_eq!(ed.doc.layers.len(), 1);
+}
+
+#[test]
+fn every_method_needs_a_permission_and_the_list_says_which() {
+    use fanimate_api::Permission;
+    let mut ed = editor();
+    let listed = ask(&mut ed, r#"{"id": 1, "method": "api.methods"}"#);
+    for m in listed["result"].as_array().unwrap() {
+        let name = m["name"].as_str().unwrap();
+        let edits = m["edits"].as_bool().unwrap();
+        let needed = rpc::required(name).unwrap_or_else(|| panic!("{name} needs no permission"));
+        assert_eq!(
+            needed,
+            if edits { Permission::Edit } else { Permission::Read },
+            "{name}"
+        );
+        assert_eq!(m["permission"], needed.as_str(), "{name}");
+    }
+    assert_eq!(rpc::required("save"), Some(Permission::Save));
+    assert_eq!(rpc::required("shutdown"), Some(Permission::Edit));
+    assert_eq!(rpc::required("quit"), None);
+    assert_eq!(rpc::required("auth"), None);
+    assert_eq!(rpc::required("no.such"), None);
+}
+
+#[test]
+fn bake_expression_is_a_json_call() {
+    let mut ed = editor();
+    let layer = ask(
+        &mut ed,
+        r#"{"id": 1, "method": "add_layer", "params": {"kind": "vector", "name": "Eye"}}"#,
+    )["result"]
+        .as_u64()
+        .unwrap();
+    let baked = ask(
+        &mut ed,
+        &json!({"id": 2, "method": "bake_expression", "params": {
+            "layer": layer, "channel": "opacity", "component": 0,
+            "expression": "frame * 10", "first": 1, "last": 5}})
+        .to_string(),
+    );
+    assert_eq!(baked["result"], 5, "{baked}");
+    let curves = ask(
+        &mut ed,
+        &json!({"id": 3, "method": "curves", "params": {"layer": layer}}).to_string(),
+    );
+    assert_eq!(curves["result"][0]["keys"][4]["value"], 50.0);
+    // a missing parameter is invalid_argument, a bad expression is too
+    let missing = ask(
+        &mut ed,
+        &json!({"id": 4, "method": "bake_expression", "params": {"layer": layer}}).to_string(),
+    );
+    assert_eq!(missing["error"]["data"]["code"], "invalid_argument");
+    let bad = ask(
+        &mut ed,
+        &json!({"id": 5, "method": "bake_expression", "params": {
+            "layer": layer, "channel": "opacity", "component": 0,
+            "expression": "frame +", "first": 1, "last": 5}})
+        .to_string(),
+    );
+    assert_eq!(bad["error"]["data"]["code"], "invalid_argument");
+}
+
+#[test]
+fn import_ora_takes_the_file_as_base64() {
+    // a tiny archive, built the way the API test builds one
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let stack = r#"<image w="4" h="4"><stack><layer name="L" src="data/l.png"/></stack></image>"#;
+    let file = fanimate_fnm::zip::write(&[
+        ("mimetype", b"image/openraster".as_slice()),
+        ("stack.xml", stack.as_bytes()),
+        ("data/l.png", &png),
+    ])
+    .unwrap();
+    let encode = |bytes: &[u8]| {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk.iter().fold(0u32, |n, b| n << 8 | u32::from(*b)) << (8 * (3 - chunk.len()));
+            for i in 0..=chunk.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+            out.extend(std::iter::repeat_n('=', 3 - chunk.len()));
+        }
+        out
+    };
+    let mut ed = editor();
+    let data = encode(&file);
+    let made = ask(
+        &mut ed,
+        &json!({"id": 1, "method": "import_ora", "params": {"name": "a.ora", "data": data}}).to_string(),
+    );
+    assert!(made.get("error").is_none(), "{made}");
+    let count = |ed: &Editor| {
+        let mut n = 0;
+        ed.doc.walk(|_| n += 1);
+        n
+    };
+    assert_eq!(count(&ed), 2, "a group and its one layer");
+    // white space in the text is ignored, and padding may be left off
+    let spaced = format!("{}\n{}", &data[..8], data[8..].trim_end_matches('='));
+    let again = ask(
+        &mut ed,
+        &json!({"id": 2, "method": "import_ora", "params": {"name": "b.ora", "data": spaced}}).to_string(),
+    );
+    assert!(again.get("error").is_none(), "{again}");
+    assert_eq!(
+        count(&ed),
+        4,
+        "the second file came in too, inside the selected group"
+    );
+    // what is not base64 is invalid_argument, and nothing is added
+    for bad in ["@@@@", "QUJD=QUJD", "QUJDR", "QQ===", "é"] {
+        let r = ask(
+            &mut ed,
+            &json!({"id": 3, "method": "import_ora", "params": {"name": "c.ora", "data": bad}}).to_string(),
+        );
+        assert_eq!(r["error"]["data"]["code"], "invalid_argument", "{bad}: {r}");
+    }
+    assert_eq!(count(&ed), 4);
+}

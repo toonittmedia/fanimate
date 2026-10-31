@@ -7,7 +7,7 @@
 //! The values are in the file's units: radians for angles. The graph editor
 //! shows degrees ([`Curve::display_scale`]).
 
-use crate::anim::{Channel, Frame, Interpolation};
+use crate::anim::{Channel, Frame, Interpolation, set_key_in};
 use crate::scene::{ChannelId, Layer, LayerKind};
 use glam::Vec2;
 
@@ -177,6 +177,51 @@ impl Layer {
                 }
                 Err(_) => false,
             },
+            _ => false,
+        }
+    }
+
+    /// Write curve `component` of `ch` as one key a frame: `values[i]` on frame
+    /// `first + i`, in the file's units, replacing the keys in that range (the
+    /// keys outside it stay, and a pair's other number keeps the value it had
+    /// on each frame). The new keys move in straight lines, which is exact for
+    /// keys one frame apart. Returns whether it was written: an empty list, a
+    /// value that is not a number, or a property this layer does not have
+    /// writes nothing.
+    pub fn write_curve_range(
+        &mut self,
+        ch: ChannelId,
+        component: Component,
+        first: Frame,
+        values: &[f32],
+    ) -> bool {
+        if values.is_empty() || values.iter().any(|v| !v.is_finite()) {
+            return false;
+        }
+        let frame_of = |i: usize| first.saturating_add(i as Frame);
+        let last = frame_of(values.len() - 1);
+        match self.chan_mut(ch) {
+            Some(ChanMut::Number(c)) if component == 0 => {
+                c.keys.retain(|k| k.frame < first || k.frame > last);
+                for (i, v) in values.iter().enumerate() {
+                    set_key_in(&mut c.keys, frame_of(i), *v, Interpolation::Linear);
+                }
+                true
+            }
+            Some(ChanMut::Pair(c)) if component < 2 => {
+                // the other number is what the property had, taken before the keys are replaced
+                let before: Vec<Vec2> = (0..values.len()).map(|i| c.sample(frame_of(i) as f32)).collect();
+                c.keys.retain(|k| k.frame < first || k.frame > last);
+                for (i, v) in values.iter().enumerate() {
+                    set_key_in(
+                        &mut c.keys,
+                        frame_of(i),
+                        put(before[i], component, *v),
+                        Interpolation::Linear,
+                    );
+                }
+                true
+            }
             _ => false,
         }
     }

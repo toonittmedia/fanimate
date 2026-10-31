@@ -65,9 +65,13 @@ pub struct Palette {
     pub button: Color32,
     pub on_button: Color32,
     pub keyframe: Color32,
-    /// Keys that ease in linearly (blue) and that hold then jump (red).
+    /// Keys that move at a steady speed (blue), that hold then jump (red), that
+    /// ease in, out or both (green) and that overshoot, bounce, spring or follow
+    /// a custom curve (purple).
     pub keyframe_linear: Color32,
     pub keyframe_step: Color32,
+    pub keyframe_ease: Color32,
+    pub keyframe_curve: Color32,
     pub bone: Color32,
     pub success: Color32,
     pub error: Color32,
@@ -103,12 +107,18 @@ fn hex(s: &str) -> Color32 {
 
 impl Palette {
     /// The colour of a key by how it moves on: smooth keeps the keyframe
-    /// amber, linear is blue and step is red. Mixed keys stay amber.
+    /// amber, linear is blue, step is red, the three plain eases are green and
+    /// the lively ones (overshoot, bounce, elastic) and custom curves are
+    /// purple. Mixed keys stay amber.
     pub fn key_color(&self, interp: Option<fanimate_core::Interpolation>) -> Color32 {
-        use fanimate_core::Interpolation;
+        use fanimate_core::{Easing, Interpolation};
         match interp {
             Some(Interpolation::Linear) => self.keyframe_linear,
             Some(Interpolation::Step) => self.keyframe_step,
+            Some(Interpolation::Ease(Easing::EaseIn | Easing::EaseOut | Easing::EaseInOut)) => {
+                self.keyframe_ease
+            }
+            Some(Interpolation::Ease(_) | Interpolation::Bezier(_)) => self.keyframe_curve,
             _ => self.keyframe,
         }
     }
@@ -132,6 +142,8 @@ impl Palette {
             keyframe: c("keyframe"),
             keyframe_linear: c("keyframe-linear"),
             keyframe_step: c("keyframe-step"),
+            keyframe_ease: c("keyframe-ease"),
+            keyframe_curve: c("keyframe-curve"),
             bone: c("bone"),
             success: c("success"),
             error: c("error"),
@@ -286,10 +298,49 @@ mod tests {
     }
 
     #[test]
+    fn the_key_kinds_have_their_own_colours() {
+        use fanimate_core::{Bezier, Easing, Interpolation};
+        for theme in Theme::ALL {
+            let p = Palette::of(theme);
+            let colour = |i| p.key_color(Some(i));
+            // green for the three plain eases, purple for the lively ones and curves
+            for e in [Easing::EaseIn, Easing::EaseOut, Easing::EaseInOut] {
+                assert_eq!(colour(Interpolation::Ease(e)), p.keyframe_ease, "{theme:?}");
+            }
+            for e in [Easing::Overshoot, Easing::Bounce, Easing::Elastic] {
+                assert_eq!(colour(Interpolation::Ease(e)), p.keyframe_curve, "{theme:?}");
+            }
+            assert_eq!(
+                colour(Interpolation::Bezier(Bezier([250, 100, 750, 1000]))),
+                p.keyframe_curve
+            );
+            // and no two families share a colour
+            let family = [
+                colour(Interpolation::Smooth),
+                colour(Interpolation::Linear),
+                colour(Interpolation::Step),
+                p.keyframe_ease,
+                p.keyframe_curve,
+            ];
+            for (i, a) in family.iter().enumerate() {
+                for b in &family[i + 1..] {
+                    assert_ne!(a, b, "{theme:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_theme_has_every_colour() {
         for theme in Theme::ALL {
             let p = Palette::of(theme);
-            for c in [p.keyframe, p.keyframe_linear, p.keyframe_step] {
+            for c in [
+                p.keyframe,
+                p.keyframe_linear,
+                p.keyframe_step,
+                p.keyframe_ease,
+                p.keyframe_curve,
+            ] {
                 assert_ne!(c, Color32::from_rgb(0xFF, 0, 0xFF), "{theme:?}");
             }
         }
