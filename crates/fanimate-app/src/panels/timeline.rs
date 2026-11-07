@@ -1765,7 +1765,8 @@ fn build_ease_mark(e: Easing) -> Vec<egui::Vec2> {
     };
     let units: Vec<egui::Vec2> = match e {
         Easing::EaseIn => ease_in(),
-        Easing::EaseOut => ease_in().into_iter().map(|p| vec2(-p.x, p.y)).collect(),
+        // the mirror image, taken in the other order so it still goes round the same way
+        Easing::EaseOut => ease_in().into_iter().rev().map(|p| vec2(-p.x, p.y)).collect(),
         Easing::EaseInOut => {
             let mut v = arc(-4.0, 0.0, 7.0, 7.0, FRAC_PI_2, 3.0 * FRAC_PI_2);
             v.extend(arc(4.0, 0.0, 7.0, 7.0, -FRAC_PI_2, FRAC_PI_2));
@@ -1775,7 +1776,12 @@ fn build_ease_mark(e: Easing) -> Vec<egui::Vec2> {
         Easing::Bounce => arc(0.0, 9.0, 10.5, 18.0, PI, TAU),
         Easing::Elastic => {
             // four arms, each side pinched towards the middle (a quadratic curve to it)
-            let tips = [vec2(0.0, -11.5), vec2(11.5, 0.0), vec2(0.0, 11.5), vec2(-11.5, 0.0)];
+            let tips = [
+                vec2(0.0, -11.5),
+                vec2(11.5, 0.0),
+                vec2(0.0, 11.5),
+                vec2(-11.5, 0.0),
+            ];
             let mut v = Vec::new();
             for i in 0..4 {
                 let (a, b) = (tips[i], tips[(i + 1) % 4]);
@@ -2270,8 +2276,59 @@ fn action_banner(ui: &mut egui::Ui, shell: &mut Shell) {
         });
 }
 
+/// One choice in a list of interpolations (the dropdown beside the transport
+/// controls and the key's right-click menu): the key's mark as it is on the
+/// timeline, a graph of the curve, and the name, in one row that takes a click
+/// anywhere on it. `checked` tints it as the current choice; a row that is not
+/// `enabled` is dimmed and ignores the pointer.
+pub fn interp_row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    interp: Interpolation,
+    checked: bool,
+    enabled: bool,
+    width: f32,
+) -> egui::Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let row = ui.allocate_response(vec2(width, INTERP_ROW_HEIGHT), sense);
+    let painter = ui.painter();
+    let fade = if enabled { 1.0 } else { 0.4 };
+    let colour = p.key_color(Some(interp)).gamma_multiply(fade);
+    if enabled && row.hovered() {
+        painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.35));
+    } else if checked {
+        painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.18));
+    }
+    key_shape_scaled(
+        painter,
+        pos2(row.rect.left() + 16.0, row.rect.center().y),
+        Some(interp),
+        colour,
+        Stroke::new(1.0, p.bg),
+        MENU_KEY_SCALE,
+    );
+    curve_thumb(
+        painter,
+        Rect::from_min_size(
+            pos2(row.rect.left() + 32.0, row.rect.center().y - INTERP_THUMB.y / 2.0),
+            INTERP_THUMB,
+        ),
+        interp,
+        colour,
+        p,
+    );
+    painter.text(
+        pos2(row.rect.left() + 74.0, row.rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        interp.label(),
+        egui::FontId::proportional(13.0),
+        p.text.gamma_multiply(fade),
+    );
+    row
+}
+
 // wide enough for the mark, the curve thumbnail and "Ease in and out", with room to spare
-const INTERP_ROW_WIDTH: f32 = 188.0;
+pub const INTERP_ROW_WIDTH: f32 = 188.0;
 const INTERP_ROW_HEIGHT: f32 = 26.0;
 /// The curve thumbnail beside each name in the picker.
 const INTERP_THUMB: egui::Vec2 = egui::vec2(34.0, 18.0);
@@ -2324,39 +2381,7 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
             for interp in Interpolation::ALL {
                 // each choice is one row across the whole list: the mark and
                 // the label are ours, and a click anywhere on the row counts
-                let row = ui.allocate_response(vec2(INTERP_ROW_WIDTH, INTERP_ROW_HEIGHT), Sense::click());
-                let painter = ui.painter();
-                if row.hovered() {
-                    painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.35));
-                } else if Some(interp) == current {
-                    painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.18));
-                }
-                key_shape_scaled(
-                    painter,
-                    pos2(row.rect.left() + 16.0, row.rect.center().y),
-                    Some(interp),
-                    p.key_color(Some(interp)),
-                    Stroke::new(1.0, p.bg),
-                    MENU_KEY_SCALE,
-                );
-                curve_thumb(
-                    painter,
-                    Rect::from_min_size(
-                        pos2(row.rect.left() + 32.0, row.rect.center().y - INTERP_THUMB.y / 2.0),
-                        INTERP_THUMB,
-                    ),
-                    interp,
-                    p.key_color(Some(interp)),
-                    &p,
-                );
-                painter.text(
-                    pos2(row.rect.left() + 74.0, row.rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    interp.label(),
-                    egui::FontId::proportional(13.0),
-                    p.text,
-                );
-                if row.clicked() {
+                if interp_row(ui, &p, interp, Some(interp) == current, true, INTERP_ROW_WIDTH).clicked() {
                     chosen = Some(interp);
                 }
             }
@@ -2548,36 +2573,75 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fanimate_core::Bezier;
 
     #[test]
-    fn each_curved_key_has_its_own_picture_inside_its_box() {
+    fn each_named_ease_has_a_shape_of_its_own_inside_the_round_keys_box() {
         let mut seen: Vec<Vec<(i32, i32)>> = Vec::new();
-        for interp in Interpolation::ALL {
-            let curved = matches!(interp, Interpolation::Ease(_));
-            let points = curve_points(interp);
-            assert!(!points.is_empty());
-            for (x, y) in &points {
-                assert!(
-                    (-1.001..=1.001).contains(x) && (-1.001..=1.001).contains(y),
-                    "{interp:?}"
-                );
+        for e in Easing::ALL {
+            let outline = ease_mark(e);
+            assert!(outline.len() >= 3, "{e:?}");
+            for p in outline {
+                // within half of a 12 px frame cell, so neighbouring keys do not overlap
+                assert!(p.x.abs() <= 6.1 && p.y.abs() <= 6.1, "{e:?} {p:?}");
             }
-            if curved {
-                // every eased mark is a different drawing (rounded to a pixel or so)
-                let key: Vec<(i32, i32)> = points
-                    .iter()
-                    .map(|(x, y)| ((x * 6.0).round() as i32, (y * 6.0).round() as i32))
-                    .collect();
-                assert!(!seen.contains(&key), "{interp:?} looks like another key");
-                seen.push(key);
+            // star-shaped about the centre (the spark is filled as a fan from there):
+            // going round, the angle from the centre only ever increases
+            let turn: f32 = (0..outline.len())
+                .map(|i| {
+                    let (a, b) = (outline[i], outline[(i + 1) % outline.len()]);
+                    let d = (b.y.atan2(b.x) - a.y.atan2(a.x)).rem_euclid(std::f32::consts::TAU);
+                    // a step that goes the other way shows as nearly a whole turn
+                    assert!(
+                        d < std::f32::consts::PI,
+                        "{e:?} is not star-shaped about its centre"
+                    );
+                    d
+                })
+                .sum();
+            assert!((turn - std::f32::consts::TAU).abs() < 1e-3, "{e:?} winds {turn}");
+            // a different outline from every other ease (to about a tenth of a pixel)
+            let key: Vec<(i32, i32)> = outline
+                .iter()
+                .map(|p| ((p.x * 10.0).round() as i32, (p.y * 10.0).round() as i32))
+                .collect();
+            assert!(!seen.contains(&key), "{e:?} looks like another key");
+            seen.push(key);
+        }
+        // the three plain eases agree on their gentle side: ease in is wider on its
+        // left (round) than it is tall at the right edge, ease out is its mirror
+        let reach = |e: Easing| {
+            let o = ease_mark(e);
+            (
+                o.iter().map(|p| p.x).fold(f32::MAX, f32::min),
+                o.iter().map(|p| p.x).fold(f32::MIN, f32::max),
+            )
+        };
+        let (in_lo, in_hi) = reach(Easing::EaseIn);
+        let (out_lo, out_hi) = reach(Easing::EaseOut);
+        assert!((in_lo + out_hi).abs() < 1e-4 && (in_hi + out_lo).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_custom_curves_picture_stays_inside_its_box() {
+        for curve in [
+            Bezier([420, 0, 1000, 1000]),
+            Bezier([340, 1560, 640, 1000]),
+            Bezier([0, -1500, 1000, 2500]),
+        ] {
+            for (x, y) in curve_points(Interpolation::Bezier(curve)) {
+                assert!(
+                    (-1.001..=1.001).contains(&x) && (-1.001..=1.001).contains(&y),
+                    "{curve:?}"
+                );
             }
         }
         // ease in starts slowly: the first step rises less than the last
-        let ease_in = curve_points(Interpolation::Ease(Easing::EaseIn));
-        let rise = |i: usize| ease_in[i + 1].1 - ease_in[i].1;
-        assert!(rise(0) < rise(ease_in.len() - 2));
+        let slow = curve_points(Interpolation::Bezier(Bezier([420, 0, 1000, 1000])));
+        let rise = |i: usize| slow[i + 1].1 - slow[i].1;
+        assert!(rise(0) < rise(slow.len() - 2));
         // overshoot goes past the end, so the end is not the top of its box
-        let over = curve_points(Interpolation::Ease(Easing::Overshoot));
+        let over = curve_points(Interpolation::Bezier(Bezier([340, 1560, 640, 1000])));
         let top = over.iter().map(|p| p.1).fold(f32::MIN, f32::max);
         assert!((top - 1.0).abs() < 1e-3 && over.last().unwrap().1 < 0.99);
     }

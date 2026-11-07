@@ -5,7 +5,7 @@ use eframe::egui;
 use fanimate_editor::{Action, KeymapKind, Preset, Sample, Tool};
 
 use crate::app::Shell;
-use crate::panels::Tab;
+use crate::panels::{Tab, timeline};
 use crate::theme::{self, Theme};
 
 /// Menus are at least this wide, so short ones don't look like tooltips.
@@ -334,14 +334,23 @@ pub fn switch_items(ui: &mut egui::Ui, shell: &mut Shell) {
 pub fn interpolation_items(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.separator();
     let current = shell.editor.key_interpolation().flatten();
-    for interp in fanimate_core::Interpolation::ALL {
-        item_checked(
-            ui,
-            shell,
-            Action::SetInterpolation(interp),
-            current == Some(interp),
-        );
-    }
+    let p = shell.palette;
+    // the rows are packed like the dropdown's, whatever the rest of the menu does
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let width = ui.available_width().max(timeline::INTERP_ROW_WIDTH);
+        for interp in fanimate_core::Interpolation::ALL {
+            let action = Action::SetInterpolation(interp);
+            // with Home in front only what needs no document can run
+            let enabled = shell.editor.can_run(action)
+                && (!shell.docs.home_front() || crate::docs::works_on_home(action));
+            let row = timeline::interp_row(ui, &p, interp, current == Some(interp), enabled, width);
+            if row.clicked() {
+                shell.pending.push(action);
+                ui.close();
+            }
+        }
+    });
 }
 
 /// The "Loop" submenu of a timeline row or key: what the selected keys'
