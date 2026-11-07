@@ -145,3 +145,160 @@ pub fn chord(ui: &mut Ui, p: &Palette, text: &str) {
             ui.label(RichText::new(text).monospace().size(11.5).color(p.accent_strong));
         });
 }
+
+// ---------------------------------------------------------------------
+// Inspector rows (Properties, Text, and the other docked editing panels)
+
+/// Height of a row in an inspector panel.
+pub const ROW_HEIGHT: f32 = 22.0;
+/// Width of a row's label column, so the controls line up down the panel.
+pub const LABEL_WIDTH: f32 = 78.0;
+/// Width of a row's right-hand cell, where the keyframe diamond (or a small
+/// button) sits at the edge of the dock.
+pub const END_WIDTH: f32 = 24.0;
+/// Width of a number box: wide enough for the longest value it takes (such as
+/// `-1000.00` or `-1000.0%`), so a box never changes size as its value does.
+pub const NUMBER_WIDTH: f32 = 68.0;
+
+/// One row of an inspector panel: the label, the controls (which take the
+/// room between the label and the right-hand cell, starting at the left of
+/// it), and a right-hand cell that stays at the edge of the dock whatever the
+/// panel's width. Returns the rectangle of that cell, for the keyframe diamond.
+pub fn prop_row(ui: &mut Ui, label: &str, controls: impl FnOnce(&mut Ui)) -> egui::Rect {
+    prop_row_inner(ui, label, true, controls)
+}
+
+/// A row with no right-hand cell: the controls take all the room.
+pub fn prop_row_full(ui: &mut Ui, label: &str, controls: impl FnOnce(&mut Ui)) {
+    prop_row_inner(ui, label, false, controls);
+}
+
+fn prop_row_inner(ui: &mut Ui, label: &str, end: bool, controls: impl FnOnce(&mut Ui)) -> egui::Rect {
+    let width = ui.available_width();
+    ui.horizontal(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        // each cell is given its full width even when its content is narrower,
+        // so the next cell, and above all the right-hand one, never moves
+        ui.allocate_ui_with_layout(
+            vec2(LABEL_WIDTH, ROW_HEIGHT),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.set_min_size(vec2(LABEL_WIDTH, ROW_HEIGHT));
+                ui.add(egui::Label::new(label).truncate());
+            },
+        );
+        let end_room = if end { END_WIDTH + gap } else { 0.0 };
+        let room = (width - LABEL_WIDTH - gap - end_room).max(0.0);
+        ui.allocate_ui_with_layout(
+            vec2(room, ROW_HEIGHT),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.set_min_size(vec2(room, ROW_HEIGHT));
+                // sliders fill the cell, leaving room for their number box
+                ui.spacing_mut().slider_width = (room - NUMBER_WIDTH - 12.0).max(40.0);
+                controls(ui);
+            },
+        );
+        if end {
+            ui.allocate_exact_size(vec2(END_WIDTH, ROW_HEIGHT), egui::Sense::hover())
+                .0
+        } else {
+            egui::Rect::NOTHING
+        }
+    })
+    .inner
+}
+
+/// A number box of a fixed width in the monospace figure font. Use it for any
+/// value that changes while the playhead moves, so the panel does not shift.
+pub fn number(ui: &mut Ui, drag: egui::DragValue<'_>) -> egui::Response {
+    number_sized(ui, NUMBER_WIDTH, drag)
+}
+
+/// A number box of a chosen fixed width, for values that need fewer digits.
+pub fn number_sized(ui: &mut Ui, width: f32, drag: egui::DragValue<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.style_mut().override_font_id = Some(crate::theme::mono(12.5));
+        ui.add_sized(vec2(width, 20.0), drag)
+    })
+    .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run `f` in a fresh panel of `width` and return what it measured.
+    fn in_panel<R>(width: f32, f: impl FnOnce(&mut Ui) -> R) -> R {
+        let ctx = egui::Context::default();
+        let mut out = None;
+        let mut f = Some(f);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let mut run = ctx.run_ui(input, |ui| {
+            ui.scope(|ui| {
+                ui.set_max_width(width);
+                if let Some(f) = f.take() {
+                    out = Some(f(ui));
+                }
+            });
+        });
+        // no renderer to upload the font atlas to
+        run.textures_delta.clear();
+        out.expect("the panel ran")
+    }
+
+    #[test]
+    fn the_right_hand_cell_sits_at_the_edge_whatever_the_controls_take() {
+        for width in [284.0, 340.0, 520.0] {
+            let (left, wide) = in_panel(width, |ui| {
+                let left = ui.max_rect().left();
+                // controls far narrower than the room, then far wider
+                let narrow = prop_row(ui, "Rotation", |ui| {
+                    ui.label("0");
+                });
+                let wide = prop_row(ui, "Position", |ui| {
+                    for _ in 0..2 {
+                        number(ui, egui::DragValue::new(&mut 0.0f32));
+                    }
+                });
+                assert!((narrow.right() - wide.right()).abs() < 0.5, "{width}");
+                (left, narrow)
+            });
+            assert!(
+                (wide.right() - (left + width)).abs() < 0.5,
+                "{width}: {}",
+                wide.right()
+            );
+        }
+    }
+
+    #[test]
+    fn two_number_boxes_and_a_diamond_fit_the_narrowest_dock() {
+        // the dock's content width at its 300 px minimum: margins and the scroll bar come off
+        let fits = in_panel(300.0 - 16.0 - 10.0, |ui| {
+            let before = ui.min_rect();
+            let cell = prop_row(ui, "Position", |ui| {
+                number(ui, egui::DragValue::new(&mut -1000.0f32).max_decimals(2));
+                number(ui, egui::DragValue::new(&mut -1000.0f32).max_decimals(2));
+            });
+            cell.right() <= before.left() + ui.max_rect().width() + 0.5
+                && ui.min_rect().width() <= ui.max_rect().width() + 0.5
+        });
+        assert!(fits);
+    }
+
+    #[test]
+    fn a_number_box_keeps_its_width_as_the_value_changes() {
+        let widths: Vec<f32> = [0.0f32, 5.5, -1000.0]
+            .into_iter()
+            .map(|mut v| in_panel(300.0, |ui| number(ui, egui::DragValue::new(&mut v)).rect.width()))
+            .collect();
+        assert!(
+            widths.iter().all(|w| (w - NUMBER_WIDTH).abs() < 0.5),
+            "{widths:?}"
+        );
+    }
+}

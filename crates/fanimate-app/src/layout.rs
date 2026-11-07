@@ -23,6 +23,11 @@ const TOOL_BUTTON: f32 = 32.0;
 const TOOL_GAP: f32 = 3.0;
 const TOOL_MARGIN: f32 = 6.0;
 
+/// Narrowest the right column goes: the inspector panels' rows (a label, two
+/// number boxes and a keyframe diamond, or a slider and its value) fit
+/// without being cut off, and the canvas still gets most of a 1366 px screen.
+pub const RIGHT_MIN_WIDTH: f32 = 300.0;
+
 /// Where a docked panel lives (the tools column is not docked).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
@@ -225,8 +230,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, layout: &mut Layout, style: &e
     if layout.show_right {
         egui::Panel::right(Id::new(("layout-right", generation)))
             .resizable(true)
-            .default_size(layout.right_width)
-            .size_range(220.0..=720.0)
+            .default_size(layout.right_width.max(RIGHT_MIN_WIDTH))
+            .size_range(RIGHT_MIN_WIDTH..=720.0)
             .frame(frame())
             .show(ui, |ui| show_dock(ui, shell, &mut layout.right, style, "right"));
     }

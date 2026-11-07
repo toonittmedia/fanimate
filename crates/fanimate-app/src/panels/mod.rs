@@ -71,6 +71,16 @@ impl Tab {
     }
 }
 
+/// Room between an inspector panel's contents and the edges of its dock, so
+/// nothing sits glued to the border. The panels that are lists of rows
+/// (Layers, History, the X-sheet) and the timeline fill their dock instead:
+/// their rows' highlights reach the edge, as in a file manager.
+const PANEL_MARGIN: egui::Margin = egui::Margin::symmetric(8, 6);
+
+fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE.inner_margin(PANEL_MARGIN).show(ui, add);
+}
+
 pub struct TabViewer<'a> {
     pub shell: &'a mut Shell,
 }
@@ -94,15 +104,20 @@ impl egui_dock::TabViewer for TabViewer<'_> {
         match tab {
             Tab::Timeline => timeline::show(ui, shell),
             Tab::Layers => ui.add_enabled_ui(editable, |ui| layers::show(ui, shell)).inner,
-            Tab::Properties => {
-                ui.add_enabled_ui(editable, |ui| properties::show(ui, shell))
-                    .inner
-            }
-            Tab::Style => ui.add_enabled_ui(editable, |ui| style::show(ui, shell)).inner,
+            Tab::Properties => padded(ui, |ui| {
+                ui.add_enabled_ui(editable, |ui| properties::show(ui, shell));
+            }),
+            Tab::Style => padded(ui, |ui| {
+                ui.add_enabled_ui(editable, |ui| style::show(ui, shell));
+            }),
             Tab::History => ui.add_enabled_ui(editable, |ui| history::show(ui, shell)).inner,
             Tab::XSheet => ui.add_enabled_ui(editable, |ui| xsheet::show(ui, shell)).inner,
-            Tab::Actions => ui.add_enabled_ui(editable, |ui| actions::show(ui, shell)).inner,
-            Tab::Bones => ui.add_enabled_ui(editable, |ui| bones::show(ui, shell)).inner,
+            Tab::Actions => padded(ui, |ui| {
+                ui.add_enabled_ui(editable, |ui| actions::show(ui, shell));
+            }),
+            Tab::Bones => padded(ui, |ui| {
+                ui.add_enabled_ui(editable, |ui| bones::show(ui, shell));
+            }),
             Tab::Graph => ui.add_enabled_ui(editable, |ui| graph::show(ui, shell)).inner,
         }
     }
