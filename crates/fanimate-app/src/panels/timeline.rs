@@ -1652,10 +1652,11 @@ fn loop_mark(painter: &egui::Painter, c: egui::Pos2, color: egui::Color32, plus:
     }
 }
 
-/// A key's mark: round for smooth and for the eased and custom curves (all of
-/// them curved motion), a diamond for linear (and for keys that differ), square
-/// for step. The eased and custom marks carry a small picture of their curve
-/// (see [`curve_glyph`]), so they can be told apart as well as by colour.
+/// A key's mark: round for smooth, a diamond for linear (and for keys that
+/// differ), square for step, and a shape of its own for each named ease (see
+/// [`ease_mark`]). A custom curve is a round mark with a picture of its curve in
+/// it (see [`curve_glyph`]). Colour says the family: green for the plain eases,
+/// purple for the lively ones and custom curves.
 pub fn key_shape(
     painter: &egui::Painter,
     c: egui::Pos2,
@@ -1680,7 +1681,28 @@ pub fn key_shape_scaled(
         Some(Interpolation::Smooth) => {
             painter.circle(c, KEY_RADIUS * scale, fill, outline);
         }
-        Some(curved @ (Interpolation::Ease(_) | Interpolation::Bezier(_))) => {
+        Some(Interpolation::Ease(e)) => {
+            let points: Vec<Pos2> = ease_mark(e).iter().map(|p| c + *p * scale).collect();
+            if e == Easing::Elastic {
+                // concave, so it is filled as a fan from the middle (egui fills convex shapes only)
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(c, fill);
+                for p in &points {
+                    mesh.colored_vertex(*p, fill);
+                }
+                let n = points.len() as u32;
+                for i in 0..n {
+                    mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+                }
+                painter.add(Shape::mesh(mesh));
+                // a thin line in the fill colour softens the fan's hard edge
+                painter.add(Shape::closed_line(points.clone(), Stroke::new(1.0, fill)));
+                painter.add(Shape::closed_line(points, outline));
+            } else {
+                painter.add(Shape::convex_polygon(points, fill, outline));
+            }
+        }
+        Some(curved @ Interpolation::Bezier(_)) => {
             painter.circle(c, KEY_RADIUS * scale, fill, outline);
             // a faded ghost key (the loop preview) is too faint to carry a picture
             if fill.a() >= 200 {
@@ -1709,6 +1731,65 @@ pub fn key_shape_scaled(
 
 /// The radius of a round key.
 const KEY_RADIUS: f32 = 5.5;
+
+/// The outline of a named ease's mark, as offsets from the key's centre at
+/// scale 1, going round the shape. The shapes follow one idea with the round
+/// marks: a round side is gentle and a flat side is abrupt, so Ease in is
+/// round at the start and flat at the end, Ease out is the reverse, and Ease
+/// in and out is round at both ends. The lively three are a triangle (shoots
+/// past), a dome (a ball's arc) and a four-point spark (vibrates). Each fits in
+/// the box a round key does, and is star-shaped about its centre.
+fn ease_mark(e: Easing) -> &'static [egui::Vec2] {
+    static MARKS: std::sync::LazyLock<Vec<Vec<egui::Vec2>>> =
+        std::sync::LazyLock::new(|| Easing::ALL.iter().map(|e| build_ease_mark(*e)).collect());
+    let i = Easing::ALL.iter().position(|x| *x == e).unwrap_or(0);
+    &MARKS[i]
+}
+
+fn build_ease_mark(e: Easing) -> Vec<egui::Vec2> {
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    // an elliptical arc about (cx, cy) from angle `a0` to `a1` (y points down)
+    let arc = |cx: f32, cy: f32, rx: f32, ry: f32, a0: f32, a1: f32| -> Vec<egui::Vec2> {
+        (0..=8)
+            .map(|i| {
+                let a = a0 + (a1 - a0) * i as f32 / 8.0;
+                vec2(cx + rx * a.cos(), cy + ry * a.sin())
+            })
+            .collect()
+    };
+    // drawn on a 24 unit grid where a round key has radius 10.5
+    let ease_in = || {
+        let mut v = vec![vec2(9.0, -9.0), vec2(9.0, 9.0)];
+        v.extend(arc(0.0, 0.0, 9.0, 9.0, FRAC_PI_2, 3.0 * FRAC_PI_2));
+        v
+    };
+    let units: Vec<egui::Vec2> = match e {
+        Easing::EaseIn => ease_in(),
+        Easing::EaseOut => ease_in().into_iter().map(|p| vec2(-p.x, p.y)).collect(),
+        Easing::EaseInOut => {
+            let mut v = arc(-4.0, 0.0, 7.0, 7.0, FRAC_PI_2, 3.0 * FRAC_PI_2);
+            v.extend(arc(4.0, 0.0, 7.0, 7.0, -FRAC_PI_2, FRAC_PI_2));
+            v
+        }
+        Easing::Overshoot => vec![vec2(-9.0, -9.5), vec2(10.0, 0.0), vec2(-9.0, 9.5)],
+        Easing::Bounce => arc(0.0, 9.0, 10.5, 18.0, PI, TAU),
+        Easing::Elastic => {
+            // four arms, each side pinched towards the middle (a quadratic curve to it)
+            let tips = [vec2(0.0, -11.5), vec2(11.5, 0.0), vec2(0.0, 11.5), vec2(-11.5, 0.0)];
+            let mut v = Vec::new();
+            for i in 0..4 {
+                let (a, b) = (tips[i], tips[(i + 1) % 4]);
+                for s in 0..6 {
+                    let t = s as f32 / 6.0;
+                    v.push(a * (1.0 - t) * (1.0 - t) + b * t * t);
+                }
+            }
+            v
+        }
+    };
+    let k = KEY_RADIUS / 10.5;
+    units.into_iter().map(|p| p * k).collect()
+}
 
 /// Dark ink on a light fill and white on a dark one.
 fn ink_on(fill: egui::Color32) -> egui::Color32 {
@@ -1769,6 +1850,67 @@ fn curve_glyph(
     if matches!(interp, Interpolation::Bezier(_)) {
         painter.circle_filled(c, 1.1 * scale, ink);
     }
+}
+
+/// The whole curve of an interpolation for the picker's thumbnails, in a unit
+/// box (x is progress, y is the value with 0 at the first key and 1 at the
+/// next, up is more), and where the target line (y = 1) sits in the box once
+/// the box is stretched to hold any overshoot. Step is a hold, then the jump.
+fn thumb_points(interp: Interpolation) -> (Vec<(f32, f32)>, f32) {
+    const STEPS: usize = 48;
+    let values: Vec<(f32, f32)> = if interp == Interpolation::Step {
+        vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+    } else {
+        (0..=STEPS)
+            .map(|i| {
+                let t = i as f32 / STEPS as f32;
+                (t, interp.apply(t))
+            })
+            .collect()
+    };
+    let (lo, hi) = values
+        .iter()
+        .fold((0.0f32, 1.0f32), |(lo, hi), (_, v)| (lo.min(*v), hi.max(*v)));
+    let span = (hi - lo).max(1e-3);
+    let points = values.into_iter().map(|(t, v)| (t, (v - lo) / span)).collect();
+    (points, (1.0 - lo) / span)
+}
+
+/// A small graph of how a value moves between two keys, drawn beside the name
+/// in the picker: the curve in the key's colour and a dashed line at the value
+/// the next key holds. The line is what tells the lively eases apart: an
+/// overshoot crosses it once and settles, a bounce meets it again and again
+/// from below, an elastic swings across it several times.
+fn curve_thumb(
+    painter: &egui::Painter,
+    rect: Rect,
+    interp: Interpolation,
+    color: egui::Color32,
+    p: &Palette,
+) {
+    painter.rect(
+        rect,
+        3.0,
+        p.bg,
+        Stroke::new(1.0, p.text.gamma_multiply(0.18)),
+        egui::StrokeKind::Inside,
+    );
+    let plot = rect.shrink2(vec2(5.0, 4.0));
+    let at = |(x, y): (f32, f32)| pos2(plot.left() + x * plot.width(), plot.bottom() - y * plot.height());
+    let (points, target) = thumb_points(interp);
+    let y = at((0.0, target)).y;
+    painter.add(Shape::dashed_line(
+        &[pos2(plot.left(), y), pos2(plot.right(), y)],
+        Stroke::new(1.0, p.text.gamma_multiply(0.45)),
+        2.0,
+        2.0,
+    ));
+    painter.add(Shape::line(
+        points.iter().map(|&pt| at(pt)).collect(),
+        Stroke::new(1.5, color),
+    ));
+    painter.circle_filled(at((0.0, 0.0)), 1.8, color);
+    painter.circle_filled(at((1.0, target)), 1.8, color);
 }
 
 fn toggle_expanded(shell: &mut Shell, id: LayerId) {
@@ -2128,33 +2270,53 @@ fn action_banner(ui: &mut egui::Ui, shell: &mut Shell) {
         });
 }
 
-// wide enough for "Ease in and out" beside its mark, with room to spare
-const INTERP_ROW_WIDTH: f32 = 160.0;
-const INTERP_ROW_HEIGHT: f32 = 24.0;
+// wide enough for the mark, the curve thumbnail and "Ease in and out", with room to spare
+const INTERP_ROW_WIDTH: f32 = 188.0;
+const INTERP_ROW_HEIGHT: f32 = 26.0;
+/// The curve thumbnail beside each name in the picker.
+const INTERP_THUMB: egui::Vec2 = egui::vec2(34.0, 18.0);
 /// The marks in the menu are larger than on the timeline, so their pictures read.
 const MENU_KEY_SCALE: f32 = 1.5;
 
-/// How keys added from now on move on to the next key, with the shape and
-/// colour they have on the timeline: smooth (round, amber), linear (a
-/// diamond, blue), step (square, red).
+/// How keys move on to the next key, with the shape and colour they have on
+/// the timeline: smooth (round, amber), linear (a diamond, blue), step
+/// (square, red). With keys picked in the timeline it shows and changes theirs
+/// ("Mixed" when they differ); with none picked it is the setting for keys
+/// added from now on.
 fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
     let p = shell.palette;
-    let current = shell.editor.key_interp;
-    let mark = |ui: &mut egui::Ui, interp: Interpolation| {
+    let picked = if shell.editor.has_selected_keys() {
+        shell.editor.key_interpolation()
+    } else {
+        None
+    };
+    // `None` here means no property key is picked, so the dropdown is the default for new keys
+    let editing_keys = picked.is_some();
+    let current: Option<Interpolation> = match picked {
+        Some(shared) => shared,
+        None => Some(shell.editor.key_interp),
+    };
+    let mark = |ui: &mut egui::Ui, interp: Option<Interpolation>| {
         let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-        key_shape(
-            ui.painter(),
-            rect.center(),
-            Some(interp),
-            p.key_color(Some(interp)),
-            Stroke::new(1.0, p.bg),
-        );
+        if let Some(interp) = interp {
+            key_shape(
+                ui.painter(),
+                rect.center(),
+                Some(interp),
+                p.key_color(Some(interp)),
+                Stroke::new(1.0, p.bg),
+            );
+        }
     };
     mark(ui, current);
     let mut chosen = None;
+    // tall enough for every row, so the list never scrolls while the screen has room
+    let list_height = (INTERP_ROW_HEIGHT * Interpolation::ALL.len() as f32 + 8.0)
+        .min(ui.ctx().content_rect().height() - 40.0);
     egui::ComboBox::from_id_salt("key-interpolation")
         .width(112.0)
-        .selected_text(current.label())
+        .height(list_height)
+        .selected_text(current.map_or("Mixed", |i| i.label()))
         .show_ui(ui, |ui| {
             // a fixed width, so the list does not change size as it opens
             ui.set_min_width(INTERP_ROW_WIDTH);
@@ -2166,7 +2328,7 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
                 let painter = ui.painter();
                 if row.hovered() {
                     painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.35));
-                } else if interp == current {
+                } else if Some(interp) == current {
                     painter.rect_filled(row.rect, 2.0, p.accent.gamma_multiply(0.18));
                 }
                 key_shape_scaled(
@@ -2177,8 +2339,18 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
                     Stroke::new(1.0, p.bg),
                     MENU_KEY_SCALE,
                 );
+                curve_thumb(
+                    painter,
+                    Rect::from_min_size(
+                        pos2(row.rect.left() + 32.0, row.rect.center().y - INTERP_THUMB.y / 2.0),
+                        INTERP_THUMB,
+                    ),
+                    interp,
+                    p.key_color(Some(interp)),
+                    &p,
+                );
                 painter.text(
-                    pos2(row.rect.left() + 34.0, row.rect.center().y),
+                    pos2(row.rect.left() + 74.0, row.rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     interp.label(),
                     egui::FontId::proportional(13.0),
@@ -2190,12 +2362,20 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
             }
         })
         .response
-        .on_hover_text(
+        .on_hover_text(if editing_keys {
+            "How the picked keys move on to the next key. Smooth eases in and out, Linear moves at \
+             a steady speed, Step holds then jumps. Click empty space to pick none and set the \
+             type for new keys instead."
+        } else {
             "How keys you add move on to the next key. Smooth eases in and out, Linear moves at a \
-             steady speed, Step holds then jumps. Keys already on the timeline keep theirs.",
-        );
+             steady speed, Step holds then jumps. Pick keys to change theirs instead."
+        });
     if let Some(interp) = chosen {
-        shell.pending.push(Action::SetKeyInterpolation(interp));
+        shell.pending.push(if editing_keys {
+            Action::SetInterpolation(interp)
+        } else {
+            Action::SetKeyInterpolation(interp)
+        });
     }
 }
 
@@ -2400,6 +2580,49 @@ mod tests {
         let over = curve_points(Interpolation::Ease(Easing::Overshoot));
         let top = over.iter().map(|p| p.1).fold(f32::MIN, f32::max);
         assert!((top - 1.0).abs() < 1e-3 && over.last().unwrap().1 < 0.99);
+    }
+
+    #[test]
+    fn the_lively_eases_read_differently_against_the_target_line() {
+        // how many times the curve moves from one side of the target to the other
+        let crossings = |e: Easing| {
+            let (points, target) = thumb_points(Interpolation::Ease(e));
+            let mut side = 0i32;
+            let mut crossed = 0;
+            for (_, y) in points {
+                let now = if y > target + 0.02 {
+                    1
+                } else if y < target - 0.02 {
+                    -1
+                } else {
+                    0
+                };
+                if now != 0 {
+                    if side != 0 && now != side {
+                        crossed += 1;
+                    }
+                    side = now;
+                }
+            }
+            crossed
+        };
+        // overshoot: below, then past the target once and back (one crossing)
+        assert_eq!(crossings(Easing::Overshoot), 1);
+        // bounce never goes past the target, it meets it from below again and again
+        assert_eq!(crossings(Easing::Bounce), 0);
+        let (bounce, target) = thumb_points(Interpolation::Ease(Easing::Bounce));
+        assert!(bounce.iter().all(|p| p.1 <= target + 1e-4));
+        // each arch ends in a dip below it, so there are several dips
+        let dips = bounce
+            .windows(3)
+            .filter(|w| w[1].1 < w[0].1 && w[1].1 <= w[2].1 && w[1].1 < target - 0.01)
+            .count();
+        assert!(dips >= 3, "{dips}");
+        // elastic swings across it several times
+        assert!(crossings(Easing::Elastic) >= 3);
+        // a step holds the first value until the jump
+        let (step, _) = thumb_points(Interpolation::Step);
+        assert_eq!(step, vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]);
     }
 
     /// Where a frame is drawn, in pixels from the left of the frame area.
