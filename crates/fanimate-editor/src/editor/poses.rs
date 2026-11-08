@@ -237,6 +237,67 @@ fn unique_name(wanted: &str, taken: &[&str]) -> String {
         .unwrap_or_else(|| base.to_owned())
 }
 
+impl Editor {
+    /// The action `index` of the bone layer `layer`, ready for the personal
+    /// library (see `fanimate_core::poses::PoseLibrary`). Nothing in the
+    /// project changes.
+    pub fn pose_for_library(&self, layer: LayerId, index: usize) -> Result<poses::LibraryPose, String> {
+        let Some(LayerKind::Bone { skeleton, .. }) = self.doc.find(layer).map(|l| &l.kind) else {
+            return Err("That is not a bone layer.".to_owned());
+        };
+        let Some(action) = skeleton.actions.get(index) else {
+            return Err("There is no such action.".to_owned());
+        };
+        if action.driver.is_some() {
+            return Err(
+                "A Smart Bone action belongs to its own rig and cannot go in the library.".to_owned(),
+            );
+        }
+        poses::LibraryPose::keep(skeleton, index).ok_or_else(|| "That action cannot be kept.".to_owned())
+    }
+
+    /// Put a pose from the personal library on the rig of `layer`, as a new
+    /// action at the end of its list, bones paired by name. One undo step.
+    /// Returns the new action's index and a note about bones with no match.
+    pub fn insert_library_pose(
+        &mut self,
+        layer: LayerId,
+        pose: &poses::LibraryPose,
+    ) -> Result<(usize, String), String> {
+        if self.editing_blocked() {
+            return Err("Pause the animation to add a pose.".to_owned());
+        }
+        if self.editing_action().is_some() {
+            return Err("Finish editing the action first.".to_owned());
+        }
+        let Some(LayerKind::Bone { skeleton, .. }) = self.doc.find(layer).map(|l| &l.kind) else {
+            return Err("Select a bone layer to put the pose on.".to_owned());
+        };
+        if skeleton.actions.len() >= MAX_ACTIONS {
+            return Err(format!("A rig has at most {MAX_ACTIONS} actions and poses."));
+        }
+        let made = pose.onto(skeleton)?;
+        let taken: Vec<&str> = skeleton.actions.iter().map(|a| a.name.as_str()).collect();
+        let mut new = made.action;
+        new.name = unique_name(&new.name, &taken);
+        let note = if made.unmatched.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} bone(s) had no match: {})",
+                made.unmatched.len(),
+                made.unmatched.join(", ")
+            )
+        };
+        self.checkpoint("Add pose from library");
+        let Some(LayerKind::Bone { skeleton, .. }) = self.doc.find_mut(layer).map(|l| &mut l.kind) else {
+            return Err("Select a bone layer to put the pose on.".to_owned());
+        };
+        skeleton.actions.push(new);
+        Ok((skeleton.actions.len() - 1, note))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +459,73 @@ mod tests {
         let id = layer.id;
         ed.doc.layers.push(layer);
         id
+    }
+
+    #[test]
+    fn a_pose_kept_in_the_library_goes_on_another_rig_by_names_in_one_undo_step() {
+        let (mut ed, tall) = rig();
+        ed.go_to(13);
+        ed.save_pose_named(tall, "Reach").unwrap();
+        let kept = ed.pose_for_library(tall, 0).unwrap();
+        let small = second_rig(&mut ed);
+        let before = ed.revision();
+        let (new, note) = ed.insert_library_pose(small, &kept).unwrap();
+        assert_eq!(ed.rig_actions(small)[new].name, "Reach");
+        assert!(
+            note.contains("tail") || note.is_empty() || note.contains("no match"),
+            "{note}"
+        );
+        // the arm turned 1.2 from its rest (0) there; here the rest is -0.5
+        let arm = ed.rig_actions(small)[new]
+            .bones
+            .iter()
+            .find(|b| b.bone == 1)
+            .unwrap();
+        assert!(
+            (arm.angle.keys[0].value - 0.7).abs() < 1.0e-5,
+            "{}",
+            arm.angle.keys[0].value
+        );
+        assert!(ed.revision() > before);
+        ed.run(Action::Undo);
+        assert!(ed.rig_actions(small).is_empty());
+        // taking a name twice gives a number
+        ed.insert_library_pose(small, &kept).unwrap();
+        let (again, _) = ed.insert_library_pose(small, &kept).unwrap();
+        assert_eq!(ed.rig_actions(small)[again].name, "Reach 1");
+    }
+
+    #[test]
+    fn the_library_refuses_what_cannot_be_kept_or_placed_and_changes_nothing() {
+        let (mut ed, tall) = rig();
+        ed.save_pose_named(tall, "Reach").unwrap();
+        assert!(ed.pose_for_library(tall, 7).is_err());
+        let kept = ed.pose_for_library(tall, 0).unwrap();
+        // not a bone layer
+        let plain = ed.doc.new_layer("art", LayerKind::vector(vec![]));
+        let pid = plain.id;
+        ed.doc.layers.push(plain);
+        assert!(ed.pose_for_library(pid, 0).is_err());
+        let revision = ed.revision();
+        assert!(ed.insert_library_pose(pid, &kept).is_err());
+        // a rig with no bone named alike has nothing to take
+        let mut none = Skeleton::default();
+        none.add("wing", None, Vec2::ZERO, 10.0, 0.0);
+        let layer = ed.doc.new_layer(
+            "Bird",
+            LayerKind::Bone {
+                skeleton: none,
+                children: vec![],
+            },
+        );
+        let bid = layer.id;
+        ed.doc.layers.push(layer);
+        assert!(
+            ed.insert_library_pose(bid, &kept)
+                .unwrap_err()
+                .contains("None of the bones")
+        );
+        assert_eq!(ed.revision(), revision);
     }
 
     #[test]

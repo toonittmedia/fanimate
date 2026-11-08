@@ -174,6 +174,113 @@ fn swap_word(word: &str) -> Option<String> {
     None
 }
 
+// ---- the personal library ---------------------------------------------
+
+/// The most poses and actions a personal library holds.
+pub const MAX_LIBRARY: usize = 500;
+/// The largest library file read, in bytes (checked by whoever reads the file).
+pub const MAX_LIBRARY_BYTES: usize = 16 * 1024 * 1024;
+/// The format of the library file, for a later Fanimate to tell.
+pub const LIBRARY_VERSION: u32 = 1;
+
+/// A pose or action kept outside any project, with the bones it was made on
+/// (names and rest angles, no artwork), so it can be put on another rig by
+/// bone names exactly as Copy to Rig does.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LibraryPose {
+    pub rig: Skeleton,
+    pub action: RigAction,
+}
+
+impl LibraryPose {
+    /// The action `index` of `skeleton`, ready to keep. `None` for a Smart
+    /// Bone action (it only means something on its own rig) or a missing one.
+    pub fn keep(skeleton: &Skeleton, index: usize) -> Option<Self> {
+        let action = skeleton.actions.get(index)?;
+        if action.driver.is_some() {
+            return None;
+        }
+        // only the bones and their rest: the library never holds a rig's other actions or controllers
+        let mut rig = Skeleton {
+            bones: skeleton.bones.clone(),
+            next_bone_id: skeleton.next_bone_id,
+            actions: Vec::new(),
+            controllers: Vec::new(),
+        };
+        // the rest pose is what the angles are measured from: freeze each bone's own keys away
+        for bone in &mut rig.bones {
+            bone.angle.keys.clear();
+        }
+        let mut action = action.clone();
+        action.shapes.clear();
+        Some(Self { rig, action })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.action.name
+    }
+
+    /// Whether the action is a single pose rather than an animation.
+    pub fn is_pose(&self) -> bool {
+        self.action.is_pose()
+    }
+
+    /// The action as it plays on `rig`: bones paired by name, each bone's
+    /// turn from its own rest angle carried over.
+    pub fn onto(&self, rig: &Skeleton) -> Result<crate::retarget::Retargeted, String> {
+        crate::retarget::retarget(&self.rig, &self.action, rig)
+    }
+}
+
+/// The user's personal library of poses and actions.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PoseLibrary {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub poses: Vec<LibraryPose>,
+}
+
+impl PoseLibrary {
+    /// Whether a library read from a file is acceptable: not from a newer Fanimate and not too big.
+    pub fn check(&self) -> Result<(), String> {
+        if self.version > LIBRARY_VERSION {
+            return Err("the pose library was made by a newer Fanimate".to_owned());
+        }
+        if self.poses.len() > MAX_LIBRARY {
+            return Err(format!("the pose library holds more than {MAX_LIBRARY} poses"));
+        }
+        Ok(())
+    }
+
+    /// Add `pose`, giving it a name no other has (a number is added). Fails when full.
+    pub fn add(&mut self, mut pose: LibraryPose) -> Result<usize, String> {
+        if self.poses.len() >= MAX_LIBRARY {
+            return Err(format!("The library holds at most {MAX_LIBRARY} poses."));
+        }
+        let base = pose.action.name.trim().to_owned();
+        let base = if base.is_empty() { "Pose".to_owned() } else { base };
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.poses.iter().any(|p| p.name().eq_ignore_ascii_case(&name)) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        pose.action.name = name;
+        self.poses.push(pose);
+        Ok(self.poses.len() - 1)
+    }
+
+    pub fn remove(&mut self, index: usize) -> bool {
+        if index < self.poses.len() {
+            self.poses.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +416,83 @@ mod tests {
             angle: Channel::new(0.0).with_key(0, 1.0, Interpolation::Linear),
         });
         assert_eq!(mirror_pose(&s, &stale).pose.bones.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+    use glam::Vec2;
+
+    fn rig(names: &[&str], rest: f32) -> Skeleton {
+        let mut s = Skeleton::default();
+        for (i, name) in names.iter().enumerate() {
+            s.add(*name, i.checked_sub(1), Vec2::ZERO, 10.0, rest);
+        }
+        s
+    }
+
+    fn with_pose(mut s: Skeleton, turn: f32) -> Skeleton {
+        let at = snapshot(&s, "wave", 0.0);
+        let mut pose = at;
+        for b in &mut pose.bones {
+            let rest = s.bones[b.bone].angle.base;
+            b.angle = Channel::new(rest).with_key(0, rest + turn, Interpolation::Linear);
+        }
+        s.actions.push(pose);
+        s
+    }
+
+    #[test]
+    fn a_kept_pose_lands_on_another_rig_by_name_keeping_the_turn_from_rest() {
+        let source = with_pose(rig(&["body", "arm L"], 0.0), 0.5);
+        let kept = LibraryPose::keep(&source, 0).unwrap();
+        assert!(kept.is_pose());
+        // a different rig with other rest angles and an extra bone
+        let other = rig(&["Body", "arm.l", "tail"], 1.0);
+        let made = kept.onto(&other).unwrap();
+        assert_eq!(made.matched, 2);
+        for entry in &made.action.bones {
+            // rest 1.0 plus the 0.5 turn
+            assert!((entry.angle.keys[0].value - 1.5).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn what_is_kept_has_no_other_actions_artwork_keys_or_smart_bones() {
+        let mut source = with_pose(rig(&["body"], 0.0), 0.2);
+        source.actions.push(RigAction::new("smart", Some(0), 10));
+        assert!(
+            LibraryPose::keep(&source, 1).is_none(),
+            "a Smart Bone action stays on its rig"
+        );
+        assert!(LibraryPose::keep(&source, 9).is_none());
+        let kept = LibraryPose::keep(&source, 0).unwrap();
+        assert!(kept.rig.actions.is_empty() && kept.rig.controllers.is_empty());
+    }
+
+    #[test]
+    fn the_library_names_poses_uniquely_removes_and_checks() {
+        let source = with_pose(rig(&["body", "arm L"], 0.0), 0.5);
+        let mut lib = PoseLibrary::default();
+        assert_eq!(lib.add(LibraryPose::keep(&source, 0).unwrap()), Ok(0));
+        assert_eq!(lib.add(LibraryPose::keep(&source, 0).unwrap()), Ok(1));
+        assert_eq!(lib.poses[0].name(), "wave");
+        assert_eq!(lib.poses[1].name(), "wave 2");
+        assert!(lib.check().is_ok());
+        lib.version = LIBRARY_VERSION + 1;
+        assert!(lib.check().unwrap_err().contains("newer"));
+        assert!(lib.remove(0) && !lib.remove(5));
+        assert_eq!(lib.poses.len(), 1);
+    }
+
+    #[test]
+    fn a_full_library_refuses_one_more() {
+        let source = with_pose(rig(&["body"], 0.0), 0.5);
+        let mut lib = PoseLibrary::default();
+        for _ in 0..MAX_LIBRARY {
+            lib.add(LibraryPose::keep(&source, 0).unwrap()).unwrap();
+        }
+        assert!(lib.add(LibraryPose::keep(&source, 0).unwrap()).is_err());
     }
 }

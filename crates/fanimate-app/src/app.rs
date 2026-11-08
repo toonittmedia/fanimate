@@ -397,6 +397,10 @@ pub struct Shell {
     pub ai: crate::assistant::AiSettings,
     pub keys: crate::assistant::Keys,
     pub assistant: crate::assistant::Assistant,
+    /// The user's poses and actions kept outside any project (see `panels/pose_library.rs`).
+    pub pose_library: fanimate_core::poses::PoseLibrary,
+    /// The library file exists but could not be read: it is never overwritten.
+    pub pose_library_unreadable: bool,
     /// What the policy files allow (see `policy.rs`). The user's own choice to
     /// work offline is added by [`Shell::policy`].
     file_policy: fanimate_core::Policy,
@@ -438,6 +442,7 @@ impl FanimateApp {
         let palette = theme::apply(&cc.egui_ctx, settings.theme);
 
         // the blank document the Home tab hides until a document is opened
+        let pose_library = crate::panels::pose_library::load();
         let mut editor = Editor::untitled();
         editor.draw = settings.draw;
         // a default style the user chose is how a session starts; without one
@@ -520,6 +525,8 @@ impl FanimateApp {
                 ai: settings.ai.clone(),
                 keys: Default::default(),
                 assistant: Default::default(),
+                pose_library: pose_library.0,
+                pose_library_unreadable: pose_library.1.is_some(),
                 file_policy,
                 recent_actions: Vec::new(),
                 update_manual: false,

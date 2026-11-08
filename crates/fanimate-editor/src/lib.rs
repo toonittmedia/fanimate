@@ -25,6 +25,7 @@ pub use editor::{
 };
 pub use editor::{Clipboards, KeyRef, KeySelect, KeyTarget};
 pub use history::History;
+pub mod pose_library;
 pub use keymap::{Chord, Keymap, KeymapKind};
 pub use snap::{GridSettings, Guide, SnapSettings};
 pub use styles::{BUILT_IN as BUILT_IN_STYLE, StyleBook, StyleError};

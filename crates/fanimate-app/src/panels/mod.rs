@@ -10,6 +10,7 @@ pub mod graph;
 pub mod handles;
 mod history;
 mod layers;
+pub mod pose_library;
 mod properties;
 mod range_sticks;
 pub mod rulers;

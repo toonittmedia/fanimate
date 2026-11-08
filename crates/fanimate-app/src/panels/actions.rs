@@ -142,10 +142,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                             }
                         });
                     }
+                    if !smart && ui.button("Save to My Poses").clicked() {
+                        super::pose_library::keep(shell, layer, i);
+                        ui.close();
+                    }
                     ui.separator();
                     menus::item(ui, shell, Action::DeleteAction(i));
                 });
             }
             super::controllers::section(ui, shell, layer);
+            super::pose_library::section(ui, shell, layer);
         });
 }
