@@ -409,11 +409,24 @@ pub struct TextStyle {
 /// A handle on an editor that scripts act through.
 pub struct Api<'a> {
     editor: &'a mut Editor,
+    /// Put on every layer a call creates (see [`Api::with_provenance`]).
+    stamp: Option<Provenance>,
 }
 
 impl<'a> Api<'a> {
     pub fn new(editor: &'a mut Editor) -> Self {
-        Self { editor }
+        Self { editor, stamp: None }
+    }
+
+    /// An API whose calls label what they make: every layer a call creates
+    /// gets `provenance`, inside the same undo step as the layer, so a tool
+    /// that is a model can never forget to say so. A layer that already has a
+    /// record keeps it. Used by the assistant.
+    pub fn with_provenance(editor: &'a mut Editor, provenance: Provenance) -> Self {
+        Self {
+            editor,
+            stamp: Some(provenance),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1096,6 +1109,16 @@ impl<'a> Api<'a> {
                 }
                 _ => Err(ApiError::no_layer(layer)),
             }
+        })
+    }
+
+    /// Offset Path: add a shape `distance` outside shape `index` of `layer`
+    /// (inside when negative) as a new shape just above it, with its style.
+    /// Returns the new shape's index.
+    pub fn offset_shape(&mut self, layer: u32, index: usize, distance: f32) -> Result<usize, ApiError> {
+        self.edit("Offset path", |ed| {
+            ed.offset_shape(LayerId(layer), index, distance)
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
         })
     }
 
@@ -1874,10 +1897,29 @@ impl<'a> Api<'a> {
         label: &str,
         f: impl FnOnce(&mut Editor) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
-        self.editor.transaction(label, f).map_err(|e| match e {
-            TxError::Playing => ApiError::new(ErrorCode::Playing, fanimate_editor::PAUSE_TO_EDIT),
-            TxError::Failed(e) => e,
-        })
+        let stamp = self.stamp.clone();
+        self.editor
+            .transaction(label, |ed| {
+                let mut before = std::collections::HashSet::new();
+                if stamp.is_some() {
+                    ed.doc.walk(|l| {
+                        before.insert(l.id);
+                    });
+                }
+                let made = f(ed)?;
+                if let Some(stamp) = &stamp {
+                    ed.doc.walk_mut(|l| {
+                        if l.provenance.is_none() && !before.contains(&l.id) {
+                            l.provenance = Some(stamp.clone());
+                        }
+                    });
+                }
+                Ok(made)
+            })
+            .map_err(|e| match e {
+                TxError::Playing => ApiError::new(ErrorCode::Playing, fanimate_editor::PAUSE_TO_EDIT),
+                TxError::Failed(e) => e,
+            })
     }
 }
 

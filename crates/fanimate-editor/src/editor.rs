@@ -30,6 +30,7 @@ mod graph;
 mod handles;
 mod import;
 mod keys;
+mod offset;
 mod physics;
 mod points;
 mod points_frame;
@@ -172,6 +173,8 @@ pub struct Editor {
     pub star_inner: f32,
     /// Shape Builder drag state.
     pub shape_builder: Option<ShapeBuilderState>,
+    /// Distance the next Offset Path grows (or shrinks when negative) shapes.
+    pub offset_distance: f32,
     clipboard: Option<String>,
     /// Shapes and points on the clipboard, as JSON (see `clipboard_shapes`).
     shape_clipboard: Option<String>,
@@ -290,6 +293,7 @@ impl Editor {
             star_points: 5,
             star_inner: 0.4,
             shape_builder: None,
+            offset_distance: 10.0,
             clipboard: None,
             shape_clipboard: None,
             focus: Focus::default(),
@@ -679,6 +683,7 @@ impl Editor {
                 self.combine_shapes(fanimate_core::BoolOp::Intersect);
             }
             ExpandShape => self.expand_shape(),
+            OffsetPath => self.offset_path(),
             // with the timeline in front, Ctrl+A picks keys and Esc lets go of them
             SelectAll if self.focus == Focus::Timeline => self.select_all_keys(),
             SelectNone if self.focus == Focus::Timeline && self.has_selected_keys() => {
@@ -759,8 +764,8 @@ impl Editor {
             | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
             | ExportSpriteSheet | ExportVideo | RenderQueue | RenderPreviewFrame | LipSync
             | CheckForUpdates | InstallUpdate | Workspace(_) | Quit | ToggleOnionSkin | ToggleLightTable
-            | LookThroughCamera | Preferences | CommandPalette | LayerProperties | ZoomIn | ZoomOut
-            | FitView | ActualSize => {
+            | LookThroughCamera | Preferences | CommandPalette | AskAssistant | LayerProperties | ZoomIn
+            | ZoomOut | FitView | ActualSize => {
                 return Outcome::App(action);
             }
         }
@@ -868,6 +873,7 @@ impl Editor {
             FinishPath => self.is_drawing_path(),
             Union | Subtract | Intersect => self.can_combine(),
             ExpandShape => self.expandable_shapes() > 0,
+            OffsetPath => self.offset_targets().is_some(),
             SetInterpolation(_) => self.key_interpolation().is_some(),
             AddTextAnimator(_) | ConvertTextToShapes => self.selected_text().is_some(),
             RemoveTextAnimator(i) | DuplicateTextAnimator(i) => self.has_text_animator(i),

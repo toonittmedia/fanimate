@@ -1,0 +1,18 @@
+[package]
+name = "fanimate-agent"
+description = "The Fanimate assistant: the API as tools for models, an MCP server, provider adapters (Anthropic, OpenAI-compatible) and the agent loop. No UI toolkit code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+fanimate-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom = "0.3"
+
+[lints]
+workspace = true

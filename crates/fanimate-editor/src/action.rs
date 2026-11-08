@@ -108,8 +108,13 @@ pub enum Action {
     Intersect,
     /// Turn the selected rectangles into plain paths, to edit point by point.
     ExpandShape,
+    /// Add an outline a set distance outside each target shape, or inside it.
+    OffsetPath,
     Preferences,
     CommandPalette,
+    /// Open the Assistant panel with its message box ready, about the
+    /// selected layer if there is one.
+    AskAssistant,
     // Layer
     NewVectorLayer,
     NewGroupLayer,
@@ -290,6 +295,7 @@ impl Action {
                 | Subtract
                 | Intersect
                 | ExpandShape
+                | OffsetPath
                 | NewVectorLayer
                 | NewGroupLayer
                 | NewBoneLayer
@@ -422,8 +428,10 @@ impl Action {
             ExpandShape => "Expand Shape",
             Subtract => "Subtract Front Shape",
             Intersect => "Intersect Shapes",
+            OffsetPath => "Offset Path",
             Preferences => "Preferences…",
             CommandPalette => "Command Palette…",
+            AskAssistant => "Ask Assistant…",
             NewVectorLayer => "New Vector Layer",
             NewGroupLayer => "New Group",
             NewBoneLayer => "New Bone Layer",
@@ -552,9 +560,8 @@ impl Action {
             | InstallUpdate | Quit => "File",
             Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
             | PasteLayers | Duplicate | Delete | DeleteLayers | SelectAll | SelectNone | Rename
-            | FinishPath | Union | Subtract | Intersect | ExpandShape | Preferences | CommandPalette => {
-                "Edit"
-            }
+            | FinishPath | Union | Subtract | Intersect | ExpandShape | OffsetPath | Preferences
+            | CommandPalette | AskAssistant => "Edit",
             NewVectorLayer
             | NewGroupLayer
             | NewBoneLayer
@@ -684,8 +691,10 @@ impl Action {
             Subtract,
             Intersect,
             ExpandShape,
+            OffsetPath,
             Preferences,
             CommandPalette,
+            AskAssistant,
             NewVectorLayer,
             NewGroupLayer,
             NewBoneLayer,

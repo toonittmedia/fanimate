@@ -36,6 +36,8 @@ const UTF8_NAMES: u16 = 0x0800;
 pub struct Archive<'a> {
     bytes: &'a [u8],
     entries: BTreeMap<String, Entry>,
+    /// Names the directory lists more than once (the last one is kept).
+    duplicates: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -73,6 +75,7 @@ impl<'a> Archive<'a> {
             at = bytes.windows(4).position(|w| w == CENTRAL).ok_or(NO_TABLE)?;
         }
         let mut entries = BTreeMap::new();
+        let mut duplicates = Vec::new();
         while bytes.get(at..at + 4) == Some(CENTRAL) {
             let fields = (
                 u16_at(bytes, at + 10),
@@ -115,12 +118,26 @@ impl<'a> Archive<'a> {
                 size,
                 data: local + 30 + local_name + local_extra,
             };
+            if entries.contains_key(&name) {
+                duplicates.push(name.clone());
+            }
             entries.insert(name, entry);
         }
         if entries.is_empty() {
             return Err("the archive is empty or damaged".into());
         }
-        Ok(Self { bytes, entries })
+        Ok(Self {
+            bytes,
+            entries,
+            duplicates,
+        })
+    }
+
+    /// Names the archive holds more than once. Only the last of each is
+    /// read; a program unpacking an archive it did not write should refuse one
+    /// that has any.
+    pub fn duplicates(&self) -> &[String] {
+        &self.duplicates
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -325,6 +342,19 @@ mod tests {
         assert_eq!(a.names().collect::<Vec<_>>(), ["DOMDocument.xml"]);
         assert_eq!(a.get("domdocument.xml").unwrap().unwrap(), b"<x/>");
         assert!(a.get("missing").is_none());
+    }
+
+    #[test]
+    fn a_name_listed_twice_is_reported() {
+        let zip = write(&[("a", b"1"), ("b", b"2"), ("a", b"3")]).unwrap();
+        let a = Archive::read(&zip).unwrap();
+        assert_eq!(a.duplicates(), ["a"]);
+        assert!(
+            Archive::read(&write(&[("a", b"1")]).unwrap())
+                .unwrap()
+                .duplicates()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -66,6 +66,11 @@ pub enum Icon {
     Pivot,
     /// Save a style in the Style panel.
     Save,
+    /// The Assistant panel and its menu entries.
+    Assistant,
+    Send,
+    Stop,
+    Settings,
 }
 
 macro_rules! lucide {
@@ -122,6 +127,10 @@ impl Icon {
             Self::VectorLayer => lucide!("vector-square"),
             Self::GroupLayer => lucide!("folder"),
             Self::BoneLayer => lucide!("bone"),
+            Self::Assistant => lucide!("sparkles"),
+            Self::Send => lucide!("send-horizontal"),
+            Self::Stop => lucide!("square"),
+            Self::Settings => lucide!("settings"),
             Self::Add => lucide!("plus"),
             Self::Duplicate => lucide!("copy"),
             Self::Delete => lucide!("trash-2"),
@@ -326,6 +335,10 @@ mod tests {
             Icon::Align,
             Icon::Pivot,
             Icon::Save,
+            Icon::Assistant,
+            Icon::Send,
+            Icon::Stop,
+            Icon::Settings,
         ]);
         icons
     }

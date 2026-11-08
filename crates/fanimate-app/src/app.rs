@@ -66,6 +66,8 @@ struct Settings {
     styles: Vec<fanimate_core::StylePreset>,
     default_style: String,
     current_style: String,
+    /// The Assistant: provider, model, what it may send to (keys are kept apart).
+    ai: crate::assistant::AiSettings,
 }
 
 /// Onion skin settings, remembered between sessions.
@@ -122,6 +124,7 @@ impl Default for Settings {
             styles: Vec::new(),
             default_style: String::new(),
             current_style: String::new(),
+            ai: Default::default(),
         }
     }
 }
@@ -267,6 +270,11 @@ pub struct UiState {
     /// (for the Window menu).
     pub toggle_tools: bool,
     pub tools_shown: bool,
+    /// Show, hide or open the Assistant column on the next frame, and whether
+    /// it shows (for the Window menu).
+    pub toggle_assistant: bool,
+    pub open_assistant: bool,
+    pub assistant_shown: bool,
     /// The docked panels on screen, for the Window menu.
     pub panels_shown: Vec<Tab>,
     pub window: titlebar::WindowState,
@@ -385,6 +393,10 @@ pub struct Shell {
     pub updates: crate::update::UpdateSettings,
     /// The user chose to work offline (Preferences).
     pub offline: bool,
+    /// The Assistant's settings, its API keys and its conversation.
+    pub ai: crate::assistant::AiSettings,
+    pub keys: crate::assistant::Keys,
+    pub assistant: crate::assistant::Assistant,
     /// What the policy files allow (see `policy.rs`). The user's own choice to
     /// work offline is added by [`Shell::policy`].
     file_policy: fanimate_core::Policy,
@@ -505,6 +517,9 @@ impl FanimateApp {
                 install: crate::update::Install::detect(),
                 updates: settings.updates.clone(),
                 offline: settings.offline,
+                ai: settings.ai.clone(),
+                keys: Default::default(),
+                assistant: Default::default(),
                 file_policy,
                 recent_actions: Vec::new(),
                 update_manual: false,
@@ -609,6 +624,7 @@ impl eframe::App for FanimateApp {
             .follow(&shell.editor.doc, shell.editor.playing, shell.editor.frame);
         crate::lipsync::poll(&ctx, shell);
         crate::web_export::poll(&ctx, shell);
+        crate::assistant::pump(&ctx, shell);
 
         handle_close_request(&ctx, shell);
         titlebar::track_window(&ctx, &mut shell.ui.window);
@@ -682,6 +698,15 @@ impl eframe::App for FanimateApp {
         if std::mem::take(&mut shell.ui.toggle_tools) {
             self.layout.toggle_tools();
         }
+        if std::mem::take(&mut shell.ui.toggle_assistant) {
+            self.layout.show_assistant = !self.layout.show_assistant;
+            shell.assistant.focus_input = self.layout.show_assistant;
+        }
+        if std::mem::take(&mut shell.ui.open_assistant) {
+            self.layout.show_assistant = true;
+            shell.assistant.focus_input = true;
+        }
+        shell.ui.assistant_shown = self.layout.show_assistant;
         if std::mem::take(&mut shell.ui.reset_layout) {
             self.layout.reset(fanimate_editor::Workspace::Animate);
         }
@@ -755,6 +780,7 @@ impl eframe::App for FanimateApp {
                 styles: s.styles.saved().to_vec(),
                 default_style: s.styles.default_name().to_owned(),
                 current_style: s.styles.current().to_owned(),
+                ai: s.ai.clone(),
             },
         );
         eframe::set_value(storage, Layout::KEY, &self.layout);
@@ -1038,6 +1064,10 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::InstallUpdate => install_update(shell),
             Action::Workspace(w) => shell.ui.workspace = Some(w),
             Action::CommandPalette => shell.ui.palette = Some(Default::default()),
+            Action::AskAssistant => match crate::assistant::unavailable(shell) {
+                Some(why) => shell.editor.set_status(StatusKind::Info, why),
+                None => shell.ui.open_assistant = true,
+            },
             Action::LayerProperties => shell.ui.focus_properties = true,
             Action::ZoomIn if shell.ui.graph_hovered => panels::graph::zoom_by(shell, 1.25),
             Action::ZoomOut if shell.ui.graph_hovered => panels::graph::zoom_by(shell, 0.8),

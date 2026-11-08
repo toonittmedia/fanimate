@@ -16,6 +16,10 @@ fanimate-cli script                      # an empty 1920 by 1080 project
 
 From Python: `host = fanimate.Host.connect(port, token)`.
 
+## As MCP tools, for agents
+
+`fanimate-cli mcp` serves the same calls as [Model Context Protocol](https://modelcontextprotocol.io) tools over standard input and output, so an agent such as Claude Code, Codex or Antigravity can drive Fanimate. Each method of the table below is a tool (its parameter list becomes the tool's JSON Schema, and the full text stays in its description); `save`, `quit`, `shutdown` and `auth` are not tools. `fanimate-cli mcp --app` works on the project open in the running window (the user switches on "Let other programs control Fanimate" first), and `fanimate-cli mcp project.fnm [--save out.fnm] [--permissions read,edit]` works on a file. A failed call comes back as a tool result with `isError` and the API's code (`not_found: ...`), so the model can correct itself. See [assistant.md](assistant.md).
+
 ## The protocol
 
 A request is a JSON object on one line: `{"jsonrpc": "2.0", "id": 1, "method": "add_text_layer", "params": {"content": "Hello", "x": 100, "y": 80}}`. The answer is one line with the same `id`:
@@ -64,6 +68,7 @@ A request without an `id` is a notification: it runs and nothing is answered. A 
 | `set_document` | any of `name`, `width`, `height`, `fps`, `start`, `end` | |
 | `set_layer_transform` | `id`, optional `frame` (0, the rest pose, by default), `x`, `y`, `rotation` (degrees), `scale_x`, `scale_y`, `opacity` | On frame 0 the value changes; on a later frame a key is set and one is seeded on frame 0 |
 | `add_shape` | `layer`, `shape` (`kind` `rectangle` or `ellipse`, `x`, `y`, `width`, `height`, `radius`, `fill`, `stroke`, `stroke_width`; colours like `#e63946`) | The shape's index |
+| `offset_shape` | `layer`, `index`, `distance` | Add an offset outline beside a shape: outside it, or inside when `distance` is negative; returns the new shape's index |
 | `actions` | `layer` | The bone layer's actions: `index`, `name`, `kind` (`action`, `pose`, `smart_bone`), `length` |
 | `save_pose` | `layer`, optional `name`, `frame` | The pose's index: the whole rig on that frame (0 is the rest pose), kept as a one-frame action |
 | `mirror_pose` | `layer`, `index` | The index of a new pose, the left-for-right mirror of the pose by the bones' names (`arm L` swaps with `arm R`) |
@@ -124,7 +129,7 @@ A plugin describes itself in `plugin.json` (at most 64 KB; fields this Fanimate 
 
 `name` (1 to 64 letters, digits, spaces, `-`, `_`, `.`), `version`, `api` (the API's major and minor version the plugin was written for: while the API is unstable a different minor version is refused) and `permissions` (a list, possibly empty) are required. `entry` is the file or command that starts the plugin, relative to its folder: it may not be absolute, hold a drive, or contain `..`. `fanimate-cli plugin check plugin.json` reads a manifest and says what it asks for, or what is wrong with it.
 
-What is built is the manifest and the permission check in the script and socket hosts. The plugin loader that starts `entry` and the user's prompt that grants a plugin its permissions arrive with the app's plugin host.
+The manifest, the permission check and the plugin host that starts `entry` as a separate program are built: see [plugins.md](plugins.md) (`fanimate-cli plugin new | test | run | pack | install`). The app does not run plugins yet, and the user's prompt that grants a plugin its permissions arrives with that. A Node client is in `clients/node`.
 
 ## Expressions
 

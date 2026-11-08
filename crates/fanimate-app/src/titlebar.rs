@@ -229,12 +229,16 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                 ui.add_space(6.0);
                 menu_bar(ui, shell);
 
-                if uses_custom_frame() {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    if uses_custom_frame() {
                         window_buttons(ui, shell);
-                    });
-                }
+                    }
+                    if crate::assistant::unavailable(shell).is_none() {
+                        ui.add_space(8.0);
+                        assistant_chip(ui, shell);
+                    }
+                });
             });
         });
 }
@@ -300,6 +304,45 @@ fn menu_title(ui: &mut egui::Ui, shell: &Shell, title: &str, open: bool) -> egui
     let pos = (rect.center() - galley.size() / 2.0).round();
     ui.painter().galley(pos, galley, p.text);
     response
+}
+
+/// The Assistant's entry at the right of the title bar, with its shortcut.
+fn assistant_chip(ui: &mut egui::Ui, shell: &mut Shell) {
+    let p = shell.palette;
+    let chord = shell.keymap.shortcut_text(fanimate_editor::Action::AskAssistant);
+    let label = if chord.is_empty() {
+        "Ask".to_owned()
+    } else {
+        format!("Ask   {chord}")
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label, egui::FontId::proportional(12.0), p.text);
+    let icon = 14.0;
+    let size = vec2(galley.size().x + icon + 3.0 * 8.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let open = shell.ui.assistant_shown;
+    let fill = if open || response.hovered() {
+        p.border
+    } else {
+        p.raised
+    };
+    ui.painter().rect_filled(rect, 11.0, fill);
+    let image = crate::icons::image(ui.ctx(), crate::icons::Icon::Assistant, icon, p.accent);
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 8.0, rect.center().y - icon / 2.0),
+        vec2(icon, icon),
+    );
+    image.paint_at(ui, icon_rect);
+    ui.painter().galley(
+        egui::pos2(icon_rect.right() + 8.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p.text,
+    );
+    let response = response.on_hover_text("Ask the Assistant");
+    if response.clicked() {
+        shell.pending.push(fanimate_editor::Action::AskAssistant);
+    }
 }
 
 #[derive(Clone, Copy)]

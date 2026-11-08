@@ -312,6 +312,11 @@ pub const METHODS: &[Method] = &[
         "layer: number, shape: object (kind, x, y, width, height, radius, fill, stroke, stroke_width)",
         "Draw a rectangle or an ellipse, returns its index",
     ),
+    edit(
+        "offset_shape",
+        "layer: number, index: number, distance: number",
+        "Add an offset outline beside a shape: outside it, or inside when distance is negative; returns the new shape's index",
+    ),
     edit("undo", "", "Undo the last step; returns whether anything changed"),
     edit(
         "redo",
@@ -662,6 +667,11 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             Ok(Value::Null)
         }
         "add_shape" => json_of(api.add_shape(param(params, "layer")?, param(params, "shape")?)?),
+        "offset_shape" => json_of(api.offset_shape(
+            param(params, "layer")?,
+            param(params, "index")?,
+            param(params, "distance")?,
+        )?),
         "undo" => json_of(api.undo()?),
         "redo" => json_of(api.redo()?),
         other => Err(ApiError::new(

@@ -27,6 +27,28 @@ pub struct Provenance {
     pub date: String,
 }
 
+/// Today's date (UTC) as `YYYY-MM-DD`, for a record made now.
+pub fn today() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    date_from_days((secs / 86_400) as i64)
+}
+
+/// The date `days` days after 1 January 1970, as `YYYY-MM-DD`.
+fn date_from_days(days: i64) -> String {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 impl Provenance {
     pub fn new(tool: impl Into<String>) -> Self {
         Self {
@@ -89,6 +111,22 @@ mod tests {
         let p = Provenance::new("line-clean-up");
         assert!(p.is_sound());
         assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"tool":"line-clean-up"}"#);
+    }
+
+    #[test]
+    fn days_since_1970_are_calendar_dates() {
+        assert_eq!(date_from_days(0), "1970-01-01");
+        assert_eq!(date_from_days(19_782), "2024-02-29");
+        assert_eq!(date_from_days(20_000), "2024-10-04");
+        let today = today();
+        assert!(
+            Provenance {
+                date: today.clone(),
+                ..Provenance::new("t")
+            }
+            .is_sound()
+        );
+        assert!(today.starts_with("20"), "{today}");
     }
 
     #[test]

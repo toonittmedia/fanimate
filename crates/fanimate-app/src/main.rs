@@ -18,6 +18,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod assistant;
 mod audio;
 mod canvas_gpu;
 mod crash;

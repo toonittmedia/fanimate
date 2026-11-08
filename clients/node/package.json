@@ -1,0 +1,12 @@
+{
+  "name": "fanimate",
+  "version": "0.1.0",
+  "description": "Drive Fanimate from Node: starts fanimate-cli script, or talks to the host that started a plugin. No dependencies.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": "./index.mjs",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test tests/" },
+  "license": "MIT OR Apache-2.0",
+  "private": true
+}

@@ -1,6 +1,8 @@
 //! Headless Fanimate tool. Runs the same engine and renderer as the app
 //! with no window, for render servers, CI and batch work.
 
+mod mcp;
+mod plugin;
 mod script;
 
 use std::path::{Path, PathBuf};
@@ -37,8 +39,22 @@ usage:
   fanimate-cli serve [<project.fnm>] [--save <out.fnm>] [--port N] [--permissions ... | --plugin <plugin.json>]
                       (the same calls over a local socket: prints one line of JSON with the port and
                        a token; the first request on a connection must be auth with that token)
-  fanimate-cli plugin check <plugin.json>
+  fanimate-cli mcp [--app | <project.fnm> [--save <out.fnm>]] [--permissions read,edit,save]
+                      (Fanimate as an MCP server over stdin and stdout, for agents such as Claude Code,
+                       Codex and Antigravity. --app works on the project open in the running Fanimate;
+                       otherwise it works on the project file, saving after each change)
+  fanimate-cli plugin check <plugin.json|folder>
                       (reads a plugin manifest and says what it asks for, or what is wrong with it)
+  fanimate-cli plugin list [--folder DIR]
+  fanimate-cli plugin new <name> [--lang py|js|ts] [-o DIR]
+                      (a starter plugin: plugin.json and an entry that adds a layer)
+  fanimate-cli plugin test <folder|name> [<project.fnm>] [--timeout S]
+                      (runs the plugin on the project, or an empty one, and says what it did; never saves)
+  fanimate-cli plugin run <folder|name> [<project.fnm>] [--save <out.fnm>] [--timeout S] [--folder DIR]
+                      (runs the plugin as a separate program that may do only what its manifest asks for)
+  fanimate-cli plugin pack <folder> [-o <name.fnplugin>]
+  fanimate-cli plugin install <name.fnplugin> [--folder DIR]
+                      (unpacks into the plugins folder; nothing in the package is run)
   fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--text CHARS] [--actions] [--gpu [--width W] [--height H]]
 
 Frame numbers (--frame, --start, --end) are the project's own: its first frame is 1 and
@@ -62,6 +78,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         Some("script") => script_cmd(&args[1..]),
         Some("serve") => serve_cmd(&args[1..]),
+        Some("mcp") => mcp_cmd(&args[1..]),
         Some("plugin") => plugin_cmd(&args[1..]),
         Some("-V" | "--version") => {
             println!("fanimate-cli {}", env!("CARGO_PKG_VERSION"));
@@ -96,6 +113,23 @@ fn serve_cmd(args: &[String]) -> CmdResult {
         port,
         std::io::stdout().lock(),
     )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn mcp_cmd(args: &[String]) -> CmdResult {
+    let a = Args::parse(args, &["--save", "--permissions"])?;
+    let permissions = client_permissions(&a)?;
+    let stdin = std::io::stdin().lock();
+    let stdout = std::io::stdout().lock();
+    if a.has("--app") {
+        mcp::serve(mcp::app(), stdin, stdout)
+    } else {
+        let project = a.positional.first().map(String::as_str);
+        let save_to = a.get::<String>("--save")?.or_else(|| project.map(str::to_owned));
+        let editor = script::open(project)?;
+        mcp::serve(mcp::Local::new(editor, save_to, permissions), stdin, stdout)
+    }
+    .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -163,33 +197,7 @@ fn describe(p: fanimate_api::Permissions) -> String {
 }
 
 fn plugin_cmd(args: &[String]) -> CmdResult {
-    let [sub, path] = args else {
-        return Err(USAGE.into());
-    };
-    if sub != "check" {
-        return Err(format!(
-            "unknown plugin command {sub}
-{USAGE}"
-        ));
-    }
-    let m = read_manifest(path)?;
-    println!("{} {} (for API {})", m.name, m.version, m.api);
-    if !m.description.is_empty() {
-        println!("{}", m.description);
-    }
-    if let Some(entry) = &m.entry {
-        println!("starts: {entry}");
-    }
-    println!(
-        "permissions: {}",
-        if m.permissions == fanimate_api::Permissions::NONE {
-            "none".to_owned()
-        } else {
-            m.permissions.names().join(", ")
-        }
-    );
-    println!("may {}", describe(m.permissions));
-    Ok(ExitCode::SUCCESS)
+    plugin::command(args)
 }
 
 type CmdResult = Result<ExitCode, String>;

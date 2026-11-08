@@ -1516,6 +1516,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
+name = "fanimate-agent"
+version = "0.4.1"
+dependencies = [
+ "fanimate-api",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fanimate-api"
 version = "0.4.1"
 dependencies = [
@@ -1537,6 +1547,8 @@ dependencies = [
  "eframe",
  "egui_dock",
  "env_logger",
+ "fanimate-agent",
+ "fanimate-api",
  "fanimate-core",
  "fanimate-editor",
  "fanimate-export",
@@ -1563,6 +1575,7 @@ name = "fanimate-cli"
 version = "0.4.1"
 dependencies = [
  "env_logger",
+ "fanimate-agent",
  "fanimate-api",
  "fanimate-core",
  "fanimate-editor",
@@ -1570,6 +1583,7 @@ dependencies = [
  "fanimate-fnm",
  "fanimate-import",
  "fanimate-oscodec",
+ "fanimate-plugin",
  "fanimate-render",
  "getrandom 0.3.4",
  "image",
@@ -1663,6 +1677,19 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
  "windows",
+]
+
+[[package]]
+name = "fanimate-plugin"
+version = "0.4.1"
+dependencies = [
+ "fanimate-api",
+ "fanimate-core",
+ "fanimate-editor",
+ "fanimate-fnm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

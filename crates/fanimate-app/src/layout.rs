@@ -28,6 +28,11 @@ const TOOL_MARGIN: f32 = 6.0;
 /// without being cut off, and the canvas still gets most of a 1366 px screen.
 pub const RIGHT_MIN_WIDTH: f32 = 300.0;
 
+/// The Assistant column: wide enough for a sentence a line, narrow enough
+/// that a 1366 px screen keeps most of its canvas.
+pub const ASSISTANT_WIDTH: f32 = 340.0;
+pub const ASSISTANT_MIN_WIDTH: f32 = 280.0;
+
 /// Where a docked panel lives (the tools column is not docked).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
@@ -75,6 +80,10 @@ pub struct Layout {
     /// stays closed.
     #[serde(default)]
     pub text_tab_added: bool,
+    /// The Assistant column, outside the right dock so it can run the full
+    /// height beside it. Closed until asked for (Ctrl+K or the Window menu).
+    #[serde(default)]
+    pub show_assistant: bool,
 }
 
 impl Default for Layout {
@@ -103,6 +112,7 @@ impl Layout {
             generation: 0,
             simple: w == Workspace::Simple,
             text_tab_added: true,
+            show_assistant: false,
         };
         // History is not shown until it is asked for (Window menu); it then
         // joins Layers. Bones and Text are tabs beside Layers, where the room
@@ -164,8 +174,11 @@ impl Layout {
     /// A fresh arrangement, with panel sizes starting over.
     pub fn reset(&mut self, w: Workspace) {
         let generation = self.generation + 1;
+        let assistant = self.show_assistant;
         *self = Self::for_workspace(w);
         self.generation = generation;
+        // a layout reset arranges the panels, it does not close the Assistant
+        self.show_assistant = assistant;
     }
 
     fn dock(&mut self, region: Region) -> &mut DockState<Tab> {
@@ -257,6 +270,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, layout: &mut Layout, style: &e
     let generation = layout.generation;
     let frame = || egui::Frame::NONE.fill(p.panel);
 
+    // outermost on the right, so it runs the full height of the window
+    if layout.show_assistant {
+        egui::Panel::right(Id::new(("layout-assistant", generation)))
+            .resizable(true)
+            .default_size(ASSISTANT_WIDTH)
+            .size_range(ASSISTANT_MIN_WIDTH..=620.0)
+            .frame(frame())
+            .show(ui, |ui| crate::panels::assistant::show(ui, shell));
+    }
     if layout.show_right {
         egui::Panel::right(Id::new(("layout-right", generation)))
             .resizable(true)

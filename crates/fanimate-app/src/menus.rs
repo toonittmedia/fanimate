@@ -200,6 +200,7 @@ pub fn shape_items(ui: &mut egui::Ui, shell: &mut Shell) {
             Action::Subtract,
             Action::Intersect,
             Action::ExpandShape,
+            Action::OffsetPath,
         ],
     );
 }
@@ -450,11 +451,22 @@ pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
     });
     ui.separator();
     item(ui, shell, Action::CommandPalette);
+    if crate::assistant::unavailable(shell).is_none() {
+        item(ui, shell, Action::AskAssistant);
+    }
 }
 
 pub fn window(ui: &mut egui::Ui, shell: &mut Shell) {
     if ui.selectable_label(shell.ui.tools_shown, "Tools").clicked() {
         shell.ui.toggle_tools = true;
+        ui.close();
+    }
+    if crate::assistant::unavailable(shell).is_none()
+        && ui
+            .selectable_label(shell.ui.assistant_shown, "Assistant")
+            .clicked()
+    {
+        shell.ui.toggle_assistant = true;
         ui.close();
     }
     for tab in Tab::ALL {

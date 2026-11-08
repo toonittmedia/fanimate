@@ -1826,3 +1826,102 @@ fn an_openraster_file_is_imported_as_a_group_of_image_layers_in_one_undo_step() 
     );
     assert!(api.layers().is_empty(), "nothing was added");
 }
+
+/// What the assistant relies on: every layer a call creates is labelled in the
+/// same undo step, the ones that were there are not, and one Undo takes the
+/// layer and its label away together.
+#[test]
+fn an_api_with_provenance_labels_the_layers_it_creates_and_only_those() {
+    let mut ed = three();
+    let before = Api::new(&mut ed).layers().len();
+    let mut stamp = Provenance::new("assistant");
+    stamp.model = "test-model".into();
+    let (made, group) = {
+        let mut api = Api::with_provenance(&mut ed, stamp.clone());
+        let made = api.add_layer("vector", "Ball", None).unwrap();
+        // a call that creates a layer and children at once
+        let group = api
+            .import_svg(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="5" height="5" fill="#ff0000"/><circle cx="5" cy="5" r="2" fill="#00ff00"/></svg>"##,
+                "Art",
+            )
+            .unwrap();
+        (made, group)
+    };
+    let api = Api::new(&mut ed);
+    let layers = api.layers();
+    assert_eq!(api.layer(made).unwrap().provenance, Some(stamp.clone()));
+    assert_eq!(api.layer(group).unwrap().provenance, Some(stamp.clone()));
+    let labelled = layers.iter().filter(|l| l.provenance.is_some()).count();
+    assert!(
+        labelled >= 2 && labelled == layers.len() - before,
+        "{labelled} of {}",
+        layers.len()
+    );
+    // the artist's own layers carry nothing
+    assert!(layers.iter().take(3).all(|l| l.provenance.is_none()));
+
+    // a call that only changes an existing layer labels nothing new
+    Api::with_provenance(&mut ed, stamp.clone())
+        .rename_layer(layers[0].id, "Renamed")
+        .unwrap();
+    assert!(
+        Api::new(&mut ed)
+            .layer(layers[0].id)
+            .unwrap()
+            .provenance
+            .is_none()
+    );
+
+    // one Undo takes the rename away; another takes the SVG import with its labels
+    ed.run(Action::Undo);
+    ed.run(Action::Undo);
+    let api = Api::new(&mut ed);
+    assert!(api.layer(group).is_err(), "the imported layers are gone");
+    assert!(api.layer(made).unwrap().provenance.is_some());
+    assert!(
+        fanimate_fnm::required_features(&ed.doc)
+            .iter()
+            .any(|f| f == fanimate_fnm::FEATURE_PROVENANCE)
+    );
+}
+
+/// A call that fails changes nothing, and so labels nothing.
+#[test]
+fn a_failed_call_with_provenance_leaves_no_trace() {
+    let mut ed = three();
+    let stamp = Provenance::new("assistant");
+    let r = Api::with_provenance(&mut ed, stamp).add_layer("vector", "", None);
+    assert!(r.is_err());
+    assert_eq!(Api::new(&mut ed).layers().len(), 3);
+    assert!(!ed.dirty);
+}
+
+#[test]
+fn offset_shape_adds_an_offset_outline_beside_a_shape() {
+    let mut ed = three();
+    let layer = ed.doc.layers[0].id.0;
+    let mut api = Api::new(&mut ed);
+    let shape = fanimate_api::ShapeSpec {
+        kind: "rectangle".into(),
+        name: Some("Box".into()),
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 60.0,
+        radius: None,
+        fill: Some("#ffffff".into()),
+        stroke: Some("#000000".into()),
+        stroke_width: Some(2.0),
+    };
+    let idx = api.add_shape(layer, shape).unwrap();
+    assert_eq!(idx, 0);
+    let off_idx = api.offset_shape(layer, idx, 10.0).unwrap();
+    assert_eq!(off_idx, 1);
+    ed.run(Action::Undo);
+    let count = match &ed.doc.find(fanimate_core::LayerId(layer)).unwrap().kind {
+        LayerKind::Vector { shapes } => shapes.len(),
+        _ => panic!(),
+    };
+    assert_eq!(count, 1);
+}

@@ -1,6 +1,7 @@
 //! The dockable panels and the status bar.
 
 mod actions;
+pub mod assistant;
 mod bones;
 mod camera_tools;
 pub mod canvas;
