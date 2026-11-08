@@ -26,7 +26,11 @@ usage:
   fanimate-cli export <project.fnm> -o <out.mp4|.mov|.avi|.gif|.png|.exr|...> [--format F]
                       [--width W] [--height H] [--start N] [--end N] [--ffmpeg PATH]
                       (-o out.json is a Lottie and -o out.lottie a dotLottie: the animation as vectors baked to keys,
-                       with --start and --end; it lists what Lottie cannot carry)
+                       with --start and --end; it lists what Lottie cannot carry. -o out.svg is an animated SVG,
+                       the same baking as SMIL steps that browsers play without a script. -o out.fnmr is the
+                       runtime format for games and the web: slots with baked transform keys, see
+                       docs/spec/runtime.md. -o out.otio is an OpenTimelineIO timeline with the sounds
+                       written beside it; --video names the rendered movie it points at)
   fanimate-cli sheet <project.fnm> -o <sheet.png> [--clips walk=1-24,idle=25-48] [--width W] [--height H]
                       [--padding N] [--max-width N] [--no-trim]
                       (a sprite sheet for games: the frames of the clips packed into one PNG, and
@@ -475,6 +479,98 @@ fn collect_importable(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
 /// Export frames as video (through FFmpeg), an animated GIF or a PNG
 /// sequence, chosen by the output's extension. The same code as the app's
 /// render queue.
+/// Export `path` as a Fanimate runtime file (.fnmr), listing what it could not carry.
+fn export_runtime(a: &Args, path: &str, out: &Path) -> CmdResult {
+    let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
+    if !report.is_clean() {
+        eprint!("{report}");
+    }
+    let range = Some((
+        a.get("--start")?.unwrap_or(doc.start),
+        a.get("--end")?.unwrap_or(doc.end),
+    ));
+    let started = Instant::now();
+    let (bytes, notes, keys) = fanimate_export::runtime::fnmr(&doc, range)?;
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!(
+        "wrote {} ({} KB, {keys} keys) in {:.0} ms",
+        out.display(),
+        bytes.len().div_ceil(1024),
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    for line in notes.lines() {
+        println!("  {line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Export `path` as an OpenTimelineIO timeline, with its sounds as WAV files in a
+/// folder beside it, listing what it could not carry.
+fn export_otio(a: &Args, path: &str, out: &Path) -> CmdResult {
+    let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
+    if !report.is_clean() {
+        eprint!("{report}");
+    }
+    let stem = out
+        .file_stem()
+        .map_or_else(|| "timeline".to_owned(), |s| s.to_string_lossy().into_owned());
+    let media_dir = format!("{stem}-media");
+    let options = fanimate_export::otio::Options {
+        video: a.get::<String>("--video")?,
+        media_dir: Some(media_dir.clone()),
+    };
+    let made = fanimate_export::otio::timeline(&doc, &options);
+    let text = serde_json::to_string_pretty(&made.json).map_err(|e| e.to_string())?;
+    std::fs::write(out, text).map_err(|e| format!("{}: {e}", out.display()))?;
+    if !made.media.is_empty() {
+        let folder = out.parent().unwrap_or_else(|| Path::new(".")).join(&media_dir);
+        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        for (name, bytes) in &made.media {
+            // names come from the project's media store, which only holds safe names
+            if !fanimate_fnm::is_media_name(name) {
+                continue;
+            }
+            let file = folder.join(name);
+            std::fs::write(&file, bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        }
+    }
+    println!(
+        "wrote {} ({} audio file{})",
+        out.display(),
+        made.media.len(),
+        if made.media.len() == 1 { "" } else { "s" }
+    );
+    for line in made.report.lines() {
+        println!("  {line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Export `path` as an animated SVG (SMIL), listing what it could not carry.
+fn export_animated_svg(a: &Args, path: &str, out: &Path) -> CmdResult {
+    let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
+    if !report.is_clean() {
+        eprint!("{report}");
+    }
+    let range = Some((
+        a.get("--start")?.unwrap_or(doc.start),
+        a.get("--end")?.unwrap_or(doc.end),
+    ));
+    let started = Instant::now();
+    let (text, notes) = fanimate_export::svg_animated::animated(&doc, range)?;
+    std::fs::write(out, text.as_bytes()).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!(
+        "wrote {} ({} KB) in {:.0} ms",
+        out.display(),
+        text.len().div_ceil(1024),
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    for line in notes.lines() {
+        println!("  {line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Export `path` as a Lottie (`dot` false) or a dotLottie, listing what it could not carry.
 fn export_lottie(a: &Args, path: &str, out: &Path, dot: bool) -> CmdResult {
     let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
@@ -575,7 +671,7 @@ fn export(args: &[String]) -> CmdResult {
     let a = Args::parse(
         args,
         &[
-            "-o", "--width", "--height", "--start", "--end", "--format", "--ffmpeg",
+            "-o", "--width", "--height", "--start", "--end", "--format", "--ffmpeg", "--video",
         ],
     )?;
     let [path] = a.positional.as_slice() else {
@@ -589,6 +685,15 @@ fn export(args: &[String]) -> CmdResult {
         .unwrap_or_default();
     if a.get::<String>("--format")?.is_none() && (ext == "json" || ext == "lottie") {
         return export_lottie(&a, path, &out, ext == "lottie");
+    }
+    if a.get::<String>("--format")?.is_none() && ext == "svg" {
+        return export_animated_svg(&a, path, &out);
+    }
+    if a.get::<String>("--format")?.is_none() && ext == "fnmr" {
+        return export_runtime(&a, path, &out);
+    }
+    if a.get::<String>("--format")?.is_none() && ext == "otio" {
+        return export_otio(&a, path, &out);
     }
     let format = match a.get::<String>("--format")? {
         Some(name) => parse_format(&name)?,

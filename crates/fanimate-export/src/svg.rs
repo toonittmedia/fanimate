@@ -140,7 +140,7 @@ fn shape(out: &mut String, item: &DrawItem<'_>, report: &mut Report) -> bool {
 }
 
 /// The path data of `path` carried through `t`.
-fn path_data(path: &Path, t: Affine2) -> String {
+pub(crate) fn path_data(path: &Path, t: Affine2) -> String {
     let mut d = String::new();
     let p = |v: Vec2| {
         let v = t.transform_point2(v);
@@ -165,7 +165,7 @@ fn path_data(path: &Path, t: Affine2) -> String {
 
 /// ` fill="#rrggbb" fill-opacity="0.5"` for `color` at `opacity`; the
 /// opacity is left out when it is 1.
-fn paint(attr: &str, color: Color, opacity: f32) -> String {
+pub(crate) fn paint(attr: &str, color: Color, opacity: f32) -> String {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let mut s = format!(
         " {attr}=\"#{:02x}{:02x}{:02x}\"",
@@ -182,7 +182,7 @@ fn paint(attr: &str, color: Color, opacity: f32) -> String {
 
 /// A number with at most three decimals and no trailing zeros; a number that
 /// is not finite is 0, so the file is always valid.
-fn num(v: f32) -> String {
+pub(crate) fn num(v: f32) -> String {
     if !v.is_finite() {
         return "0".to_owned();
     }

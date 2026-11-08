@@ -145,6 +145,9 @@ pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
                 Action::ExportSvgFrame,
                 Action::ExportLottie,
                 Action::ExportSpriteSheet,
+                Action::ExportAnimatedSvg,
+                Action::ExportRuntime,
+                Action::ExportOtio,
             ],
         );
     });

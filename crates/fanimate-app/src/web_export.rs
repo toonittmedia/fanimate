@@ -1,5 +1,6 @@
-//! Export for the web and for games: one frame as SVG, the animation as a
-//! Lottie or dotLottie, and a sprite sheet. They are not video, so they do
+//! Export for the web, games and editing programs: one frame as SVG, the
+//! animation as a Lottie, dotLottie, animated SVG or runtime file, a sprite
+//! sheet, and an OpenTimelineIO timeline. They are not video, so they do
 //! not go through the render queue; each runs in a background thread on a
 //! copy of the project (the editor stays responsive and keeps working) and
 //! says what it could not carry when it finishes.
@@ -9,7 +10,7 @@ use std::sync::mpsc;
 
 use fanimate_editor::StatusKind;
 use fanimate_export::sheet::{self, Clip, Options};
-use fanimate_export::{Report, lottie, svg};
+use fanimate_export::{Report, lottie, otio, runtime, svg, svg_animated};
 
 use crate::app::Shell;
 
@@ -21,6 +22,12 @@ pub enum Kind {
     Lottie,
     /// The whole animation as one clip.
     Sheet,
+    /// The whole animation as an SVG that browsers play.
+    AnimatedSvg,
+    /// The whole animation as a runtime file for games and the web.
+    Runtime,
+    /// The timing and sounds as an OpenTimelineIO timeline.
+    Otio,
 }
 
 /// An export in progress.
@@ -61,6 +68,18 @@ pub fn start(shell: &mut Shell, kind: Kind) {
             .set_title("Export a sprite sheet")
             .set_file_name(format!("{name}.png"))
             .add_filter("PNG", &["png"]),
+        Kind::AnimatedSvg => dialog
+            .set_title("Export as animated SVG")
+            .set_file_name(format!("{name}.svg"))
+            .add_filter("SVG", &["svg"]),
+        Kind::Runtime => dialog
+            .set_title("Export a runtime file")
+            .set_file_name(format!("{name}.fnmr"))
+            .add_filter("Fanimate runtime", &["fnmr"]),
+        Kind::Otio => dialog
+            .set_title("Export an OpenTimelineIO timeline")
+            .set_file_name(format!("{name}.otio"))
+            .add_filter("OpenTimelineIO", &["otio"]),
     };
     let Some(path) = dialog.save_file() else {
         return;
@@ -72,6 +91,9 @@ pub fn start(shell: &mut Shell, kind: Kind) {
         Kind::Svg => "SVG",
         Kind::Lottie => "Lottie",
         Kind::Sheet => "Sprite sheet",
+        Kind::AnimatedSvg => "Animated SVG",
+        Kind::Runtime => "Runtime file",
+        Kind::Otio => "Timeline",
     };
     std::thread::spawn(move || {
         let _ = tx.send(run(kind, &doc, frame, &path));
@@ -137,6 +159,51 @@ fn run(
             Ok((
                 format!("Exported {} ({kb} KB)", if dot { "dotLottie" } else { "Lottie" }),
                 report,
+            ))
+        }
+        Kind::AnimatedSvg => {
+            let (text, report) = svg_animated::animated(doc, None)?;
+            write(text.as_bytes())?;
+            let kb = text.len().div_ceil(1024);
+            Ok((format!("Exported an animated SVG ({kb} KB)"), report))
+        }
+        Kind::Runtime => {
+            let (bytes, report, keys) = runtime::fnmr(doc, None)?;
+            write(&bytes)?;
+            let kb = bytes.len().div_ceil(1024);
+            Ok((format!("Exported a runtime file ({kb} KB, {keys} keys)"), report))
+        }
+        Kind::Otio => {
+            let stem = path
+                .file_stem()
+                .map_or_else(|| "timeline".to_owned(), |s| s.to_string_lossy().into_owned());
+            let media_dir = format!("{stem}-media");
+            let options = otio::Options {
+                video: None,
+                media_dir: Some(media_dir.clone()),
+            };
+            let made = otio::timeline(doc, &options);
+            let text = serde_json::to_string_pretty(&made.json).map_err(|e| e.to_string())?;
+            write(text.as_bytes())?;
+            if !made.media.is_empty() {
+                let folder = path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(&media_dir);
+                std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+                for (name, bytes) in &made.media {
+                    if fanimate_fnm::is_media_name(name) {
+                        let file = folder.join(name);
+                        std::fs::write(&file, bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+                    }
+                }
+            }
+            Ok((
+                format!(
+                    "Exported a timeline with {} audio file(s); link its video clip to your rendered movie",
+                    made.media.len()
+                ),
+                made.report,
             ))
         }
         Kind::Sheet => {

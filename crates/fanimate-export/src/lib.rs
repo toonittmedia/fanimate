@@ -24,13 +24,16 @@ mod avi;
 pub mod ffmpeg;
 pub mod job;
 pub mod lottie;
+pub mod otio;
 pub mod queue;
 pub mod report;
 pub mod run;
+pub mod runtime;
 mod sequence;
 pub mod sheet;
 pub mod sound;
 pub mod svg;
+pub mod svg_animated;
 mod yuv;
 
 pub use job::{Format, Settings, Writer};

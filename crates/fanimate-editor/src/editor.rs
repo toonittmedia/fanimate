@@ -769,10 +769,10 @@ impl Editor {
             New | NewPreset(_) | Open | OpenFolder | OpenOther | OpenSample(_) | CloseDocument
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
             | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
-            | ExportSpriteSheet | ExportVideo | RenderQueue | RenderPreviewFrame | LipSync
-            | CheckForUpdates | InstallUpdate | Workspace(_) | Quit | ToggleOnionSkin | ToggleLightTable
-            | LookThroughCamera | Preferences | CommandPalette | AskAssistant | LayerProperties | ZoomIn
-            | ZoomOut | FitView | ActualSize => {
+            | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportVideo
+            | RenderQueue | RenderPreviewFrame | LipSync | CheckForUpdates | InstallUpdate | Workspace(_)
+            | Quit | ToggleOnionSkin | ToggleLightTable | LookThroughCamera | Preferences
+            | CommandPalette | AskAssistant | LayerProperties | ZoomIn | ZoomOut | FitView | ActualSize => {
                 return Outcome::App(action);
             }
         }

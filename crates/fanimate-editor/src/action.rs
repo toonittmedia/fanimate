@@ -62,6 +62,12 @@ pub enum Action {
     ExportLottie,
     /// The frames packed into one picture with an atlas, for games.
     ExportSpriteSheet,
+    /// The animation as an animated SVG that browsers play without a script.
+    ExportAnimatedSvg,
+    /// The animation as a runtime file (.fnmr) for games and the web.
+    ExportRuntime,
+    /// The timing and sounds as an OpenTimelineIO timeline for editing programs.
+    ExportOtio,
     /// Render the animation to a video, GIF or PNG sequence.
     ExportVideo,
     /// Show the render queue window.
@@ -409,6 +415,9 @@ impl Action {
             ExportSvgFrame => "Export Frame as SVG…",
             ExportLottie => "Export as Lottie…",
             ExportSpriteSheet => "Export Sprite Sheet…",
+            ExportAnimatedSvg => "Export as Animated SVG…",
+            ExportRuntime => "Export Runtime File…",
+            ExportOtio => "Export Timeline (OpenTimelineIO)…",
             ExportVideo => "Export Video…",
             RenderQueue => "Render Queue",
             RenderPreviewFrame => "Render Preview Frame",
@@ -568,8 +577,8 @@ impl Action {
             New | NewPreset(_) | Open | OpenOther | OpenSample(_) | OpenFolder | CloseDocument
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
             | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
-            | ExportSpriteSheet | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates
-            | InstallUpdate | Quit => "File",
+            | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportVideo
+            | RenderQueue | RenderPreviewFrame | CheckForUpdates | InstallUpdate | Quit => "File",
             Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
             | PasteLayers | Duplicate | Delete | DeleteLayers | SelectAll | SelectNone | Rename
             | FinishPath | Union | Subtract | Intersect | ExpandShape | OffsetPath | CleanUpLines
@@ -677,6 +686,9 @@ impl Action {
             ExportSvgFrame,
             ExportLottie,
             ExportSpriteSheet,
+            ExportAnimatedSvg,
+            ExportRuntime,
+            ExportOtio,
             ExportVideo,
             RenderQueue,
             RenderPreviewFrame,

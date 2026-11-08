@@ -1023,6 +1023,11 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::ExportSvgFrame => crate::web_export::start(shell, crate::web_export::Kind::Svg),
             Action::ExportLottie => crate::web_export::start(shell, crate::web_export::Kind::Lottie),
             Action::ExportSpriteSheet => crate::web_export::start(shell, crate::web_export::Kind::Sheet),
+            Action::ExportAnimatedSvg => {
+                crate::web_export::start(shell, crate::web_export::Kind::AnimatedSvg)
+            }
+            Action::ExportRuntime => crate::web_export::start(shell, crate::web_export::Kind::Runtime),
+            Action::ExportOtio => crate::web_export::start(shell, crate::web_export::Kind::Otio),
             Action::LipSync => crate::lipsync::start(shell),
             Action::ExportVideo => {
                 shell.ui.export = Some(crate::export::ExportForm::new(shell, shell.export_format));
