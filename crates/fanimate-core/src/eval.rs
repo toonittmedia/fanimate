@@ -45,6 +45,32 @@ pub struct ImageItem<'a> {
     pub vertices: Vec<(glam::Vec2, glam::Vec2)>,
 }
 
+/// Make a frame's items drawable without scopes, for the places that cannot
+/// composite (exports to vector formats, onion skins): items that only make a
+/// mask are left out, and the rest are put in the root and laid down over each
+/// other in order, as if no layer were masked, clipped, mixed or flattened.
+pub fn flatten_scopes(items: &mut Vec<DrawItem<'_>>, scopes: &[Scope]) {
+    let in_mask = |mut s: ScopeId| {
+        // a parent is an earlier scope; anything else ends the walk
+        while let Some(scope) = scopes.get(s as usize) {
+            match scope.kind {
+                ScopeKind::Mask => return true,
+                ScopeKind::Root => return false,
+                ScopeKind::Layer { .. } if scope.parent < s => s = scope.parent,
+                ScopeKind::Layer { .. } => return false,
+            }
+        }
+        false
+    };
+    if scopes.len() > 1 {
+        items.retain(|i| !in_mask(i.scope));
+    }
+    for item in items {
+        item.scope = ROOT_SCOPE;
+        item.ink = Ink::Over;
+    }
+}
+
 /// Evaluate `doc` at `frame` (which may be fractional, for motion blur or
 /// smooth playback) into draw items, back to front.
 pub fn evaluate(doc: &Document, frame: f32) -> Vec<DrawItem<'_>> {
@@ -1115,6 +1141,32 @@ mod tests {
                 .collect(),
             ev.scopes.clone(),
         )
+    }
+
+    #[test]
+    fn flattening_leaves_out_what_only_makes_a_mask_and_puts_the_rest_in_the_root() {
+        let (mut doc, [a, b, c]) = three();
+        doc.layers[0].composite.mask = MaskRole::Add;
+        doc.layers[1].composite.blend = Blend::Add;
+        doc.layers[2].composite.clip = true;
+        let mut items = Vec::new();
+        let mut ev = Evaluator::default();
+        ev.evaluate_into(&doc, 0.0, &mut items);
+        assert!(ev.scopes.len() > 1);
+        flatten_scopes(&mut items, &ev.scopes);
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| (i.layer, i.scope, i.ink))
+                .collect::<Vec<_>>(),
+            [(b, 0, Ink::Over), (c, 0, Ink::Over)]
+        );
+        let _ = a;
+        // with no scopes there is nothing to leave out
+        let (plain, [x, ..]) = three();
+        let mut items = evaluate(&plain, 0.0);
+        flatten_scopes(&mut items, &[Scope::ROOT]);
+        assert_eq!((items.len(), items[0].layer), (3, x));
     }
 
     #[test]

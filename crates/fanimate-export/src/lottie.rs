@@ -13,6 +13,9 @@
 use std::collections::HashMap;
 
 use fanimate_core::eval::Evaluator;
+
+/// What a Lottie made of a project with masks, clips or blend modes says about them.
+const COMPOSITING_NOTE: &str = "masks, clips, blend modes and flattened groups drawn as plain layers";
 use fanimate_core::{Affine2, Document, Path, PathCmd, Vec2, camera_at};
 use serde_json::{Value, json};
 
@@ -80,6 +83,12 @@ pub fn lottie(doc: &Document, range: Option<(i32, i32)>) -> Result<Lottie, Strin
     for n in 0..count {
         let frame = start + n as i32;
         evaluator.evaluate_into(doc, frame as f32, &mut items);
+        if evaluator.scopes.len() > 1 {
+            if report.count(COMPOSITING_NOTE) == 0 {
+                report.add(COMPOSITING_NOTE);
+            }
+            fanimate_core::eval::flatten_scopes(&mut items, &evaluator.scopes);
+        }
         // the canvas itself, carried through the camera
         if doc.background.a > 0.0 {
             let camera = camera_at(doc, frame as f32).unwrap_or(Affine2::IDENTITY);

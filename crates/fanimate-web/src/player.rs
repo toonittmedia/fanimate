@@ -337,6 +337,7 @@ impl Canvas {
         self.tess.tolerance = 0.25 / view.zoom.max(0.01);
         self.tess.canvas(doc, &mut self.mesh);
         self.tess.draw_items(&items, &mut self.mesh);
+        let scopes = &self.evaluator.scopes;
         let [r, g, b, _] = pasteboard.to_array();
         let clear = fanimate_core::Color::rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
         let (_, render_view, id, _) = self.target.as_ref().expect("created above");
@@ -350,6 +351,7 @@ impl Canvas {
             view,
             &self.mesh,
             &self.tess.runs,
+            self.tess.composition(scopes),
             &doc.media,
             clear,
         );

@@ -4,6 +4,10 @@ use std::collections::HashMap;
 
 use fanimate_core::{Color, Media, Vec2};
 
+mod compose;
+
+pub use compose::Composition;
+
 use crate::tess::{Mesh, Run, Vertex};
 
 const SHADER: &str = r#"
@@ -83,7 +87,11 @@ pub struct RenderTarget<'a> {
 pub struct Renderer {
     format: wgpu::TextureFormat,
     sample_count: u32,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     pipeline: wgpu::RenderPipeline,
+    /// What frames that use compositing need, made the first time one does.
+    compositor: Option<compose::Compositor>,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
@@ -171,44 +179,24 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fanimate shapes"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2],
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: sample_count,
-                ..Default::default()
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = create_scene_pipeline(
+            device,
+            &shader,
+            &pipeline_layout,
+            format,
+            sample_count,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            "fanimate shapes",
+        );
 
         let pixel = |rgba: [u8; 4]| texture_bind_group(device, queue, &texture_layout, &sampler, 1, 1, &rgba);
         Self {
             format,
             sample_count,
+            shader,
+            pipeline_layout,
             pipeline,
+            compositor: None,
             globals,
             bind_group,
             vertices: empty_buffer(device, wgpu::BufferUsages::VERTEX),
@@ -272,6 +260,7 @@ impl Renderer {
         view: &View,
         mesh: &Mesh,
         runs: &[Run],
+        composition: Composition<'_>,
         media: &Media,
         clear: Color,
     ) {
@@ -299,8 +288,8 @@ impl Renderer {
             bytemuck::cast_slice(&mesh.indices),
         );
 
-        let (color_view, resolve) = if self.sample_count > 1 {
-            if self.msaa.as_ref().is_none_or(|(_, s)| *s != size) {
+        if self.sample_count > 1 && self.msaa.as_ref().is_none_or(|(_, s)| *s != size) {
+            {
                 let tex = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("fanimate msaa"),
                     size: wgpu::Extent3d {
@@ -317,6 +306,22 @@ impl Renderer {
                 });
                 self.msaa = Some((tex.create_view(&Default::default()), size));
             }
+        }
+        // a frame that uses masks, clips, blend modes or flattened groups draws
+        // its scopes one by one; one that does not is a single pass
+        if composition.scopes.len() > 1 {
+            self.render_composed(
+                device,
+                queue,
+                RenderTarget { view: target, size },
+                composition,
+                runs,
+                media,
+                clear,
+            );
+            return;
+        }
+        let (color_view, resolve) = if self.sample_count > 1 {
             (&self.msaa.as_ref().expect("created above").0, Some(target))
         } else {
             (target, None)
@@ -377,6 +382,50 @@ impl Renderer {
         }
         queue.submit([encoder.finish()]);
     }
+}
+
+/// The pipeline that draws the mesh's triangles, laying them down with `blend`.
+fn create_scene_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    blend: wgpu::BlendState,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2],
+            })],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// A texture of `width` by `height` RGBA8 sRGB pixels, ready to sample.

@@ -41,12 +41,28 @@ pub struct Run {
     pub media: Option<String>,
 }
 
+/// The triangles of one stretch of draw items that share a scope and an ink
+/// (see `fanimate_core::compositing`): the mesh's indices from `first` up to
+/// `end`. A mesh with no more than one scope is drawn whole, and these are
+/// only read when it has more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub scope: fanimate_core::ScopeId,
+    pub ink: fanimate_core::Ink,
+    pub first: u32,
+    pub end: u32,
+}
+
 pub struct Tessellator {
     fill: FillTessellator,
     stroke: StrokeTessellator,
     path: LyonPath,
     /// Where each picture's triangles start in the mesh, in order.
     pub runs: Vec<Run>,
+    /// Which scope each stretch of the mesh belongs to, in order.
+    pub pieces: Vec<Piece>,
+    /// The piece being made: its scope, ink and first index.
+    current: Option<(fanimate_core::ScopeId, fanimate_core::Ink, u32)>,
     /// Draw everything in this colour instead of its own, as onion skins
     /// are shown. Pictures are tinted.
     pub tint: Option<Color>,
@@ -62,6 +78,8 @@ impl Default for Tessellator {
             stroke: StrokeTessellator::new(),
             path: LyonPath::new(),
             runs: Vec::new(),
+            pieces: Vec::new(),
+            current: None,
             tint: None,
             tolerance: 0.25,
         }
@@ -73,11 +91,46 @@ impl Tessellator {
         Self::default()
     }
 
+    /// The scopes of the frame the mesh was made from, with the pieces of the
+    /// mesh that belong to each, for [`crate::Renderer::render`].
+    pub fn composition<'a>(&'a self, scopes: &'a [fanimate_core::Scope]) -> crate::Composition<'a> {
+        crate::Composition {
+            scopes,
+            pieces: &self.pieces,
+        }
+    }
+
     /// Empty `mesh` and the runs, to start a frame.
     pub fn clear(&mut self, mesh: &mut Mesh) {
         mesh.vertices.clear();
         mesh.indices.clear();
         self.runs.clear();
+        self.pieces.clear();
+        self.current = None;
+    }
+
+    /// Close the piece being made at index `at`, joining it to the one before
+    /// when they share a scope and an ink and run on from each other.
+    fn end_piece(&mut self, at: u32) {
+        let Some((scope, ink, first)) = self.current.take() else {
+            return;
+        };
+        if first >= at {
+            return;
+        }
+        match self.pieces.last_mut() {
+            Some(last) if last.scope == scope && last.ink == ink && last.end == first => last.end = at,
+            _ => self.pieces.push(Piece {
+                scope,
+                ink,
+                first,
+                end: at,
+            }),
+        }
+    }
+
+    fn begin_piece(&mut self, scope: fanimate_core::ScopeId, ink: fanimate_core::Ink, at: u32) {
+        self.current = Some((scope, ink, at));
     }
 
     /// Start drawing with `media` (`None`: flat colour) from here on.
@@ -109,6 +162,8 @@ impl Tessellator {
     /// (see `fanimate_core::camera_at`), as the artwork is.
     pub fn canvas_through(&mut self, doc: &Document, mesh: &mut Mesh, camera: Affine2) {
         self.switch(mesh, None);
+        self.end_piece(mesh.indices.len() as u32);
+        let first = mesh.indices.len() as u32;
         let c = doc.background.to_linear_premultiplied();
         let base = mesh.vertices.len() as u32;
         for p in [
@@ -122,12 +177,17 @@ impl Tessellator {
         }
         mesh.indices
             .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        self.begin_piece(fanimate_core::ROOT_SCOPE, fanimate_core::Ink::Over, first);
+        self.end_piece(mesh.indices.len() as u32);
     }
 
     /// Append the fills and strokes of `items` to `mesh`, back to front.
     /// Shapes that fail to tessellate are skipped and logged.
     pub fn draw_items(&mut self, items: &[DrawItem<'_>], mesh: &mut Mesh) {
         for item in items {
+            // each item is a piece of its scope; one that draws nothing is an empty piece, dropped
+            self.end_piece(mesh.indices.len() as u32);
+            self.begin_piece(item.scope, item.ink, mesh.indices.len() as u32);
             if let Some(image) = &item.image {
                 self.switch(mesh, Some(image.media));
                 let c = color(self.tint.unwrap_or(Color::WHITE), item.opacity);
@@ -245,6 +305,7 @@ impl Tessellator {
                 }
             }
         }
+        self.end_piece(mesh.indices.len() as u32);
     }
 
     /// Stroke the current path into `mesh` in colour `c`. Returns whether

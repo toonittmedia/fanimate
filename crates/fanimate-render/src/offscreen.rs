@@ -200,6 +200,7 @@ impl Offscreen {
             &view,
             &self.mesh,
             &self.tess.runs,
+            self.tess.composition(&self.evaluator.scopes),
             &doc.media,
             Color::TRANSPARENT,
         );
@@ -357,6 +358,199 @@ mod tests {
         assert_eq!(at(20, 50), [0, 0, 255]);
         let g = at(80, 50);
         assert!(g[0] == g[1] && g[1] == g[2] && g[0] > 100 && g[0] < 250, "{g:?}");
+    }
+
+    // ---- compositing: masks, clips, blend modes and flattened groups ----
+
+    use fanimate_core::{Blend, Color, Document, Layer, LayerKind, MaskRole, Path, Shape, Style, Vec2};
+
+    /// A 100 by 100 white canvas, so a pixel of the 100 by 100 render is a unit.
+    fn canvas() -> Document {
+        let mut doc = Document::new("c", 100.0, 100.0, 24.0);
+        doc.background = Color::WHITE;
+        doc
+    }
+
+    fn square(doc: &mut Document, name: &str, from: f32, to: f32, color: Color) -> Layer {
+        let path = Path::rect(Vec2::splat(from), Vec2::splat(to - from), 0.0);
+        let shape = Shape::new(name, path, Style::fill(color));
+        doc.new_layer(name, LayerKind::vector(vec![shape]))
+    }
+
+    const RED: Color = Color::rgb(1.0, 0.0, 0.0);
+    const BLUE: Color = Color::rgb(0.0, 0.0, 1.0);
+    const GREEN: Color = Color::rgb(0.0, 1.0, 0.0);
+
+    /// The colour (red, green, blue) of pixel x, y of a 100 by 100 render.
+    fn pixel(gpu: &Gpu, doc: &Document, x: usize, y: usize) -> [u8; 3] {
+        let px = render_to_rgba(gpu, doc, 0.0, 100, 100).unwrap();
+        let i = (y * 100 + x) * 4;
+        [px[i], px[i + 1], px[i + 2]]
+    }
+
+    fn near(got: [u8; 3], want: [u8; 3]) -> bool {
+        got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 4)
+    }
+
+    const WHITE_PX: [u8; 3] = [255, 255, 255];
+
+    #[test]
+    fn a_flattened_group_fades_as_one_picture_and_a_plain_one_fades_each_shape() {
+        let Some(gpu) = gpu_or_skip() else { return };
+        let mut doc = canvas();
+        let (a, b) = (
+            square(&mut doc, "a", 0.0, 60.0, RED),
+            square(&mut doc, "b", 40.0, 100.0, RED),
+        );
+        let mut group = doc.new_layer("g", LayerKind::Group { children: vec![a, b] });
+        group.opacity.base = 0.5;
+        doc.layers.push(group);
+        // each shape is half there: where they overlap, three quarters
+        // (blended in linear light, so half is 188 of 255 and three quarters 137)
+        assert!(
+            near(pixel(gpu, &doc, 20, 20), [255, 188, 188]),
+            "{:?}",
+            pixel(gpu, &doc, 20, 20)
+        );
+        assert!(
+            near(pixel(gpu, &doc, 50, 50), [255, 137, 137]),
+            "{:?}",
+            pixel(gpu, &doc, 50, 50)
+        );
+        // flattened, the overlap is no darker than the rest
+        doc.layers[0].composite.flatten = true;
+        assert!(near(pixel(gpu, &doc, 20, 20), [255, 188, 188]));
+        assert!(
+            near(pixel(gpu, &doc, 50, 50), [255, 188, 188]),
+            "{:?}",
+            pixel(gpu, &doc, 50, 50)
+        );
+        assert!(near(pixel(gpu, &doc, 90, 10), WHITE_PX));
+    }
+
+    #[test]
+    fn what_is_masked_shows_only_inside_the_mask_layer() {
+        let Some(gpu) = gpu_or_skip() else { return };
+        let mut doc = canvas();
+        let mut mask = square(&mut doc, "mask", 20.0, 80.0, Color::BLACK);
+        mask.composite.mask = MaskRole::Add;
+        let art = square(&mut doc, "art", 0.0, 100.0, BLUE);
+        doc.layers.extend([mask, art]);
+        assert!(near(pixel(gpu, &doc, 50, 50), [0, 0, 255]));
+        assert!(near(pixel(gpu, &doc, 10, 10), WHITE_PX), "outside the mask");
+        assert!(near(pixel(gpu, &doc, 90, 50), WHITE_PX));
+        // the mask layer is not drawn itself: black does not show
+        assert!(near(pixel(gpu, &doc, 25, 25), [0, 0, 255]));
+        // hiding the mask turns it off
+        doc.layers[0].visible = false;
+        assert!(near(pixel(gpu, &doc, 10, 10), [0, 0, 255]));
+    }
+
+    #[test]
+    fn a_mask_layer_can_take_away_and_an_unmasked_layer_ignores_it() {
+        let Some(gpu) = gpu_or_skip() else { return };
+        let mut doc = canvas();
+        let mut add = square(&mut doc, "add", 10.0, 90.0, Color::BLACK);
+        add.composite.mask = MaskRole::Add;
+        let mut take = square(&mut doc, "take", 40.0, 60.0, Color::BLACK);
+        take.composite.mask = MaskRole::Subtract;
+        let art = square(&mut doc, "art", 0.0, 100.0, BLUE);
+        let mut free = square(&mut doc, "free", 0.0, 8.0, GREEN);
+        free.composite.unmasked = true;
+        doc.layers.extend([add, take, art, free]);
+        assert!(near(pixel(gpu, &doc, 20, 20), [0, 0, 255]), "let through");
+        assert!(
+            near(pixel(gpu, &doc, 50, 50), WHITE_PX),
+            "taken away: {:?}",
+            pixel(gpu, &doc, 50, 50)
+        );
+        assert!(
+            near(pixel(gpu, &doc, 3, 3), [0, 255, 0]),
+            "the unmasked layer is outside the mask and shows"
+        );
+        assert!(near(pixel(gpu, &doc, 95, 95), WHITE_PX));
+    }
+
+    #[test]
+    fn a_clipped_layer_shows_only_where_its_base_is() {
+        let Some(gpu) = gpu_or_skip() else { return };
+        let mut doc = canvas();
+        let base = square(&mut doc, "base", 20.0, 60.0, RED);
+        let mut paint = square(&mut doc, "paint", 0.0, 100.0, GREEN);
+        paint.composite.clip = true;
+        doc.layers.extend([base, paint]);
+        assert!(
+            near(pixel(gpu, &doc, 30, 30), [0, 255, 0]),
+            "{:?}",
+            pixel(gpu, &doc, 30, 30)
+        );
+        assert!(near(pixel(gpu, &doc, 80, 80), WHITE_PX), "outside the base");
+        assert!(near(pixel(gpu, &doc, 10, 10), WHITE_PX));
+        // hiding the base hides what is clipped to it
+        doc.layers[0].visible = false;
+        assert!(near(pixel(gpu, &doc, 30, 30), WHITE_PX));
+    }
+
+    #[test]
+    fn blend_modes_mix_with_what_is_under_them() {
+        let Some(gpu) = gpu_or_skip() else { return };
+        let mut doc = canvas();
+        let under = square(&mut doc, "yellow", 0.0, 60.0, Color::rgb(1.0, 1.0, 0.0));
+        let mut over = square(&mut doc, "cyan", 40.0, 100.0, Color::rgb(0.0, 1.0, 1.0));
+        over.composite.blend = Blend::Multiply;
+        doc.layers.extend([under, over]);
+        // yellow times cyan is green; cyan alone over white is cyan; the rest stays white
+        assert!(
+            near(pixel(gpu, &doc, 50, 50), [0, 255, 0]),
+            "{:?}",
+            pixel(gpu, &doc, 50, 50)
+        );
+        assert!(near(pixel(gpu, &doc, 90, 90), [0, 255, 255]));
+        assert!(near(pixel(gpu, &doc, 10, 10), [255, 255, 0]));
+        // screen lightens: dark red and dark blue make a brighter purple than either
+        doc.layers[1].composite.blend = Blend::Screen;
+        doc.layers[0] = square(&mut doc, "a", 0.0, 60.0, Color::rgb(0.5, 0.0, 0.0));
+        doc.layers[1] = {
+            let mut l = square(&mut doc, "b", 40.0, 100.0, Color::rgb(0.0, 0.0, 0.5));
+            l.composite.blend = Blend::Screen;
+            l
+        };
+        let both = pixel(gpu, &doc, 50, 50);
+        assert!(both[0] > 100 && both[2] > 100, "{both:?}");
+        // add adds the lights
+        doc.layers[1].composite.blend = Blend::Add;
+        let added = pixel(gpu, &doc, 50, 50);
+        assert!(added[0] > 100 && added[2] > 100, "{added:?}");
+    }
+
+    #[test]
+    fn a_plain_document_renders_the_same_with_the_scopes_in_place() {
+        let Some(gpu) = gpu_or_skip() else { return };
+        // nothing here uses compositing, so the frame is one pass as it always was
+        let doc = samples::hello();
+        let mut target = Offscreen::new(gpu, 160, 90);
+        target.draw(gpu, &doc, 0.0);
+        let first = target.read_rgba(gpu).unwrap();
+        // and a document that does use it still draws every plain layer the same
+        let mut mixed = samples::hello();
+        let n = mixed.layers.len();
+        let mut extra = mixed.new_layer("extra", LayerKind::vector(vec![]));
+        extra.composite.flatten = true;
+        let group = mixed.new_layer(
+            "g",
+            LayerKind::Group {
+                children: vec![extra],
+            },
+        );
+        mixed.layers.push(group);
+        mixed.layers.last_mut().unwrap().composite.flatten = true;
+        assert!(mixed.layers.len() > n);
+        target.draw(gpu, &mixed, 0.0);
+        assert_eq!(
+            target.read_rgba(gpu).unwrap(),
+            first,
+            "an empty flattened group changes nothing"
+        );
     }
 
     /// Headless rendering is deterministic: a frame gives the same pixels

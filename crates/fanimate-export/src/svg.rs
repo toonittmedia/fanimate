@@ -21,7 +21,12 @@ const MAX_SHAPES: usize = 200_000;
 pub fn frame(doc: &Document, frame: f32) -> (String, Report) {
     let mut report = Report::default();
     let mut items = Vec::new();
-    Evaluator::for_render().evaluate_into(doc, frame, &mut items);
+    let mut evaluator = Evaluator::for_render();
+    evaluator.evaluate_into(doc, frame, &mut items);
+    if evaluator.scopes.len() > 1 {
+        report.add("masks, clips, blend modes and flattened groups drawn as plain layers");
+        fanimate_core::eval::flatten_scopes(&mut items, &evaluator.scopes);
+    }
     let (w, h) = (doc.width.max(1.0), doc.height.max(1.0));
     let mut out = String::with_capacity(4096);
     let _ = writeln!(

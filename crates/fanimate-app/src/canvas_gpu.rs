@@ -128,6 +128,9 @@ impl CanvasGpu {
                     .as_ref()
                     .is_none_or(|ls| ls.iter().any(|l| doc.is_within(i.layer, *l)))
             });
+            // ghosts are drawn plain: the mask layers are left out, and the
+            // rest are not clipped or mixed
+            fanimate_core::eval::flatten_scopes(&mut skin, &onion.scopes);
             for item in &mut skin {
                 item.opacity *= opacity;
             }
@@ -149,6 +152,7 @@ impl CanvasGpu {
             view,
             &self.mesh,
             &self.tess.runs,
+            self.tess.composition(&self.evaluator.scopes),
             &doc.media,
             pasteboard,
         );

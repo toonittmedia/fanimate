@@ -12,9 +12,9 @@ mod gpu;
 mod offscreen;
 pub mod tess;
 
-pub use gpu::{RenderTarget, Renderer, View};
+pub use gpu::{Composition, RenderTarget, Renderer, View};
 pub use offscreen::{Gpu, Offscreen, backends, instance, render_to_rgba};
-pub use tess::{Mesh, Tessellator, Vertex};
+pub use tess::{Mesh, Piece, Tessellator, Vertex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
