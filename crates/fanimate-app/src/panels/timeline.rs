@@ -253,13 +253,13 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     let x = x_of(shell.editor.frame.floor());
     painter.line_segment(
         [pos2(x, ruler.top()), pos2(x, full.bottom())],
-        Stroke::new(1.5, p.keyframe),
+        Stroke::new(1.0, p.keyframe),
     );
     painter.add(Shape::convex_polygon(
         vec![
-            pos2(x - 5.0, ruler.top()),
-            pos2(x + 5.0, ruler.top()),
-            pos2(x, ruler.top() + 7.0),
+            pos2(x - 3.5, ruler.top()),
+            pos2(x + 3.5, ruler.top()),
+            pos2(x, ruler.top() + 5.0),
         ],
         p.keyframe,
         Stroke::NONE,

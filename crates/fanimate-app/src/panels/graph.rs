@@ -12,7 +12,84 @@ use fanimate_core::{ChannelId, Frame, Interpolation, LayerId};
 use fanimate_editor::{Action, KeyRef, KeySelect};
 
 use crate::app::Shell;
+use crate::icons::{self, Icon};
 use crate::menus;
+
+/// The frames and values a graph shows: from frame `f0` to `f1` along the
+/// bottom, value `v0` to `v1` up the side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphView {
+    pub f0: f32,
+    pub f1: f32,
+    pub v0: f32,
+    pub v1: f32,
+}
+
+/// The least and most a graph may show along either axis, so zooming cannot
+/// collapse the plot to nothing or run it off to infinity.
+const MIN_FRAMES: f32 = 3.0;
+const MAX_FRAMES: f32 = 100_000.0;
+const MIN_VALUES: f32 = 0.5;
+const MAX_VALUES: f32 = 1.0e7;
+
+/// Zoom `lo..hi` by `factor` about the point `at` of the way along it (0 to 1),
+/// keeping that point where it is.
+fn zoom_span(lo: f32, hi: f32, factor: f32, at: f32, least: f32, most: f32) -> (f32, f32) {
+    if !(factor.is_finite() && factor > 0.0) {
+        return (lo, hi);
+    }
+    let span = hi - lo;
+    let new = (span / factor).clamp(least, most);
+    let anchor = lo + span * at;
+    let lo = anchor - new * at;
+    (lo, lo + new)
+}
+
+impl GraphView {
+    /// Zoom along the frames about `at` (0 at the left edge, 1 at the right).
+    pub fn zoom_frames(&mut self, factor: f32, at: f32) {
+        (self.f0, self.f1) = zoom_span(self.f0, self.f1, factor, at, MIN_FRAMES, MAX_FRAMES);
+    }
+
+    /// Zoom along the values about `at` (0 at the bottom edge, 1 at the top).
+    pub fn zoom_values(&mut self, factor: f32, at: f32) {
+        (self.v0, self.v1) = zoom_span(self.v0, self.v1, factor, at, MIN_VALUES, MAX_VALUES);
+    }
+
+    /// Move the view by `by` frames.
+    pub fn pan_frames(&mut self, by: f32) {
+        self.f0 += by;
+        self.f1 += by;
+    }
+
+    /// Move the view by `by` in value.
+    pub fn pan_values(&mut self, by: f32) {
+        self.v0 += by;
+        self.v1 += by;
+    }
+
+    fn is_sound(&self) -> bool {
+        [self.f0, self.f1, self.v0, self.v1].iter().all(|v| v.is_finite())
+            && self.f1 > self.f0
+            && self.v1 > self.v0
+    }
+}
+
+/// Zoom the graph on show, in or out about its middle (the zoom buttons and shortcuts).
+pub fn zoom_by(shell: &mut Shell, factor: f32) {
+    if let Some((layer, ch, mut view)) = shell.ui.graph_shown {
+        view.zoom_frames(factor, 0.5);
+        view.zoom_values(factor, 0.5);
+        shell.ui.graph_views.insert((layer, ch), view);
+    }
+}
+
+/// Let the graph on show fit its curves again.
+pub fn fit(shell: &mut Shell) {
+    if let Some((layer, ch, _)) = shell.ui.graph_shown {
+        shell.ui.graph_views.remove(&(layer, ch));
+    }
+}
 
 /// How close a click must be to a key or handle to take hold of it.
 const GRAB: f32 = 9.0;
@@ -58,7 +135,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         .data(|d| d.get_temp(property_id))
         .filter(|c| keyed.contains(c))
         .unwrap_or(keyed[0]);
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
         for ch in &keyed {
             let label = shell
                 .editor
@@ -69,6 +146,29 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
                 active = *ch;
             }
         }
+        // zoom, at the right: shortcuts and the scroll wheel work too
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let tip = "Scroll up and down; Shift+scroll sideways; Ctrl+scroll zooms the frames and Ctrl+Shift+scroll the values";
+            if icons::button(ui, Icon::ZoomFit, 24.0, false, false)
+                .on_hover_text(format!("Fit the curves. {tip}."))
+                .clicked()
+            {
+                fit(shell);
+            }
+            if icons::button(ui, Icon::ZoomIn, 24.0, false, false)
+                .on_hover_text(format!("Zoom in on the graph. {tip}."))
+                .clicked()
+            {
+                zoom_by(shell, 1.25);
+            }
+            if icons::button(ui, Icon::ZoomOut, 24.0, false, false)
+                .on_hover_text(format!("Zoom out of the graph. {tip}."))
+                .clicked()
+            {
+                zoom_by(shell, 0.8);
+            }
+        });
     });
     ui.ctx().data_mut(|d| d.insert_temp(property_id, active));
     plot(ui, shell, layer, active);
@@ -94,17 +194,41 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
         f0 = f0.min(k.frame as f32);
         f1 = f1.max(k.frame as f32);
     }
-    let fitted = {
-        let values = curves.iter().flatten().map(|k| k.value * scale);
-        let (lo, hi) = values.fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-        let span = (hi - lo).max(1.0);
-        (lo - span * 0.15, hi + span * 0.15)
+    let (f0, f1) = (f0 - 1.0, f1 + 1.0);
+    let manual = shell
+        .ui
+        .graph_views
+        .get(&(layer, ch))
+        .copied()
+        .filter(GraphView::is_sound);
+    // fitted to the curves, not only the keys: an overshoot or a bounce goes
+    // past them. Skipped while the view is the user's own.
+    let fitted = if manual.is_some() {
+        (0.0, 1.0)
+    } else {
+        let mut lo_hi = curves
+            .iter()
+            .flatten()
+            .map(|k| k.value * scale)
+            .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        for c in 0..comps {
+            for s in 0..=160 {
+                let f = f0 + (f1 - f0) * s as f32 / 160.0;
+                if let Some(v) = shell.editor.curve_value(layer, ch, c, f).map(|v| v * scale)
+                    && v.is_finite()
+                {
+                    lo_hi = (lo_hi.0.min(v), lo_hi.1.max(v));
+                }
+            }
+        }
+        let span = (lo_hi.1 - lo_hi.0).max(1.0);
+        (lo_hi.0 - span * 0.1, lo_hi.1 + span * 0.1)
     };
     let (v0, v1) = match (drag, ui.ctx().data(|d| d.get_temp::<(f32, f32)>(range_id))) {
-        (Some(_), Some(held)) => held,
+        (Some(_), Some(held)) if manual.is_none() => held,
         _ => fitted,
     };
-    let (f0, f1) = (f0 - 1.0, f1 + 1.0);
+    let mut view = manual.unwrap_or(GraphView { f0, f1, v0, v1 });
 
     let (outer, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let rect = Rect::from_min_max(
@@ -114,6 +238,42 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
     if rect.width() < 40.0 || rect.height() < 30.0 {
         return;
     }
+    // scrolling and zooming: the wheel moves the view up and down, with Shift
+    // sideways, and Ctrl zooms the frames (with Shift the values) about the pointer
+    if ui.rect_contains_pointer(rect) {
+        shell.ui.graph_hovered = true;
+        let (zoom, scroll, mods, pointer) = ui.input(|i| {
+            (
+                i.zoom_delta(),
+                i.smooth_scroll_delta,
+                i.modifiers,
+                i.pointer.hover_pos(),
+            )
+        });
+        let at = pointer.unwrap_or(rect.center());
+        let across = ((at.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let up = ((rect.bottom() - at.y) / rect.height()).clamp(0.0, 1.0);
+        let before = view;
+        if zoom != 1.0 {
+            if mods.shift {
+                view.zoom_values(zoom, up);
+            } else {
+                view.zoom_frames(zoom, across);
+            }
+        } else if scroll.x != 0.0 || (mods.shift && scroll.y != 0.0) {
+            let dx = if scroll.x != 0.0 { scroll.x } else { scroll.y };
+            view.pan_frames(-dx / rect.width() * (view.f1 - view.f0));
+        } else if scroll.y != 0.0 {
+            view.pan_values(scroll.y / rect.height() * (view.v1 - view.v0));
+        }
+        if view != before && view.is_sound() {
+            shell.ui.graph_views.insert((layer, ch), view);
+        } else {
+            view = before;
+        }
+    }
+    shell.ui.graph_shown = Some((layer, ch, view));
+    let GraphView { f0, f1, v0, v1 } = view;
     let to_screen = |f: f32, v: f32| {
         pos2(
             rect.left() + (f - f0) / (f1 - f0) * rect.width(),
@@ -435,5 +595,56 @@ fn draw_grid(
             text,
         );
         f += fstep;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view() -> GraphView {
+        GraphView {
+            f0: 0.0,
+            f1: 100.0,
+            v0: 0.0,
+            v1: 200.0,
+        }
+    }
+
+    #[test]
+    fn zooming_keeps_the_point_under_the_pointer_where_it_is() {
+        let mut v = view();
+        // a quarter of the way along, twice as close
+        v.zoom_frames(2.0, 0.25);
+        assert_eq!((v.f0, v.f1), (12.5, 62.5));
+        // the point that was a quarter along (frame 25) is still a quarter along
+        assert_eq!(v.f0 + (v.f1 - v.f0) * 0.25, 25.0);
+        let mut v = view();
+        v.zoom_values(0.5, 0.0);
+        assert_eq!((v.v0, v.v1), (0.0, 400.0), "zoomed out about the bottom edge");
+    }
+
+    #[test]
+    fn zoom_is_limited_and_odd_factors_do_nothing() {
+        let mut v = view();
+        v.zoom_frames(1.0e9, 0.5);
+        assert!(v.f1 - v.f0 >= MIN_FRAMES - 1e-3);
+        v.zoom_frames(1.0e-9, 0.5);
+        assert!(v.f1 - v.f0 <= MAX_FRAMES + 1e-3);
+        let mut v = view();
+        for bad in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+            v.zoom_frames(bad, 0.5);
+            v.zoom_values(bad, 0.5);
+        }
+        assert_eq!(v, view());
+        assert!(v.is_sound());
+    }
+
+    #[test]
+    fn panning_moves_both_ends_alike() {
+        let mut v = view();
+        v.pan_frames(-10.0);
+        v.pan_values(50.0);
+        assert_eq!((v.f0, v.f1, v.v0, v.v1), (-10.0, 90.0, 50.0, 250.0));
     }
 }

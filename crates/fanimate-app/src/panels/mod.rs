@@ -5,7 +5,7 @@ mod bones;
 mod camera_tools;
 pub mod canvas;
 mod controllers;
-mod graph;
+pub mod graph;
 pub mod handles;
 mod history;
 mod layers;

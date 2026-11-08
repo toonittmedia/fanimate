@@ -44,6 +44,8 @@ Masks, clips and blend modes are drawn on the canvas, in renders and in the brow
 
 **Window › Graph** shows the keys of the selected layer as curves, one property at a time (pick it with the buttons on top): value against frame, the x and y of a position as two curves. Drag a key to move it in time and in value; it stops before the keys on either side. Right-click a key for the interpolation choices; **Custom curve** puts two handles on the key that you drag to shape the motion toward the next key. Each drag is one undo step. Angles are shown in degrees and opacity in percent.
 
+In the graph, scroll the wheel to move up and down, Shift+scroll to move along the frames, Ctrl+scroll to zoom the frames about the pointer and Ctrl+Shift+scroll to zoom the values. The buttons at the top right (and the zoom shortcuts while the pointer is over the graph) zoom in and out and fit the curves, overshoots and bounces included. Press on empty space and drag to scrub the playhead.
+
 ## 5. Rigging
 
 - Bone layers hold a skeleton. **Add Bone** draws chains; **Select Bone** edits the rest pose; **Manipulate Bones** poses with inverse kinematics (Alt for one bone) and always keys the frame.

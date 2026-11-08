@@ -230,6 +230,13 @@ pub struct UiState {
     pub timeline_view_width: f32,
     /// The pointer is over the timeline, so zoom commands zoom it, not the canvas.
     pub timeline_hovered: bool,
+    /// How each graph (by layer and property) is looked at once the user has
+    /// scrolled or zoomed it; one that is not here fits its curves.
+    pub graph_views: std::collections::HashMap<(LayerId, fanimate_core::ChannelId), panels::graph::GraphView>,
+    /// The graph drawn this frame and the view it was drawn with, for the zoom buttons and shortcuts.
+    pub graph_shown: Option<(LayerId, fanimate_core::ChannelId, panels::graph::GraphView)>,
+    /// The pointer is over the graph, so the zoom shortcuts are for it.
+    pub graph_hovered: bool,
     /// The canvas or the Layers panel, when the pointer is over it (they set
     /// this while they draw). With `timeline_hovered`, a press there decides
     /// what Cut, Copy and Paste act on.
@@ -619,6 +626,7 @@ impl eframe::App for FanimateApp {
 
         // the timeline sets this while it draws, if the pointer is over it
         shell.ui.timeline_hovered = false;
+        shell.ui.graph_hovered = false;
         let style = dock_style(ui.style(), &shell.palette);
         if shell.docs.home_front() {
             crate::home::show(ui, shell);
@@ -1031,6 +1039,9 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::Workspace(w) => shell.ui.workspace = Some(w),
             Action::CommandPalette => shell.ui.palette = Some(Default::default()),
             Action::LayerProperties => shell.ui.focus_properties = true,
+            Action::ZoomIn if shell.ui.graph_hovered => panels::graph::zoom_by(shell, 1.25),
+            Action::ZoomOut if shell.ui.graph_hovered => panels::graph::zoom_by(shell, 0.8),
+            Action::FitView | Action::ActualSize if shell.ui.graph_hovered => panels::graph::fit(shell),
             Action::ZoomIn if shell.ui.timeline_hovered => panels::timeline::zoom_by(shell, 1.25),
             Action::ZoomOut if shell.ui.timeline_hovered => panels::timeline::zoom_by(shell, 0.8),
             Action::FitView if shell.ui.timeline_hovered => panels::timeline::fit_all(shell),
