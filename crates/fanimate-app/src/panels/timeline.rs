@@ -1762,19 +1762,18 @@ fn build_ease_mark(e: Easing) -> Vec<egui::Vec2> {
         Easing::Overshoot => vec![vec2(-9.0, -9.5), vec2(10.0, 0.0), vec2(-9.0, 9.5)],
         Easing::Bounce => arc(0.0, 9.0, 10.5, 18.0, PI, TAU),
         Easing::Elastic => {
-            // four arms, each side pinched towards the middle (a quadratic curve to it)
-            let tips = [
-                vec2(0.0, -11.5),
-                vec2(11.5, 0.0),
-                vec2(0.0, 11.5),
-                vec2(-11.5, 0.0),
-            ];
+            // four arms inside the round key's box, each side a curve pulled towards the middle
+            // (not all the way, so the arms are soft and do not shoot out)
+            const TIP: f32 = 8.5;
+            const PULL: f32 = 0.22;
+            let tips = [vec2(0.0, -TIP), vec2(TIP, 0.0), vec2(0.0, TIP), vec2(-TIP, 0.0)];
             let mut v = Vec::new();
             for i in 0..4 {
                 let (a, b) = (tips[i], tips[(i + 1) % 4]);
-                for s in 0..6 {
-                    let t = s as f32 / 6.0;
-                    v.push(a * (1.0 - t) * (1.0 - t) + b * t * t);
+                let control = (a + b) * PULL;
+                for s in 0..8 {
+                    let t = s as f32 / 8.0;
+                    v.push(a * (1.0 - t) * (1.0 - t) + control * (2.0 * t * (1.0 - t)) + b * (t * t));
                 }
             }
             v

@@ -336,10 +336,13 @@ pub fn interpolation_items(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.separator();
     let current = shell.editor.key_interpolation().flatten();
     let p = shell.palette;
+    // As wide as the menu is from what is above (never from the room it could
+    // take: a menu grows to fit its rows, so asking for the room it has makes
+    // each frame ask for more than the last and the menu runs to its widest).
+    let width = ui.min_rect().width().max(timeline::INTERP_ROW_WIDTH);
     // the rows are packed like the dropdown's, whatever the rest of the menu does
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        let width = ui.available_width().max(timeline::INTERP_ROW_WIDTH);
         for interp in fanimate_core::Interpolation::ALL {
             let action = Action::SetInterpolation(interp);
             // with Home in front only what needs no document can run
