@@ -397,6 +397,7 @@ pub struct Shell {
     pub ai: crate::assistant::AiSettings,
     pub keys: crate::assistant::Keys,
     pub assistant: crate::assistant::Assistant,
+    pub plugins: crate::plugins::Plugins,
     /// The user's poses and actions kept outside any project (see `panels/pose_library.rs`).
     pub pose_library: fanimate_core::poses::PoseLibrary,
     /// The library file exists but could not be read: it is never overwritten.
@@ -525,6 +526,7 @@ impl FanimateApp {
                 ai: settings.ai.clone(),
                 keys: Default::default(),
                 assistant: Default::default(),
+                plugins: Default::default(),
                 pose_library: pose_library.0,
                 pose_library_unreadable: pose_library.1.is_some(),
                 file_policy,
@@ -632,6 +634,7 @@ impl eframe::App for FanimateApp {
         crate::lipsync::poll(&ctx, shell);
         crate::web_export::poll(&ctx, shell);
         crate::assistant::pump(&ctx, shell);
+        crate::plugins::pump(&ctx, shell);
 
         handle_close_request(&ctx, shell);
         titlebar::track_window(&ctx, &mut shell.ui.window);
@@ -669,6 +672,7 @@ impl eframe::App for FanimateApp {
         }
         crate::export::window(&ctx, shell);
         crate::saveas::window(&ctx, shell);
+        crate::plugins::window(&ctx, shell);
         crate::preview::window(&ctx, shell);
         crate::whatsnew::window(&ctx, shell);
         dialogs::confirm_convert(&ctx, shell);

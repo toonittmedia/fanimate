@@ -189,6 +189,14 @@ pub fn edit(ui: &mut egui::Ui, shell: &mut Shell) {
         shape_items(ui, shell);
     });
     // classical helpers: no model, no network, each one undo step
+    assist_menu(ui, shell);
+    ui.separator();
+    keymap_menu(ui, shell);
+    item(ui, shell, Action::Preferences);
+}
+
+/// Clean Up Lines, Suggest Inbetween and Auto-Rig: classical helpers, no model, no network.
+pub fn assist_menu(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.menu_button("Assist", |ui| {
         ui.set_min_width(MENU_MIN_WIDTH);
         items(
@@ -197,9 +205,6 @@ pub fn edit(ui: &mut egui::Ui, shell: &mut Shell) {
             &[Action::CleanUpLines, Action::SuggestInbetween, Action::AutoRig],
         );
     });
-    ui.separator();
-    keymap_menu(ui, shell);
-    item(ui, shell, Action::Preferences);
 }
 
 /// Commands on the shapes with selected points.
@@ -488,6 +493,10 @@ pub fn window(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.close();
         }
     }
+    ui.menu_button("Plugins", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        crate::plugins::menu(ui, shell);
+    });
     ui.separator();
     ui.menu_button("Workspace", |ui| {
         ui.set_min_width(MENU_MIN_WIDTH);
@@ -606,6 +615,7 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
         );
     });
     text_menu(ui, shell);
+    assist_menu(ui, shell);
     ui.separator();
     items(
         ui,

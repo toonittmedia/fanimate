@@ -455,6 +455,22 @@ impl Editor {
         self.revision += 1;
     }
 
+    /// Where the undo history is now, to hand to [`merge_steps_since`](Self::merge_steps_since).
+    pub fn history_mark(&self) -> usize {
+        self.history.cursor()
+    }
+
+    /// Make everything done since `mark` one undo step called `label`. Used
+    /// for work made of many calls, such as a plugin's run. Returns whether
+    /// there was anything to merge.
+    pub fn merge_steps_since(&mut self, mark: usize, label: &str) -> bool {
+        let merged = self.history.merge_since(mark, label);
+        if merged {
+            self.revision += 1;
+        }
+        merged
+    }
+
     /// Run `f` as one undo step called `label`, however many edits it makes:
     /// checkpoints inside it fold into the one step. If `f` fails, the
     /// document and the selection are put back as they were and no step is

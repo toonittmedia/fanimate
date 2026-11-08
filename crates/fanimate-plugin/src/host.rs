@@ -38,6 +38,8 @@ pub struct RunOptions {
     /// Where the host's `save` writes when it is given no path. Only a plugin
     /// with the `save` permission may call it.
     pub save_to: Option<PathBuf>,
+    /// Set from another thread to stop the plugin (the Stop button in the app).
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for RunOptions {
@@ -46,6 +48,7 @@ impl Default for RunOptions {
             timeout: None,
             max_calls: 100_000,
             save_to: None,
+            cancel: None,
         }
     }
 }
@@ -59,6 +62,8 @@ pub enum Limit {
     Calls(usize),
     /// It wrote a line longer than [`MAX_LINE`].
     Line,
+    /// The user stopped it.
+    Cancelled,
 }
 
 impl std::fmt::Display for Limit {
@@ -67,6 +72,7 @@ impl std::fmt::Display for Limit {
             Self::Time(d) => write!(f, "it ran longer than {} seconds", d.as_secs().max(1)),
             Self::Calls(n) => write!(f, "it made more than {n} calls"),
             Self::Line => write!(f, "it wrote a line longer than 8 MB"),
+            Self::Cancelled => write!(f, "you stopped it"),
         }
     }
 }
@@ -133,6 +139,25 @@ enum Message {
 /// started (no entry, no interpreter, a program that does not exist); a
 /// plugin that starts and then fails is a [`RunReport`] saying how.
 pub fn run(editor: &mut Editor, plugin: &Plugin, options: &RunOptions) -> Result<RunReport, PluginError> {
+    let permissions = plugin.manifest.permissions;
+    run_with(plugin, options, &mut |line, report| {
+        answer(editor, options, permissions, line, report)
+    })
+}
+
+/// What a handler says to a request line: the answer (none for a
+/// notification) and whether the plugin asked to end the session.
+pub type Handled = (Option<String>, bool);
+
+/// [`run`] with the project on the other side of a closure instead of an
+/// `&mut Editor`: the app runs a plugin on a worker thread and has the UI
+/// thread answer each line, so the editor never leaves the UI thread. The
+/// closure gets each request line and the report (to count what it refuses).
+pub fn run_with(
+    plugin: &Plugin,
+    options: &RunOptions,
+    handler: &mut dyn FnMut(&str, &mut RunReport) -> Handled,
+) -> Result<RunReport, PluginError> {
     let kind = plugin
         .entry_kind()
         .ok_or_else(|| PluginError::NoEntry(plugin.manifest.name.clone()))?;
@@ -148,13 +173,17 @@ pub fn run(editor: &mut Editor, plugin: &Plugin, options: &RunOptions) -> Result
         .stderr(Stdio::piped());
     no_window(&mut cmd);
     let child = cmd.spawn().map_err(PluginError::Spawn)?;
-    Ok(serve(editor, plugin, options, child))
+    Ok(serve(plugin, options, child, handler))
 }
 
-fn serve(editor: &mut Editor, plugin: &Plugin, options: &RunOptions, mut child: Child) -> RunReport {
+fn serve(
+    plugin: &Plugin,
+    options: &RunOptions,
+    mut child: Child,
+    handler: &mut dyn FnMut(&str, &mut RunReport) -> Handled,
+) -> RunReport {
     let started = Instant::now();
     let timeout = options.timeout.unwrap_or(plugin.timeout);
-    let permissions = plugin.manifest.permissions;
 
     let mut stdin = child.stdin.take();
     let (tx, rx) = mpsc::channel();
@@ -186,9 +215,20 @@ fn serve(editor: &mut Editor, plugin: &Plugin, options: &RunOptions, mut child: 
         stderr: String::new(),
     };
     let ending = loop {
+        if options
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            break Some(Ending::Stopped(Limit::Cancelled));
+        }
         let left = timeout.saturating_sub(started.elapsed());
-        match rx.recv_timeout(left) {
-            Err(RecvTimeoutError::Timeout) => break Some(Ending::Stopped(Limit::Time(timeout))),
+        if left.is_zero() {
+            break Some(Ending::Stopped(Limit::Time(timeout)));
+        }
+        // wake now and then, so a Stop is noticed while the plugin is quiet
+        match rx.recv_timeout(left.min(Duration::from_millis(100))) {
+            Err(RecvTimeoutError::Timeout) => continue,
             Ok(Message::TooLong) => break Some(Ending::Stopped(Limit::Line)),
             Err(RecvTimeoutError::Disconnected) | Ok(Message::Closed) => break None,
             Ok(Message::Line(line)) => {
@@ -199,7 +239,7 @@ fn serve(editor: &mut Editor, plugin: &Plugin, options: &RunOptions, mut child: 
                 if report.calls > options.max_calls {
                     break Some(Ending::Stopped(Limit::Calls(options.max_calls)));
                 }
-                let (answer, quit) = answer(editor, options, permissions, line.trim(), &mut report);
+                let (answer, quit) = handler(line.trim(), &mut report);
                 if let (Some(answer), Some(input)) = (answer, stdin.as_mut()) {
                     // a plugin that closed its input is on its way out
                     if writeln!(input, "{answer}").and_then(|()| input.flush()).is_err() {

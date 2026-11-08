@@ -184,3 +184,54 @@ fn a_plugin_that_cannot_start_is_an_error_not_a_report() {
         Err(PluginError::NoEntry(_))
     ));
 }
+
+#[test]
+fn a_handler_answers_the_plugins_calls_and_a_stop_ends_a_quiet_plugin() {
+    if find_python().is_none() {
+        return;
+    }
+    // the handler stands in for the app's UI thread: it answers every line itself
+    let dir = temp("with").join("p");
+    let code = format!(
+        r#"{PY_CLIENT}
+a = call("layers")
+sys.exit(0 if a["result"] == "from the handler" else 4)
+"#
+    );
+    let plugin = make(&dir, "main.py", r#""read""#, Some(30), &code);
+    let mut seen = Vec::new();
+    let report = fanimate_plugin::run_with(&plugin, &RunOptions::default(), &mut |line, _| {
+        seen.push(line.to_owned());
+        (
+            Some(r#"{"jsonrpc":"2.0","id":1,"result":"from the handler"}"#.to_owned()),
+            false,
+        )
+    })
+    .unwrap();
+    assert!(report.succeeded(), "{report:?}");
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].contains("\"layers\""));
+
+    // a plugin that says nothing is stopped by the flag, long before its time limit
+    let quiet = make(
+        &temp("cancel").join("p"),
+        "main.py",
+        "",
+        Some(60),
+        "import time\ntime.sleep(60)\n",
+    );
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopper = flag.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        stopper.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let options = RunOptions {
+        cancel: Some(flag),
+        ..RunOptions::default()
+    };
+    let report = fanimate_plugin::run_with(&quiet, &options, &mut |_, _| (None, false)).unwrap();
+    assert_eq!(report.ending, Ending::Stopped(Limit::Cancelled), "{report:?}");
+    assert!(report.elapsed < Duration::from_secs(10));
+    assert!(report.summary().contains("you stopped it"));
+}

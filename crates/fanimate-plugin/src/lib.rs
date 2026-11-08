@@ -40,7 +40,7 @@ use fanimate_editor::Editor;
 mod host;
 mod package;
 
-pub use host::{Ending, Limit, MAX_LINE, RunOptions, RunReport, run};
+pub use host::{Ending, Handled, Limit, MAX_LINE, RunOptions, RunReport, run, run_with};
 pub use package::{
     Installed, MAX_PACKAGE_BYTES, MAX_PACKAGE_FILES, PACKAGE_EXTENSION, folder_name, install, install_bytes,
     pack,

@@ -107,6 +107,22 @@ impl History {
         }
     }
 
+    /// Make the steps taken since state `from` (a [`cursor`](Self::cursor)
+    /// noted earlier) one step called `label`, so one undo takes back all of
+    /// them: a plugin run that made many calls is then one Ctrl+Z. Does
+    /// nothing, and says so, when fewer than two steps were taken or when
+    /// something has been undone since (a redo is waiting).
+    pub fn merge_since(&mut self, from: usize, label: &str) -> bool {
+        if from + 1 >= self.cursor || self.cursor != self.labels.len() || self.cursor >= self.states.len() {
+            return false;
+        }
+        self.states.drain(from + 1..self.cursor);
+        self.labels.drain(from..self.cursor);
+        self.labels.insert(from, label.to_owned());
+        self.cursor = from + 1;
+        true
+    }
+
     /// Step back. `doc` and `selection` become the earlier state.
     pub fn undo(&mut self, doc: &mut Document, selection: &mut Vec<LayerId>) -> Option<String> {
         if self.cursor == 0 {
@@ -286,6 +302,37 @@ mod tests {
     fn rename(h: &mut History, doc: &mut Document, i: usize, name: &str) {
         h.push("Rename", doc, &[]);
         doc.layers[i].name = name.into();
+    }
+
+    #[test]
+    fn many_steps_merge_into_one_that_one_undo_takes_back() {
+        let mut d = doc();
+        let original = d.clone();
+        let mut sel = Vec::new();
+        let mut h = History::default();
+        let n = d.layers.len();
+        rename(&mut h, &mut d, n - 1, "earlier");
+        let mark = h.cursor();
+        let after_earlier = d.clone();
+        for (i, name) in ["x1", "x2", "x3"].into_iter().enumerate() {
+            rename(&mut h, &mut d, n - 1 - (i % 2), name);
+        }
+        let finished = d.clone();
+        // fewer than two steps, or a waiting redo, merge nothing
+        assert!(!h.merge_since(h.cursor(), "none"));
+        assert!(h.merge_since(mark, "Plugin"));
+        assert_eq!(h.steps(&d).len(), 2);
+        assert_eq!(h.undo_label(), Some("Plugin"));
+        // one undo puts back everything the three did, and the earlier step is still there
+        h.undo(&mut d, &mut sel);
+        assert_eq!(d, after_earlier);
+        h.redo(&mut d, &mut sel);
+        assert_eq!(d, finished);
+        h.undo(&mut d, &mut sel);
+        h.undo(&mut d, &mut sel);
+        assert_eq!(d, original);
+        // with a redo waiting there is nothing to merge
+        assert!(!h.merge_since(0, "again"));
     }
 
     #[test]

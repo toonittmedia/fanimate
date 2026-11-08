@@ -38,6 +38,7 @@ mod markdown;
 mod menus;
 mod panels;
 mod places;
+mod plugins;
 mod policy;
 mod preview;
 mod recovery;

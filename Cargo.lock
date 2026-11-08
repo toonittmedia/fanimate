@@ -1555,6 +1555,7 @@ dependencies = [
  "fanimate-fnm",
  "fanimate-import",
  "fanimate-oscodec",
+ "fanimate-plugin",
  "fanimate-render",
  "hound",
  "image",

@@ -214,6 +214,10 @@ const FANIMATE: &[(&str, Action)] = &[
     ("Ctrl+Shift+P", CommandPalette),
     ("F1", CommandPalette),
     ("Ctrl+K", AskAssistant),
+    ("Ctrl+Alt+O", OffsetPath),
+    ("Ctrl+Alt+L", CleanUpLines),
+    ("Ctrl+Alt+I", SuggestInbetween),
+    ("Ctrl+Alt+R", AutoRig),
     // Layer
     ("Ctrl+Shift+N", NewVectorLayer),
     ("Ctrl+Alt+N", NewFramesLayer),
@@ -318,6 +322,10 @@ const MOHO: &[(&str, Action)] = &[
     // not in Moho, but unused there, so safe to add
     ("F1", CommandPalette),
     ("Ctrl+K", AskAssistant),
+    ("Ctrl+Alt+O", OffsetPath),
+    ("Ctrl+Alt+L", CleanUpLines),
+    ("Ctrl+Alt+I", SuggestInbetween),
+    ("Ctrl+Alt+R", AutoRig),
     ("F2", Rename),
     ("Enter", FinishPath),
     // Animation

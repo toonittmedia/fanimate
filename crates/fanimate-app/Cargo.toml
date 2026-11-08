@@ -19,6 +19,7 @@ fanimate-render.workspace = true
 fanimate-editor.workspace = true
 fanimate-api.workspace = true
 fanimate-agent.workspace = true
+fanimate-plugin.workspace = true
 fanimate-export.workspace = true
 fanimate-import.workspace = true
 fanimate-oscodec.workspace = true
