@@ -26,6 +26,8 @@ enum Drag {
     /// One of the two handles (0 leaves the key, 1 arrives at the next) of the
     /// key on `frame`.
     Handle { which: usize, frame: Frame },
+    /// Empty space: the playhead follows the pointer, as on the timeline's ruler.
+    Scrub,
 }
 
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
@@ -207,6 +209,11 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
                     })
             })
             .or_else(|| nearest_key(&curves, scale, pos, &to_screen));
+        if grabbed.is_none() {
+            // nothing to take hold of: scrub, with no undo step, and let go of the picked key
+            ui.ctx().data_mut(|d| d.insert_temp(dragging_id, Drag::Scrub));
+            shell.editor.clear_key_selection();
+        }
         if let Some(drag) = grabbed {
             shell.editor.checkpoint("Edit key");
             ui.ctx().data_mut(|d| {
@@ -225,6 +232,9 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
     {
         let (f, v) = from_screen(pos);
         match drag {
+            Drag::Scrub => shell
+                .editor
+                .go_to((f.round() as Frame).max(fanimate_core::REST_FRAME)),
             Drag::Key { component, frame } => {
                 if let Ok(to) =
                     shell
@@ -271,7 +281,14 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
             Some(Drag::Key { frame, .. }) => shell
                 .editor
                 .select_key(KeyRef::new(Some(layer), Some(ch), frame), KeySelect::Replace),
-            _ => shell.editor.clear_key_selection(),
+            _ => {
+                // empty space: let go of the key and go to that frame
+                shell.editor.clear_key_selection();
+                let (f, _) = from_screen(pos);
+                shell
+                    .editor
+                    .go_to((f.round() as Frame).max(fanimate_core::REST_FRAME));
+            }
         }
     }
     if response.secondary_clicked()

@@ -1724,7 +1724,7 @@ const KEY_RADIUS: f32 = 5.5;
 /// marks: a round side is gentle and a flat side is abrupt, so Ease in is
 /// round at the start and flat at the end, Ease out is the reverse, and Ease
 /// in and out is round at both ends. The lively three are a triangle (shoots
-/// past), a dome (a ball's arc) and a four-point spark (vibrates). Each fits in
+/// past), a dome (a ball's arc) and a plus (springs about). Each fits in
 /// the box a round key does, and is star-shaped about its centre.
 fn ease_mark(e: Easing) -> &'static [egui::Vec2] {
     static MARKS: std::sync::LazyLock<Vec<Vec<egui::Vec2>>> =
@@ -1761,22 +1761,25 @@ fn build_ease_mark(e: Easing) -> Vec<egui::Vec2> {
         }
         Easing::Overshoot => vec![vec2(-9.0, -9.5), vec2(10.0, 0.0), vec2(-9.0, 9.5)],
         Easing::Bounce => arc(0.0, 9.0, 10.5, 18.0, PI, TAU),
+        // a plus with fat arms: a four-point star blurs into a diamond (the linear key's
+        // mark) at 11 px, and nothing else is a cross
         Easing::Elastic => {
-            // four arms inside the round key's box, each side a curve pulled towards the middle
-            // (not all the way, so the arms are soft and do not shoot out)
-            const TIP: f32 = 8.5;
-            const PULL: f32 = 0.22;
-            let tips = [vec2(0.0, -TIP), vec2(TIP, 0.0), vec2(0.0, TIP), vec2(-TIP, 0.0)];
-            let mut v = Vec::new();
-            for i in 0..4 {
-                let (a, b) = (tips[i], tips[(i + 1) % 4]);
-                let control = (a + b) * PULL;
-                for s in 0..8 {
-                    let t = s as f32 / 8.0;
-                    v.push(a * (1.0 - t) * (1.0 - t) + control * (2.0 * t * (1.0 - t)) + b * (t * t));
-                }
-            }
-            v
+            const L: f32 = 10.0;
+            const W: f32 = 3.9;
+            vec![
+                vec2(-W, -L),
+                vec2(W, -L),
+                vec2(W, -W),
+                vec2(L, -W),
+                vec2(L, W),
+                vec2(W, W),
+                vec2(W, L),
+                vec2(-W, L),
+                vec2(-W, W),
+                vec2(-L, W),
+                vec2(-L, -W),
+                vec2(-W, -W),
+            ]
         }
     };
     let k = KEY_RADIUS / 10.5;
@@ -2572,7 +2575,7 @@ mod tests {
                 // within half of a 12 px frame cell, so neighbouring keys do not overlap
                 assert!(p.x.abs() <= 6.1 && p.y.abs() <= 6.1, "{e:?} {p:?}");
             }
-            // star-shaped about the centre (the spark is filled as a fan from there):
+            // star-shaped about the centre (the plus is filled as a fan from there):
             // going round, the angle from the centre only ever increases
             let turn: f32 = (0..outline.len())
                 .map(|i| {
