@@ -76,6 +76,7 @@ The version number says how new a file's format is. `requires` says which parts 
 | `provenance@1` | Any layer has a [`provenance`](#provenance) record | 7 |
 | `text@1` | Any layer is a [text layer](#type-text) | 7 |
 | `controllers@1` | Any bone layer has [master controllers](#master-controllers) | 7 |
+| `compositing@1` | Any layer has a [`composite`](#compositing) record | 7 |
 
 A reader refuses a project that lists a name it does not know, even if it knows how to read the `version`. The message names the feature (cut to 80 characters) and says a newer Fanimate is needed. A reader never guesses: dropping a provenance record would hide that a tool made the content.
 
@@ -128,6 +129,7 @@ Each file in `layers/` holds one top-level layer. Child layers of groups and bon
 | `locked` | boolean | Optional (version 5), default `false`. A locked layer cannot be selected on the canvas, moved, drawn on or edited by the tools. It still draws and plays. |
 | `provenance` | object | Optional (version 7). What made the layer's content, when a tool rather than the artist did. See [Provenance](#provenance). |
 | `order` | [channel](#channels) of number | Optional (version 6), left out when it has no keys. See [Layer order](#layer-order). |
+| `composite` | object | Optional (version 7), left out when nothing is set. Blend mode, mask role, clip and flatten. See [Compositing](#compositing). |
 | `transform` | object | `position` (channel of [vector](#vectors)), `rotation` (channel of number, radians), `scale` (channel of vector), and optionally (version 4) `pivot` |
 | `type` | string | `"vector"`, `"group"`, `"bone"`, `"image"`, `"frames"`, `"switch"`, `"audio"` or `"text"` (the four after `"bone"` version 3, `"text"` version 7); decides the remaining fields |
 
@@ -151,6 +153,24 @@ A layer's transform applies scale, then rotation, then position, relative to its
 | `date` | string | Optional. The day it was made, `YYYY-MM-DD`. |
 
 Each text is at most 200 characters. A project with any layer that has a record requires the feature `provenance@1`, in the manifest. A record is kept when a layer is copied, duplicated, moved into a group or exported with the project; it is removed only by the artist, with a command that says so.
+
+### Compositing
+
+`composite` (optional, version 7) says how a layer is mixed with the others. A layer with none of it set is drawn straight over what is under it, and has no `composite`. Every field is optional and left out when it has its default; a project with any layer that has a `composite` requires the feature `compositing@1`.
+
+```json
+"composite": { "blend": "multiply", "mask": "add", "unmasked": true, "clip": true, "flatten": true }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `blend` | string | How the layer's picture mixes with what is under it: `"normal"` (default), `"multiply"`, `"screen"` or `"add"`. A layer with a blend other than normal is drawn as a picture of its own and laid over its siblings, its opacity applying to the picture. |
+| `mask` | string | `"none"` (default), `"add"` or `"subtract"`. A layer with a mask role is not drawn. The mask layers of one list of siblings (the top level or a group), taken in list order, together make that list's mask: a layer that adds lets through what it covers, one that subtracts takes what it covers out of what the layers before it let through. Every other layer of the list is shown only where the mask lets it through. A list whose mask layers are all hidden has no mask. |
+| `unmasked` | boolean | Default `false`. The layer is not held back by its list's mask. |
+| `clip` | boolean | Default `false`. The layer shows only where the layer before it in the list (the one under it) is drawn, and is laid down with its own colours there. The layers clipped in a row to one base and the base are one picture, mixed as the base is; hiding the base hides them. A clipped layer's own `blend` and `flatten` are ignored, as are those of a mask layer. A first layer with `clip` has nothing to clip to and is drawn as usual. |
+| `flatten` | boolean | Default `false`. For a group, switch or bone layer: draw what is inside it as one picture, then apply its opacity and blend to that picture, so shapes that overlap inside do not show through each other when it is faded. Without it a group's opacity multiplies into each shape, as in older files. |
+
+Readers that cannot composite must refuse the project (the required feature), because a mask or a clip left out would show hidden artwork.
 
 ### Layer order
 
@@ -659,7 +679,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | 4 | Development builds after Fanimate 0.2.1 | Layers may have a pivot (`transform.pivot`); shapes may say they are rectangles (`rect`) | Older files need no conversion: without a pivot a layer turns about its origin, as it always did, and without `rect` a shape is a path. An older reader would turn a layer with a pivot about its origin and show it in the wrong place, so the version was bumped. |
 | 5 | Fanimate 0.2.3 | The project may have guides (`guides` in `document.json`); layers may be locked (`locked`); shapes may be hidden (`visible: false`); the project may have a camera (`camera`); shapes may have colour keys (`fill_keys`, `stroke_keys`), stroke exposure (`trim`, `trim_keys`) and rectangles may have a radius for each corner (`rect.radii`) | Older files need no conversion: they have no guides, camera or colour keys and nothing locked or hidden. An older reader would show a hidden shape, ignore a lock, draw the colour keys' shapes in one colour, draw whole strokes that are trimmed, round all four corners alike and lose the guides and camera when it saved, so the version was bumped. |
 | 6 | Development builds after Fanimate 0.2.3 | Frames count from 1 and frame 0 is the rest pose; channels may loop (`loop_mode`); layers may change their place among their siblings over time (`order`); the project may hold a preview picture (`thumbnail.png`); shapes may hide edges (`hidden_edge_flags`); the project may hold saved brush styles (`styles`) | Files before version 6 are converted on load: every frame number goes up by 1 (`start`, `end`, every key, drawing and action frame, audio `start`), so the project plays as it did; no key is made on frame 0. Nothing else needs converting: older files have no loops, no order and no preview. An older reader would read the new frame numbers one frame late, play loops as a held last value, ignore the layer order, draw hidden edges and lose the loops, orders, hidden edges, styles and preview when it saved, so the version was bumped. |
-| 7 | Development builds after Fanimate 0.3.2 | The manifest may list the features a reader needs (`requires`); layers may record what made their content (`provenance`); bones have ids (`id`, `skeleton.next_bone_id`); keys may ease with named easings and Bézier curves (`interp`); text layers and their animators (`text`); master controllers on a bone layer (`skeleton.controllers`) | Older files need no conversion beyond giving bones their ids when read: they require nothing and record no provenance. An older reader would drop `provenance` when it saved a project, hiding that a tool made the content, and has no way to refuse a project that needs a part it lacks, so the version was bumped. |
+| 7 | Development builds after Fanimate 0.3.2 | The manifest may list the features a reader needs (`requires`); layers may record what made their content (`provenance`); bones have ids (`id`, `skeleton.next_bone_id`); keys may ease with named easings and Bézier curves (`interp`); text layers and their animators (`text`); master controllers on a bone layer (`skeleton.controllers`); layers mixed with the others by blend mode, mask, clip or flatten (`composite`) | Older files need no conversion beyond giving bones their ids when read: they require nothing and record no provenance. An older reader would drop `provenance` when it saved a project, hiding that a tool made the content, and has no way to refuse a project that needs a part it lacks, so the version was bumped. |
 
 ### The single-file container
 

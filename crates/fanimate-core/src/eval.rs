@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use glam::Affine2;
 
+use crate::compositing::{Blend, Ink, MaskRole, ROOT_SCOPE, Scope, ScopeId, ScopeKind};
 use crate::path::Shape;
 use crate::scene::{Document, Layer, LayerId, LayerKind};
 
@@ -24,8 +25,14 @@ pub struct DrawItem<'a> {
     pub part: Option<crate::frames::Part>,
     /// Shape space to document space.
     pub transform: Affine2,
-    /// Combined opacity of the shape's layer and all its ancestors.
+    /// Combined opacity of the shape's layer and all its ancestors, up to the
+    /// scope it is drawn in (a flattened group carries the rest).
     pub opacity: f32,
+    /// The picture it is drawn into: `ROOT_SCOPE`, the whole frame, unless the
+    /// document uses compositing (see [`Evaluator::scopes`]).
+    pub scope: ScopeId,
+    /// How it is laid down in that picture.
+    pub ink: Ink,
 }
 
 /// An image to draw: the media file's name and the mesh, its vertices in
@@ -122,6 +129,14 @@ pub struct Evaluator {
     /// Look at the canvas through the document's camera, as renders do.
     /// The canvas the animator works on shows the whole page instead.
     pub camera: bool,
+    /// The pictures of the frame just evaluated, drawn on their own and laid
+    /// over their parents: scope 0 is the whole frame, and a document with no
+    /// masks, clips, blend modes or flattened groups has no other. Each
+    /// item's `scope` indexes this.
+    pub scopes: Vec<Scope>,
+    /// The scope and ink that items are being made in.
+    scope: ScopeId,
+    ink: Ink,
 }
 
 /// The bone layer a subtree is inside.
@@ -153,7 +168,22 @@ impl Evaluator {
         } else {
             Affine2::IDENTITY
         };
+        self.scopes.clear();
+        self.scopes.push(Scope::ROOT);
+        self.scope = ROOT_SCOPE;
+        self.ink = Ink::Over;
         self.visit(&doc.layers, frame, root, 1.0, None, out);
+    }
+
+    /// Start a scope inside the current one and make it the current one.
+    /// Returns the scope to go back to.
+    fn open(&mut self, kind: ScopeKind) -> ScopeId {
+        let id = self.scopes.len() as ScopeId;
+        self.scopes.push(Scope {
+            parent: self.scope,
+            kind,
+        });
+        std::mem::replace(&mut self.scope, id)
     }
 
     /// `world` is the parent's space to document space. Inside a bone layer,
@@ -177,148 +207,304 @@ impl Evaluator {
             Vec::new()
         };
         let index_at = |n: usize| if keyed { slots[n].1 } else { n };
+        // masks, clips and the like need the siblings looked at together; a
+        // document that uses none draws as it always has
+        if layers.iter().any(|l| !l.composite.is_plain()) {
+            let order: Vec<usize> = (0..layers.len()).map(index_at).collect();
+            self.visit_composited(layers, &order, frame, world, opacity, rig, out);
+            return;
+        }
         for n in 0..layers.len() {
-            let layer = &layers[index_at(n)];
+            self.visit_layer(&layers[index_at(n)], frame, world, opacity, rig, false, out);
+        }
+    }
+
+    /// Siblings with compositing settings among them: the mask is drawn
+    /// first into a scope of its own, then each layer in turn, with the
+    /// layers clipped to it, held to the mask unless it is marked unmasked.
+    #[allow(clippy::too_many_arguments)]
+    fn visit_composited<'a>(
+        &mut self,
+        layers: &'a [Layer],
+        order: &[usize],
+        frame: f32,
+        world: Affine2,
+        opacity: f32,
+        rig: Option<(Rig<'a>, Affine2)>,
+        out: &mut Vec<DrawItem<'a>>,
+    ) {
+        // Every mask layer of the group, in list order, drawn into one scope.
+        // Hiding all of them turns the mask off, so it can be looked past.
+        let has_mask = order
+            .iter()
+            .any(|&i| layers[i].composite.mask != MaskRole::None && layers[i].visible);
+        let mask = has_mask.then(|| {
+            let prev = self.open(ScopeKind::Mask);
+            let id = self.scope;
+            for &i in order {
+                let layer = &layers[i];
+                let role = layer.composite.mask;
+                if role == MaskRole::None {
+                    continue;
+                }
+                let before = self.ink;
+                self.ink = if role == MaskRole::Subtract {
+                    Ink::Erase
+                } else {
+                    Ink::Over
+                };
+                // what the group is faded by is not the mask's business
+                self.visit_layer(layer, frame, world, 1.0, rig, true, out);
+                self.ink = before;
+            }
+            self.scope = prev;
+            id
+        });
+        let mut n = 0;
+        while n < order.len() {
+            let layer = &layers[order[n]];
+            n += 1;
+            if layer.composite.mask != MaskRole::None {
+                continue;
+            }
+            // the layers above it that are clipped to it belong to it
+            let mut end = n;
+            while end < order.len() {
+                let c = &layers[order[end]].composite;
+                if c.clip && c.mask == MaskRole::None {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            let clipped = &order[n..end];
+            n = end;
+            // hiding the base hides what is clipped to it
             if !layer.visible {
                 continue;
             }
-            let opacity = opacity * layer.opacity.sample(frame).clamp(0.0, 1.0);
-            if opacity <= 0.0 {
-                continue;
+            let held = mask.filter(|_| !layer.composite.unmasked);
+            let outer = held.map(|mask| {
+                self.open(ScopeKind::Layer {
+                    opacity: 1.0,
+                    blend: Blend::Normal,
+                    mask: Some(mask),
+                })
+            });
+            if clipped.is_empty() {
+                self.visit_layer(layer, frame, world, opacity, rig, false, out);
+            } else {
+                // the base and what is clipped to it are one picture, which takes the base's blend
+                let prev = self.open(ScopeKind::Layer {
+                    opacity: 1.0,
+                    blend: layer.composite.blend,
+                    mask: None,
+                });
+                self.visit_layer(layer, frame, world, opacity, rig, true, out);
+                let before = self.ink;
+                self.ink = Ink::Atop;
+                for &i in clipped {
+                    self.visit_layer(&layers[i], frame, world, opacity, rig, true, out);
+                }
+                self.ink = before;
+                self.scope = prev;
             }
-            let local = layer.transform.sample(frame).to_affine();
-            let world = world * local;
-            // rel: this layer's space to the enclosing bone layer's space
-            let rig = rig.map(|(r, rel)| (r, rel * local));
+            if let Some(prev) = outer {
+                self.scope = prev;
+            }
+        }
+    }
 
-            match &layer.kind {
-                LayerKind::Vector { shapes } => {
-                    for (index, shape) in shapes.iter().enumerate() {
-                        if !shape.visible {
-                            continue;
-                        }
-                        let item = self.shape_item(layer.id, index, None, shape, frame, world, opacity, rig);
-                        out.push(item);
-                    }
-                }
-                LayerKind::Frames { cels } => {
-                    let Some(cel) = crate::frames::cel_at(cels, frame).map(|i| &cels[i]) else {
+    /// One layer and what is inside it. `plain` leaves out the scope the
+    /// layer's own blend or flatten would open, for a layer that is a mask or
+    /// is clipped to another and so is drawn into someone else's picture.
+    #[allow(clippy::too_many_arguments)]
+    fn visit_layer<'a>(
+        &mut self,
+        layer: &'a Layer,
+        frame: f32,
+        world: Affine2,
+        opacity: f32,
+        rig: Option<(Rig<'a>, Affine2)>,
+        plain: bool,
+        out: &mut Vec<DrawItem<'a>>,
+    ) {
+        if !layer.visible {
+            return;
+        }
+        let opacity = opacity * layer.opacity.sample(frame).clamp(0.0, 1.0);
+        if opacity <= 0.0 {
+            return;
+        }
+        // A layer that is mixed in some way, or a group that is faded as
+        // one picture, is drawn on its own and laid over its parent; what
+        // is inside it is then at full strength, the picture carries the
+        // fade. Layers clipped to another or inside a mask are only drawn.
+        let composite = layer.composite;
+        let container = matches!(
+            layer.kind,
+            LayerKind::Group { .. } | LayerKind::Switch { .. } | LayerKind::Bone { .. }
+        );
+        let (opacity, restore) = if !plain
+            && self.ink == Ink::Over
+            && (composite.blend != Blend::Normal || (composite.flatten && container))
+        {
+            let prev = self.open(ScopeKind::Layer {
+                opacity,
+                blend: composite.blend,
+                mask: None,
+            });
+            (1.0, Some(prev))
+        } else {
+            (opacity, None)
+        };
+        let local = layer.transform.sample(frame).to_affine();
+        let world = world * local;
+        // rel: this layer's space to the enclosing bone layer's space
+        let rig = rig.map(|(r, rel)| (r, rel * local));
+
+        match &layer.kind {
+            LayerKind::Vector { shapes } => {
+                for (index, shape) in shapes.iter().enumerate() {
+                    if !shape.visible {
                         continue;
-                    };
-                    for (part, index, shape) in cel.shapes() {
-                        if !shape.visible || (self.skip_rough && part == crate::frames::Part::Rough) {
-                            continue;
-                        }
-                        let item =
-                            self.shape_item(layer.id, index, Some(part), shape, frame, world, opacity, rig);
-                        out.push(item);
                     }
-                }
-                LayerKind::Group { children } => {
-                    self.visit(children, frame, world, opacity, rig, out);
-                }
-                LayerKind::Switch { children, switch } => {
-                    if let Some(i) = crate::scene::switch_choice(children, switch, frame) {
-                        self.visit(&children[i..=i], frame, world, opacity, rig, out);
-                    }
-                }
-                LayerKind::Audio(_) => {}
-                LayerKind::Text(text) => text.items(layer.id, frame, world, opacity, &mut self.text, out),
-                LayerKind::Image(image) => {
-                    let mut vertices = image.vertices();
-                    let mut transform = world;
-                    if let Some((r, rel)) = rig {
-                        let skins = &self.skins[r.depth];
-                        if let Some(weights) = image.valid_skin() {
-                            let inv = rel.inverse();
-                            for ((p, _), w) in vertices.iter_mut().zip(weights) {
-                                *p = (inv * crate::bones::blend(skins, w) * rel).transform_point2(*p);
-                            }
-                        } else if let Some(skin) = image.bone.and_then(|b| skins.get(b)) {
-                            transform = r.world * *skin * rel;
-                        }
-                    }
-                    out.push(DrawItem {
-                        layer: layer.id,
-                        index: 0,
-                        part: None,
-                        shape: Cow::Owned(image_outline(&vertices, image.cells())),
-                        image: Some(ImageItem {
-                            media: &image.media,
-                            cells: image.cells(),
-                            vertices,
-                        }),
-                        transform,
-                        opacity,
-                    });
-                }
-                LayerKind::Bone { skeleton, children } => {
-                    let depth = rig.map_or(0, |(r, _)| r.depth + 1);
-                    if self.skins.len() <= depth {
-                        self.skins.resize_with(depth + 1, Vec::new);
-                        self.smart.resize_with(depth + 1, Vec::new);
-                    }
-                    skeleton.angles(frame, &mut self.angles);
-                    // Smart Bones: each driver, as the timeline poses it,
-                    // picks a frame of its action, which turns other bones
-                    let smart = &mut self.smart[depth];
-                    smart.clear();
-                    let on = self.editing != Some(layer.id);
-                    for act in &skeleton.actions {
-                        let f = act
-                            .driver
-                            .filter(|_| on)
-                            .and_then(|d| self.angles.get(d).copied())
-                            .and_then(|a| act.frame_for(a));
-                        smart.push(f.unwrap_or(f32::NAN));
-                    }
-                    // master controllers play regular actions by their values on this frame
-                    if on {
-                        for controller in &skeleton.controllers {
-                            for link in &controller.links {
-                                if let Some(act) = skeleton.actions.get(link.action)
-                                    && let Some(f) = controller.action_frame(link, act, frame)
-                                {
-                                    smart[link.action] = f;
-                                }
-                            }
-                        }
-                    }
-                    for (act, &f) in skeleton.actions.iter().zip(smart.iter()) {
-                        if f.is_nan() {
-                            continue;
-                        }
-                        for b in &act.bones {
-                            if Some(b.bone) != act.driver
-                                && let Some(a) = self.angles.get_mut(b.bone)
-                            {
-                                *a += act.bone_offset(b.bone, f);
-                            }
-                        }
-                    }
-                    for (a, bone) in self.angles.iter_mut().zip(&skeleton.bones) {
-                        *a = bone.clamp(*a);
-                    }
-                    skeleton.pose_from(&self.angles, &mut self.pose);
-                    skeleton.rest_pose(&mut self.rest);
-                    let skins = &mut self.skins[depth];
-                    skins.clear();
-                    skins.extend(self.pose.iter().zip(&self.rest).map(|(p, r)| *p * r.inverse()));
-                    let inner = Rig {
-                        world,
-                        depth,
-                        actions: &skeleton.actions,
-                    };
-                    self.visit(
-                        children,
-                        frame,
-                        world,
-                        opacity,
-                        Some((inner, Affine2::IDENTITY)),
-                        out,
-                    );
+                    let item = self.shape_item(layer.id, index, None, shape, frame, world, opacity, rig);
+                    out.push(item);
                 }
             }
+            LayerKind::Frames { cels } => {
+                let Some(cel) = crate::frames::cel_at(cels, frame).map(|i| &cels[i]) else {
+                    if let Some(prev) = restore {
+                        self.scope = prev;
+                    }
+                    return;
+                };
+                for (part, index, shape) in cel.shapes() {
+                    if !shape.visible || (self.skip_rough && part == crate::frames::Part::Rough) {
+                        continue;
+                    }
+                    let item =
+                        self.shape_item(layer.id, index, Some(part), shape, frame, world, opacity, rig);
+                    out.push(item);
+                }
+            }
+            LayerKind::Group { children } => {
+                self.visit(children, frame, world, opacity, rig, out);
+            }
+            LayerKind::Switch { children, switch } => {
+                if let Some(i) = crate::scene::switch_choice(children, switch, frame) {
+                    self.visit(&children[i..=i], frame, world, opacity, rig, out);
+                }
+            }
+            LayerKind::Audio(_) => {}
+            LayerKind::Text(text) => {
+                let start = out.len();
+                text.items(layer.id, frame, world, opacity, &mut self.text, out);
+                for item in &mut out[start..] {
+                    item.scope = self.scope;
+                    item.ink = self.ink;
+                }
+            }
+            LayerKind::Image(image) => {
+                let mut vertices = image.vertices();
+                let mut transform = world;
+                if let Some((r, rel)) = rig {
+                    let skins = &self.skins[r.depth];
+                    if let Some(weights) = image.valid_skin() {
+                        let inv = rel.inverse();
+                        for ((p, _), w) in vertices.iter_mut().zip(weights) {
+                            *p = (inv * crate::bones::blend(skins, w) * rel).transform_point2(*p);
+                        }
+                    } else if let Some(skin) = image.bone.and_then(|b| skins.get(b)) {
+                        transform = r.world * *skin * rel;
+                    }
+                }
+                out.push(DrawItem {
+                    layer: layer.id,
+                    index: 0,
+                    part: None,
+                    shape: Cow::Owned(image_outline(&vertices, image.cells())),
+                    image: Some(ImageItem {
+                        media: &image.media,
+                        cells: image.cells(),
+                        vertices,
+                    }),
+                    transform,
+                    opacity,
+                    scope: self.scope,
+                    ink: self.ink,
+                });
+            }
+            LayerKind::Bone { skeleton, children } => {
+                let depth = rig.map_or(0, |(r, _)| r.depth + 1);
+                if self.skins.len() <= depth {
+                    self.skins.resize_with(depth + 1, Vec::new);
+                    self.smart.resize_with(depth + 1, Vec::new);
+                }
+                skeleton.angles(frame, &mut self.angles);
+                // Smart Bones: each driver, as the timeline poses it,
+                // picks a frame of its action, which turns other bones
+                let smart = &mut self.smart[depth];
+                smart.clear();
+                let on = self.editing != Some(layer.id);
+                for act in &skeleton.actions {
+                    let f = act
+                        .driver
+                        .filter(|_| on)
+                        .and_then(|d| self.angles.get(d).copied())
+                        .and_then(|a| act.frame_for(a));
+                    smart.push(f.unwrap_or(f32::NAN));
+                }
+                // master controllers play regular actions by their values on this frame
+                if on {
+                    for controller in &skeleton.controllers {
+                        for link in &controller.links {
+                            if let Some(act) = skeleton.actions.get(link.action)
+                                && let Some(f) = controller.action_frame(link, act, frame)
+                            {
+                                smart[link.action] = f;
+                            }
+                        }
+                    }
+                }
+                for (act, &f) in skeleton.actions.iter().zip(smart.iter()) {
+                    if f.is_nan() {
+                        continue;
+                    }
+                    for b in &act.bones {
+                        if Some(b.bone) != act.driver
+                            && let Some(a) = self.angles.get_mut(b.bone)
+                        {
+                            *a += act.bone_offset(b.bone, f);
+                        }
+                    }
+                }
+                for (a, bone) in self.angles.iter_mut().zip(&skeleton.bones) {
+                    *a = bone.clamp(*a);
+                }
+                skeleton.pose_from(&self.angles, &mut self.pose);
+                skeleton.rest_pose(&mut self.rest);
+                let skins = &mut self.skins[depth];
+                skins.clear();
+                skins.extend(self.pose.iter().zip(&self.rest).map(|(p, r)| *p * r.inverse()));
+                let inner = Rig {
+                    world,
+                    depth,
+                    actions: &skeleton.actions,
+                };
+                self.visit(
+                    children,
+                    frame,
+                    world,
+                    opacity,
+                    Some((inner, Affine2::IDENTITY)),
+                    out,
+                );
+            }
+        }
+        if let Some(prev) = restore {
+            self.scope = prev;
         }
     }
 }
@@ -368,6 +554,8 @@ impl Evaluator {
             image: None,
             transform,
             opacity,
+            scope: self.scope,
+            ink: self.ink,
         }
     }
 }
@@ -910,6 +1098,196 @@ mod tests {
 
     fn drawn(doc: &Document, frame: f32) -> Vec<crate::scene::LayerId> {
         evaluate(doc, frame).iter().map(|i| i.layer).collect()
+    }
+
+    /// An item's layer, scope, ink and opacity.
+    type Composed = (crate::scene::LayerId, ScopeId, Ink, f32);
+
+    /// Each item's layer, scope and ink, and the scopes of the frame.
+    fn composed(doc: &Document) -> (Vec<Composed>, Vec<Scope>) {
+        let mut items = Vec::new();
+        let mut ev = Evaluator::default();
+        ev.evaluate_into(doc, 0.0, &mut items);
+        (
+            items
+                .iter()
+                .map(|i| (i.layer, i.scope, i.ink, i.opacity))
+                .collect(),
+            ev.scopes.clone(),
+        )
+    }
+
+    #[test]
+    fn a_plain_document_has_one_scope_and_every_item_in_it() {
+        let (doc, [a, b, c]) = three();
+        let (items, scopes) = composed(&doc);
+        assert_eq!(scopes, [Scope::ROOT]);
+        assert_eq!(
+            items,
+            [
+                (a, ROOT_SCOPE, Ink::Over, 1.0),
+                (b, ROOT_SCOPE, Ink::Over, 1.0),
+                (c, ROOT_SCOPE, Ink::Over, 1.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_layer_with_a_blend_mode_is_a_picture_of_its_own_and_the_others_are_not() {
+        let (mut doc, [a, b, c]) = three();
+        doc.layers[1].composite.blend = Blend::Multiply;
+        doc.layers[1].opacity.base = 0.5;
+        let (items, scopes) = composed(&doc);
+        assert_eq!(
+            scopes[1],
+            Scope {
+                parent: ROOT_SCOPE,
+                kind: ScopeKind::Layer {
+                    opacity: 0.5,
+                    blend: Blend::Multiply,
+                    mask: None
+                }
+            }
+        );
+        // inside it the layer is at full strength: the picture carries the fade
+        assert_eq!(
+            items,
+            [
+                (a, 0, Ink::Over, 1.0),
+                (b, 1, Ink::Over, 1.0),
+                (c, 0, Ink::Over, 1.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_flattened_group_is_faded_as_one_picture_and_a_plain_one_fades_each_shape() {
+        let (mut doc, [a, b, _]) = three();
+        let children = vec![doc.layers.remove(0), doc.layers.remove(0)];
+        let mut group = doc.new_layer("g", LayerKind::Group { children });
+        group.opacity.base = 0.5;
+        doc.layers.insert(0, group);
+        // as it has always been: every shape carries the group's opacity, no scope
+        let (items, scopes) = composed(&doc);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!((items[0].0, items[0].3), (a, 0.5));
+        assert_eq!((items[1].0, items[1].3), (b, 0.5));
+        // flattened: the shapes are at full strength in a picture that is faded
+        doc.layers[0].composite.flatten = true;
+        let (items, scopes) = composed(&doc);
+        assert_eq!(scopes.len(), 2);
+        assert!(matches!(scopes[1].kind, ScopeKind::Layer { opacity, .. } if opacity == 0.5));
+        assert!(items[..2].iter().all(|i| i.1 == 1 && i.3 == 1.0), "{items:?}");
+        // a flattened group that is not faded or mixed is just drawn
+        doc.layers[0].opacity.base = 1.0;
+        assert_eq!(composed(&doc).1.len(), 2, "it still is its own picture, as asked");
+    }
+
+    #[test]
+    fn mask_layers_are_drawn_into_a_scope_of_their_own_and_hold_back_the_others() {
+        let (mut doc, [a, b, c]) = three();
+        doc.layers[0].composite.mask = MaskRole::Add;
+        doc.layers[2].composite.unmasked = true;
+        let (items, scopes) = composed(&doc);
+        assert_eq!(scopes[1].kind, ScopeKind::Mask);
+        assert_eq!(
+            scopes[2].kind,
+            ScopeKind::Layer {
+                opacity: 1.0,
+                blend: Blend::Normal,
+                mask: Some(1)
+            }
+        );
+        // the mask layer is in the mask, b is held to it, c is not
+        assert_eq!(
+            items,
+            [
+                (a, 1, Ink::Over, 1.0),
+                (b, 2, Ink::Over, 1.0),
+                (c, 0, Ink::Over, 1.0)
+            ]
+        );
+        // one that subtracts takes away what was there
+        doc.layers[2].composite.unmasked = false;
+        doc.layers[2].composite.mask = MaskRole::Subtract;
+        let (items, _) = composed(&doc);
+        assert_eq!(items[0], (a, 1, Ink::Over, 1.0));
+        assert_eq!(items[1].2, Ink::Erase, "{items:?}");
+        assert_eq!(items[1].1, 1);
+    }
+
+    #[test]
+    fn hiding_every_mask_layer_turns_the_mask_off() {
+        let (mut doc, [a, b, c]) = three();
+        doc.layers[0].composite.mask = MaskRole::Add;
+        doc.layers[0].visible = false;
+        let (items, scopes) = composed(&doc);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(items.iter().map(|i| i.0).collect::<Vec<_>>(), [b, c]);
+        let _ = a;
+    }
+
+    #[test]
+    fn a_clipped_layer_is_drawn_atop_its_base_in_one_picture() {
+        let (mut doc, [a, b, c]) = three();
+        doc.layers[1].composite.clip = true;
+        doc.layers[0].composite.blend = Blend::Screen;
+        let (items, scopes) = composed(&doc);
+        // the base and the clipped layer are one picture, mixed as the base is
+        assert_eq!(
+            scopes[1].kind,
+            ScopeKind::Layer {
+                opacity: 1.0,
+                blend: Blend::Screen,
+                mask: None
+            }
+        );
+        assert_eq!(
+            items,
+            [
+                (a, 1, Ink::Over, 1.0),
+                (b, 1, Ink::Atop, 1.0),
+                (c, 0, Ink::Over, 1.0)
+            ]
+        );
+        // hiding the base hides what is clipped to it
+        doc.layers[0].visible = false;
+        let (items, _) = composed(&doc);
+        assert_eq!(items.iter().map(|i| i.0).collect::<Vec<_>>(), [c]);
+        // a clipped layer with nothing under it is just drawn
+        let (mut doc, [a, ..]) = three();
+        doc.layers[0].composite.clip = true;
+        assert_eq!(composed(&doc).0[0], (a, 0, Ink::Over, 1.0));
+    }
+
+    #[test]
+    fn the_masks_of_a_group_hold_back_what_is_inside_it_and_scopes_nest() {
+        let (mut doc, [a, b, c]) = three();
+        let kids = vec![doc.layers.remove(1), doc.layers.remove(1)];
+        let mut group = doc.new_layer("g", LayerKind::Group { children: kids });
+        group.composite.blend = Blend::Add;
+        doc.layers.push(group);
+        doc.layers[0].composite.mask = MaskRole::Add;
+        let (items, scopes) = composed(&doc);
+        // scope 1: the mask (a); scope 2: the group, held to it; scope 3: the group as a blended picture inside
+        assert_eq!(scopes[1].kind, ScopeKind::Mask);
+        assert!(matches!(scopes[2].kind, ScopeKind::Layer { mask: Some(1), .. }));
+        assert!(matches!(
+            scopes[3].kind,
+            ScopeKind::Layer {
+                blend: Blend::Add,
+                ..
+            }
+        ));
+        assert_eq!(scopes[3].parent, 2);
+        assert_eq!(
+            items,
+            [
+                (a, 1, Ink::Over, 1.0),
+                (b, 3, Ink::Over, 1.0),
+                (c, 3, Ink::Over, 1.0)
+            ]
+        );
     }
 
     #[test]

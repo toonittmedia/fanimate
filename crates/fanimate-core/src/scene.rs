@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::Color;
 use crate::anim::{Channel, Frame, KeyList, LoopMode};
 use crate::bones::Skeleton;
+use crate::compositing::Composite;
 use crate::path::Shape;
 use crate::provenance::Provenance;
 use crate::transform::AnimTransform;
@@ -448,6 +449,10 @@ pub struct Layer {
     /// artist did (see [`Provenance`]). Layers the artist drew have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+    /// How the layer is combined with the others: blend, mask, clip, flatten
+    /// (see [`crate::compositing`]). Plain unless set, and then not written.
+    #[serde(default, skip_serializing_if = "Composite::is_plain")]
+    pub composite: Composite,
     #[serde(flatten)]
     pub kind: LayerKind,
 }
@@ -480,6 +485,7 @@ impl Layer {
             order: Channel::new(0.0),
             transform: AnimTransform::default(),
             provenance: None,
+            composite: Composite::default(),
             kind,
         }
     }

@@ -98,6 +98,8 @@ impl CanvasGpu {
                 image: None,
                 transform: Affine2::IDENTITY,
                 opacity: 1.0,
+                scope: fanimate_core::ROOT_SCOPE,
+                ink: fanimate_core::Ink::Over,
             });
         }
         if let Some(keep) = &overlays.light_table {

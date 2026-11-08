@@ -53,9 +53,19 @@ pub const FEATURE_TEXT: &str = "text@1";
 /// ignored them would show the rig unposed.
 pub const FEATURE_CONTROLLERS: &str = "controllers@1";
 
+/// The feature a project needs when a layer is mixed with the others in some
+/// way (blend mode, mask, clip, flattened group): a reader that ignored it
+/// would show every layer drawn straight over the rest.
+pub const FEATURE_COMPOSITING: &str = "compositing@1";
+
 /// The features this build can read faithfully. A project whose manifest
 /// requires anything else is refused, naming it (see [`required_features`]).
-pub const SUPPORTED_FEATURES: &[&str] = &[FEATURE_PROVENANCE, FEATURE_TEXT, FEATURE_CONTROLLERS];
+pub const SUPPORTED_FEATURES: &[&str] = &[
+    FEATURE_PROVENANCE,
+    FEATURE_TEXT,
+    FEATURE_CONTROLLERS,
+    FEATURE_COMPOSITING,
+];
 
 /// The longest feature name quoted back in an error, so a damaged manifest
 /// cannot flood a message.
@@ -65,9 +75,10 @@ const MAX_FEATURE_NAME_SHOWN: usize = 80;
 /// a project that uses only what every version 7 reader understands.
 pub fn required_features(doc: &Document) -> Vec<String> {
     let mut features = Vec::new();
-    let (mut provenance, mut text, mut controllers) = (false, false, false);
+    let (mut provenance, mut text, mut controllers, mut compositing) = (false, false, false, false);
     doc.walk(|l| {
         provenance |= l.provenance.is_some();
+        compositing |= !l.composite.is_plain();
         text |= matches!(l.kind, LayerKind::Text(_));
         controllers |=
             matches!(&l.kind, LayerKind::Bone { skeleton, .. } if !skeleton.controllers.is_empty());
@@ -80,6 +91,9 @@ pub fn required_features(doc: &Document) -> Vec<String> {
     }
     if controllers {
         features.push(FEATURE_CONTROLLERS.to_owned());
+    }
+    if compositing {
+        features.push(FEATURE_COMPOSITING.to_owned());
     }
     features
 }
@@ -1671,6 +1685,65 @@ mod tests {
         }
         grouped.layers.push(group);
         assert_eq!(required_features(&grouped), [FEATURE_PROVENANCE]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Blend modes, masks, clips and flattened groups are saved, read back
+    /// whole and listed as a required feature, also from inside a group; a
+    /// layer with none of them writes no `composite` at all.
+    #[test]
+    fn compositing_settings_round_trip_and_the_project_requires_the_feature() {
+        use fanimate_core::{Blend, MaskRole};
+        let dir = temp_dir("compositing");
+        let mut doc = samples::hello();
+        assert!(required_features(&doc).is_empty());
+        let first = doc.layers.len() - 1;
+        doc.layers[first].composite.blend = Blend::Multiply;
+        doc.layers[first].composite.mask = MaskRole::Subtract;
+        doc.layers[first].composite.unmasked = true;
+        doc.layers[first].composite.clip = true;
+        doc.layers[first].composite.flatten = true;
+        assert_eq!(required_features(&doc), [FEATURE_COMPOSITING]);
+        for name in ["folder.fnm", "file.fnm"] {
+            let path = dir.join(name);
+            if name == "folder.fnm" {
+                save_folder(&doc, &path).unwrap();
+                let manifest = fs::read_to_string(path.join("manifest.json")).unwrap();
+                assert!(manifest.contains("compositing@1"), "{manifest}");
+            } else {
+                save(&doc, &path).unwrap();
+            }
+            let (loaded, report) = load(&path).unwrap();
+            assert!(report.is_clean(), "{name}: {report}");
+            assert_eq!(
+                loaded.layers[first].composite, doc.layers[first].composite,
+                "{name}"
+            );
+            // the others were plain and still are
+            for (a, b) in loaded.layers.iter().zip(&doc.layers).take(first) {
+                assert!(a.composite.is_plain() && b.composite.is_plain());
+            }
+        }
+        // inside a group it still counts
+        let mut grouped = samples::hello();
+        let mut inner = grouped.new_layer("m", fanimate_core::LayerKind::vector(vec![]));
+        inner.composite.blend = Blend::Add;
+        let group = grouped.new_layer(
+            "g",
+            fanimate_core::LayerKind::Group {
+                children: vec![inner],
+            },
+        );
+        grouped.layers.push(group);
+        assert_eq!(required_features(&grouped), [FEATURE_COMPOSITING]);
+        // a plain project writes no `composite` anywhere
+        let plain = samples::hello();
+        let folder = dir.join("plain.fnm");
+        save_folder(&plain, &folder).unwrap();
+        for entry in fs::read_dir(folder.join("layers")).unwrap() {
+            let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+            assert!(!text.contains("composite"), "{text}");
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

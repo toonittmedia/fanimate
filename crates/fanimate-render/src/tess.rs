@@ -406,6 +406,8 @@ mod tests {
             image: None,
             transform: Affine2::IDENTITY,
             opacity: 1.0,
+            scope: fanimate_core::ROOT_SCOPE,
+            ink: fanimate_core::Ink::Over,
         };
         let mut mesh = Mesh::new();
         Tessellator::new().draw_items(&[item], &mut mesh);
@@ -511,6 +513,8 @@ mod tests {
             image: None,
             transform,
             opacity: 1.0,
+            scope: fanimate_core::ROOT_SCOPE,
+            ink: fanimate_core::Ink::Over,
         };
         let mut mesh = Mesh::new();
         Tessellator::new().draw_items(&[item], &mut mesh);

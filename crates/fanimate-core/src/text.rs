@@ -1190,6 +1190,9 @@ impl Text {
                 part: None,
                 transform: world * placed * matrix,
                 opacity: alpha.clamp(0.0, 1.0),
+                // the evaluator sets these for the layer it is drawing
+                scope: crate::ROOT_SCOPE,
+                ink: crate::Ink::Over,
             });
         }
     }
