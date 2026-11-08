@@ -17,6 +17,7 @@ use crate::history::History;
 
 mod actions;
 mod arrange;
+mod assist;
 mod bones;
 mod booleans;
 mod captions;
@@ -175,6 +176,8 @@ pub struct Editor {
     pub shape_builder: Option<ShapeBuilderState>,
     /// Distance the next Offset Path grows (or shrinks when negative) shapes.
     pub offset_distance: f32,
+    /// How closely Clean Up Lines follows the drawn line.
+    pub clean_options: fanimate_core::cleanup::CleanOptions,
     clipboard: Option<String>,
     /// Shapes and points on the clipboard, as JSON (see `clipboard_shapes`).
     shape_clipboard: Option<String>,
@@ -294,6 +297,7 @@ impl Editor {
             star_inner: 0.4,
             shape_builder: None,
             offset_distance: 10.0,
+            clean_options: fanimate_core::cleanup::CleanOptions::default(),
             clipboard: None,
             shape_clipboard: None,
             focus: Focus::default(),
@@ -684,6 +688,9 @@ impl Editor {
             }
             ExpandShape => self.expand_shape(),
             OffsetPath => self.offset_path(),
+            CleanUpLines => self.clean_up_lines_command(),
+            SuggestInbetween => self.suggest_inbetween_command(),
+            AutoRig => self.auto_rig_command(),
             // with the timeline in front, Ctrl+A picks keys and Esc lets go of them
             SelectAll if self.focus == Focus::Timeline => self.select_all_keys(),
             SelectNone if self.focus == Focus::Timeline && self.has_selected_keys() => {
@@ -874,6 +881,15 @@ impl Editor {
             Union | Subtract | Intersect => self.can_combine(),
             ExpandShape => self.expandable_shapes() > 0,
             OffsetPath => self.offset_targets().is_some(),
+            CleanUpLines => self.primary().is_some_and(|id| self.is_drawable(id)),
+            SuggestInbetween => self.primary().is_some_and(|id| {
+                matches!(self.doc.find(id).map(|l| &l.kind), Some(LayerKind::Frames { .. }))
+            }),
+            AutoRig => self
+                .doc
+                .layers
+                .iter()
+                .any(|l| matches!(l.kind, LayerKind::Vector { .. })),
             SetInterpolation(_) => self.key_interpolation().is_some(),
             AddTextAnimator(_) | ConvertTextToShapes => self.selected_text().is_some(),
             RemoveTextAnimator(i) | DuplicateTextAnimator(i) => self.has_text_animator(i),

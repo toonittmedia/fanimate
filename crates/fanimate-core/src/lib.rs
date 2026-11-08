@@ -10,10 +10,12 @@
 
 pub mod actions;
 pub mod anim;
+pub mod autorig;
 pub mod bones;
 pub mod boolean;
 pub mod brush;
 pub mod captions;
+pub mod cleanup;
 pub mod color;
 pub mod compositing;
 pub mod easing;
@@ -23,6 +25,7 @@ pub mod frames;
 pub mod graph;
 pub mod health;
 mod hide_edge;
+pub mod inbetween;
 pub mod media;
 pub mod path;
 pub mod physics;

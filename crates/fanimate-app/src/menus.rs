@@ -203,6 +203,12 @@ pub fn shape_items(ui: &mut egui::Ui, shell: &mut Shell) {
             Action::OffsetPath,
         ],
     );
+    ui.separator();
+    items(
+        ui,
+        shell,
+        &[Action::CleanUpLines, Action::SuggestInbetween, Action::AutoRig],
+    );
 }
 
 pub fn keymap_menu(ui: &mut egui::Ui, shell: &mut Shell) {

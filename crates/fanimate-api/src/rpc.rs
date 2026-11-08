@@ -317,6 +317,21 @@ pub const METHODS: &[Method] = &[
         "layer: number, index: number, distance: number",
         "Add an offset outline beside a shape: outside it, or inside when distance is negative; returns the new shape's index",
     ),
+    edit(
+        "clean_up_lines",
+        "layer: number, shapes: [number] (optional), tolerance: number (optional)",
+        "Refit rough lines with the fewest smooth curves within the tolerance; returns the shapes refitted and skipped and the points before and after",
+    ),
+    edit(
+        "suggest_inbetween",
+        "layer: number",
+        "Add a drawing between the shown one and the next on a frame-by-frame layer, blended along arcs; returns the frame and what was blended, held and left out",
+    ),
+    edit(
+        "auto_rig",
+        "layers: [number]",
+        "Build a skeleton from the names and places of layers and bind them to it in a new bone layer; returns the layer, bones, layers bound and names left out",
+    ),
     edit("undo", "", "Undo the last step; returns whether anything changed"),
     edit(
         "redo",
@@ -672,6 +687,13 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             param(params, "index")?,
             param(params, "distance")?,
         )?),
+        "clean_up_lines" => json_of(api.clean_up_lines(
+            param(params, "layer")?,
+            optional(params, "shapes")?,
+            optional(params, "tolerance")?,
+        )?),
+        "suggest_inbetween" => json_of(api.suggest_inbetween(param(params, "layer")?)?),
+        "auto_rig" => json_of(api.auto_rig(param(params, "layers")?)?),
         "undo" => json_of(api.undo()?),
         "redo" => json_of(api.redo()?),
         other => Err(ApiError::new(

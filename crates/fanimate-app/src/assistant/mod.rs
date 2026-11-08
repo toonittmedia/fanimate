@@ -269,10 +269,10 @@ pub fn context(shell: &Shell) -> Context {
         width: doc.width as u32,
         height: doc.height as u32,
         fps: doc.fps,
-        start: doc.start as i32,
-        end: doc.end as i32,
+        start: doc.start,
+        end: doc.end,
         layers,
-        frame: shell.editor.current_frame() as i32,
+        frame: shell.editor.current_frame(),
         selection: shell
             .editor
             .selection

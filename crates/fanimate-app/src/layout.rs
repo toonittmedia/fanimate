@@ -492,7 +492,10 @@ mod tests {
         let text = store.get_string(Layout::KEY).unwrap();
         assert!(text.contains("simple:true"), "{text}");
         // (the fields after it are newer than the switch too)
-        store.set_string(Layout::KEY, text.replace("simple:true,text_tab_added:true", ""));
+        store.set_string(
+            Layout::KEY,
+            text.replace("simple:true,text_tab_added:true,show_assistant:false", ""),
+        );
         let old: Layout = eframe::get_value(&store, Layout::KEY).expect("an old layout reads");
         assert!(!old.simple);
     }

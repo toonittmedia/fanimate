@@ -406,6 +406,42 @@ pub struct TextStyle {
     /// and left out are the same thing).
     pub wrap: Option<bool>,
 }
+/// What [`Api::clean_up_lines`] did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CleanedLines {
+    /// Shapes refitted.
+    pub shapes: usize,
+    /// Shapes left as they were.
+    pub skipped: usize,
+    /// On-curve points before and after, over the shapes refitted.
+    pub points_before: usize,
+    pub points_after: usize,
+}
+
+/// What [`Api::suggest_inbetween`] made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Inbetween {
+    /// The frame the new drawing starts on.
+    pub frame: fanimate_core::Frame,
+    pub blended: usize,
+    /// Shapes with no partner, held as drawn.
+    pub held: usize,
+    /// Shapes of the next drawing that nothing matched, left out.
+    pub left_out: usize,
+}
+
+/// What [`Api::auto_rig`] made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AutoRigged {
+    /// The new bone layer's id.
+    pub layer: u32,
+    pub bones: usize,
+    /// Layers bound to a bone.
+    pub bound: usize,
+    /// Names of layers that said no body part and were left where they were.
+    pub left_out: Vec<String>,
+}
+
 /// A handle on an editor that scripts act through.
 pub struct Api<'a> {
     editor: &'a mut Editor,
@@ -1118,6 +1154,86 @@ impl<'a> Api<'a> {
     pub fn offset_shape(&mut self, layer: u32, index: usize, distance: f32) -> Result<usize, ApiError> {
         self.edit("Offset path", |ed| {
             ed.offset_shape(LayerId(layer), index, distance)
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
+    /// Line clean-up: refit the lines of a vector or frame-by-frame layer's
+    /// shapes (those in `shapes`, or all) with the fewest smooth curves that
+    /// stay within `tolerance` document units (0.01 to 100, 1.5 by default).
+    /// Shapes with point keys, hidden edges or a skin are left alone, and so
+    /// is any shape that would not get smaller. The layer is marked as made
+    /// with the `line-clean-up` tool unless it already says something.
+    pub fn clean_up_lines(
+        &mut self,
+        layer: u32,
+        shapes: Option<Vec<usize>>,
+        tolerance: Option<f32>,
+    ) -> Result<CleanedLines, ApiError> {
+        let mut options = fanimate_core::cleanup::CleanOptions::default();
+        if let Some(t) = tolerance {
+            if !(0.01..=100.0).contains(&t) {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    "the tolerance is a number from 0.01 to 100",
+                ));
+            }
+            options.tolerance = t;
+        }
+        if self.editor.doc.find(LayerId(layer)).is_none() {
+            return Err(ApiError::no_layer(layer));
+        }
+        self.edit("Clean up lines", |ed| {
+            ed.clean_up_lines(LayerId(layer), shapes.as_deref(), options)
+                .map(|s| CleanedLines {
+                    shapes: s.shapes,
+                    skipped: s.skipped,
+                    points_before: s.before,
+                    points_after: s.after,
+                })
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
+    /// Inbetween assist: add a drawing to a frame-by-frame layer between the
+    /// one shown at the playhead and the next, blended along arcs. At the
+    /// first drawing's own frame it goes halfway; on a later frame, there.
+    /// The layer is marked with the `inbetween-assist` tool.
+    pub fn suggest_inbetween(&mut self, layer: u32) -> Result<Inbetween, ApiError> {
+        if self.editor.doc.find(LayerId(layer)).is_none() {
+            return Err(ApiError::no_layer(layer));
+        }
+        self.edit("Suggest inbetween", |ed| {
+            ed.suggest_inbetween(LayerId(layer))
+                .map(|s| Inbetween {
+                    frame: s.frame,
+                    blended: s.blended,
+                    held: s.held,
+                    left_out: s.left_out,
+                })
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
+    /// Auto-rig: build a skeleton for vector `layers` (all in one list) from
+    /// their names and places, bind each to the bone of its part, and put
+    /// them in a new bone layer. A layer named like no body part stays where
+    /// it is. The new layer is marked with the `auto-rig` tool.
+    pub fn auto_rig(&mut self, layers: Vec<u32>) -> Result<AutoRigged, ApiError> {
+        for id in &layers {
+            if self.editor.doc.find(LayerId(*id)).is_none() {
+                return Err(ApiError::no_layer(*id));
+            }
+        }
+        let ids: Vec<LayerId> = layers.into_iter().map(LayerId).collect();
+        self.edit("Auto-rig", |ed| {
+            ed.auto_rig(&ids)
+                .map(|s| AutoRigged {
+                    layer: s.layer.0,
+                    bones: s.bones,
+                    bound: s.bound,
+                    left_out: s.unbound,
+                })
                 .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
         })
     }

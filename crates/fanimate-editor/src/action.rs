@@ -110,6 +110,12 @@ pub enum Action {
     ExpandShape,
     /// Add an outline a set distance outside each target shape, or inside it.
     OffsetPath,
+    /// Refit rough lines with the fewest smooth curves that stay close to them.
+    CleanUpLines,
+    /// Add a drawing between the shown one and the next, blended along arcs.
+    SuggestInbetween,
+    /// Build bones from a character's layer names and bind the layers to them.
+    AutoRig,
     Preferences,
     CommandPalette,
     /// Open the Assistant panel with its message box ready, about the
@@ -296,6 +302,9 @@ impl Action {
                 | Intersect
                 | ExpandShape
                 | OffsetPath
+                | CleanUpLines
+                | SuggestInbetween
+                | AutoRig
                 | NewVectorLayer
                 | NewGroupLayer
                 | NewBoneLayer
@@ -429,6 +438,9 @@ impl Action {
             Subtract => "Subtract Front Shape",
             Intersect => "Intersect Shapes",
             OffsetPath => "Offset Path",
+            CleanUpLines => "Clean Up Lines",
+            SuggestInbetween => "Suggest Inbetween",
+            AutoRig => "Auto-Rig Character",
             Preferences => "Preferences…",
             CommandPalette => "Command Palette…",
             AskAssistant => "Ask Assistant…",
@@ -560,8 +572,8 @@ impl Action {
             | InstallUpdate | Quit => "File",
             Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
             | PasteLayers | Duplicate | Delete | DeleteLayers | SelectAll | SelectNone | Rename
-            | FinishPath | Union | Subtract | Intersect | ExpandShape | OffsetPath | Preferences
-            | CommandPalette | AskAssistant => "Edit",
+            | FinishPath | Union | Subtract | Intersect | ExpandShape | OffsetPath | CleanUpLines
+            | SuggestInbetween | AutoRig | Preferences | CommandPalette | AskAssistant => "Edit",
             NewVectorLayer
             | NewGroupLayer
             | NewBoneLayer
@@ -692,6 +704,9 @@ impl Action {
             Intersect,
             ExpandShape,
             OffsetPath,
+            CleanUpLines,
+            SuggestInbetween,
+            AutoRig,
             Preferences,
             CommandPalette,
             AskAssistant,
