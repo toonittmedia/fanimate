@@ -180,6 +180,8 @@ pub struct Editor {
     anchor: Option<LayerId>,
     /// Keys being dragged along the timeline.
     key_drag: Option<KeyDrag>,
+    /// A text animator's range stick being dragged along the timeline.
+    animator_drag: Option<text::AnimatorDrag>,
     /// The keys picked on the timeline (see `keys.rs`).
     pub(crate) selected_keys: BTreeSet<KeyRef>,
     /// Keys copied with Copy Keys, pasted at the playhead.
@@ -292,6 +294,7 @@ impl Editor {
             focus: Focus::default(),
             anchor: None,
             key_drag: None,
+            animator_drag: None,
             selected_keys: BTreeSet::new(),
             key_clip: None,
             sel_drag: None,
@@ -592,6 +595,11 @@ impl Editor {
                     self.move_text_animator(id, i, by as isize);
                 }
             }
+            SetAnimatorInterpolation(i, interp) => {
+                if let Some(id) = self.selected_text() {
+                    self.set_animator_interpolation(id, i, interp);
+                }
+            }
             ConvertTextToShapes => self.text_to_shapes(),
             BakeSpring => self.bake_spring_selected(),
             SetTextPath => self.set_text_path_from_selection(),
@@ -848,6 +856,7 @@ impl Editor {
             AddTextAnimator(_) | ConvertTextToShapes => self.selected_text().is_some(),
             RemoveTextAnimator(i) | DuplicateTextAnimator(i) => self.has_text_animator(i),
             MoveTextAnimator(i, by) => self.text_animator_can_move(i, by),
+            SetAnimatorInterpolation(i, _) => self.has_text_animator(i),
             ExportCaptions => self
                 .primary()
                 .and_then(|id| self.captions_of(id))
@@ -1640,7 +1649,7 @@ impl Editor {
         self.checkpoint("Delete keyframe");
         for id in roots {
             if let Some(l) = self.doc.find_mut(id) {
-                l.key_lists_mut(|k| {
+                l.own_key_lists_mut(|k| {
                     k.delete_key(frame);
                 });
             }
@@ -1788,7 +1797,7 @@ impl Editor {
         let mut found: Option<Option<Interpolation>> = None;
         for id in &self.selection {
             let Some(l) = self.doc.find(*id) else { continue };
-            l.key_lists(|k| {
+            l.own_key_lists(|k| {
                 if let Some(i) = k.interp_at(frame) {
                     found = Some(match found {
                         None => Some(i),
@@ -1819,7 +1828,7 @@ impl Editor {
         let frame = self.current_frame();
         for id in self.selection.clone() {
             if let Some(l) = self.doc.find_mut(id) {
-                l.key_lists_mut(|k| {
+                l.own_key_lists_mut(|k| {
                     k.set_interp(frame, interp);
                 });
             }
@@ -1833,7 +1842,7 @@ impl Editor {
             .selection
             .iter()
             .filter_map(|id| self.doc.find(*id))
-            .filter(|l| l.key_frames().contains(&from))
+            .filter(|l| l.own_key_frames().contains(&from))
             .cloned()
             .collect();
         if originals.is_empty() {
@@ -1941,7 +1950,7 @@ impl Editor {
                                 keys.move_key(from, to);
                             }
                         }
-                        None => l.key_lists_mut(|k| {
+                        None => l.own_key_lists_mut(|k| {
                             k.move_key(from, to);
                         }),
                     }
@@ -1957,7 +1966,10 @@ impl Editor {
 
     /// Whether keys are being dragged or scaled in the timeline.
     pub fn is_dragging_keys(&self) -> bool {
-        self.key_drag.is_some() || self.is_dragging_selected_keys() || self.key_scale_anchor().is_some()
+        self.key_drag.is_some()
+            || self.animator_drag.is_some()
+            || self.is_dragging_selected_keys()
+            || self.key_scale_anchor().is_some()
     }
 
     /// A layer's transform at the current frame.

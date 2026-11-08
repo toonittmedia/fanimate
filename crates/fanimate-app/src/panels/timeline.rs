@@ -17,6 +17,7 @@ use crate::theme::{self, Palette};
 use crate::timecode;
 
 use super::properties::{begin_edit, end_edits};
+use super::range_sticks;
 
 /// Stands for the camera where a row is named by a layer: it is not a layer,
 /// and no layer has this id.
@@ -202,6 +203,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             }
             for (id, depth) in shown {
                 row(ui, shell, id, depth, keys_clip, &x_of, &frame_at, &mut key_rows);
+                // a text layer's animators, as range sticks under it
+                range_sticks::rows(ui, shell, id, depth, keys_clip, &x_of, &frame_at);
                 // a layer opened with a double-click lists its properties
                 if shell.ui.timeline_expanded.contains(&id) {
                     let channels = shell
@@ -727,7 +730,7 @@ fn grip_busy(ctx: &egui::Context) -> bool {
 }
 
 /// How a key is outlined: a purple ring when picked.
-fn key_outline(p: &Palette, picked: bool) -> Stroke {
+pub(super) fn key_outline(p: &Palette, picked: bool) -> Stroke {
     if picked {
         Stroke::new(1.5, p.accent)
     } else {
@@ -2226,12 +2229,13 @@ fn property_row(
 /// Each key frame of the layer, with the interpolation its keys share
 /// (`None` when they differ).
 fn key_glyphs(layer: &fanimate_core::Layer) -> Vec<(Frame, Option<Interpolation>)> {
+    // a text layer's animators are range sticks of their own, not the layer's keys
     layer
-        .key_frames()
+        .own_key_frames()
         .into_iter()
         .map(|f| {
             let mut interp: Option<Option<Interpolation>> = None;
-            layer.key_lists(|k| {
+            layer.own_key_lists(|k| {
                 if let Some(i) = k.interp_at(f) {
                     interp = Some(match interp {
                         None => Some(i),

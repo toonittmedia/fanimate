@@ -367,6 +367,9 @@ pub struct AnimatorInfo {
     pub name: String,
     /// What it acts on: `"character"`, `"word"` or `"line"`.
     pub unit: &'static str,
+    /// The first and last frame its keys run over (the range stick on the
+    /// timeline), leaving out the rest pose; `None` when it has no keys.
+    pub key_range: Option<[i32; 2]>,
 }
 
 /// Changes to a text layer's look. A field left out is left as it is; the
@@ -487,6 +490,7 @@ impl<'a> Api<'a> {
                         fanimate_core::TextUnit::Word => "word",
                         fanimate_core::TextUnit::Line => "line",
                     },
+                    key_range: a.key_range().map(|(first, last)| [first, last]),
                 })
                 .collect(),
         })
@@ -634,6 +638,48 @@ impl<'a> Api<'a> {
                     "a text layer has at most 64 animators",
                 )
             })
+        })
+    }
+
+    /// Put a text animator's keys over frames `first` to `last` (its range
+    /// stick on the timeline): moved when the two are as far apart as the keys
+    /// were, stretched or squeezed when not. The rest pose keeps its keys.
+    pub fn set_text_animator_range(
+        &mut self,
+        layer: u32,
+        index: usize,
+        first: i32,
+        last: i32,
+    ) -> Result<(), ApiError> {
+        self.require_animator(layer, index)?;
+        if !(1..=MAX_FRAME).contains(&first) || !(first..=MAX_FRAME).contains(&last) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                format!("frames run from 1 to {MAX_FRAME}, and the last is not before the first"),
+            ));
+        }
+        self.edit("Move text animator keys", |ed| {
+            ed.begin_animator_drag(LayerId(layer), index).ok_or_else(|| {
+                ApiError::new(ErrorCode::InvalidArgument, "that animator has no keys to move")
+            })?;
+            ed.drag_animator_range(first, last);
+            ed.end_animator_drag();
+            Ok(())
+        })
+    }
+
+    /// Change how every key of a text animator moves on to the next, written
+    /// as in `set_key_interpolation`. Returns whether anything changed.
+    pub fn set_text_animator_interpolation(
+        &mut self,
+        layer: u32,
+        index: usize,
+        interp: serde_json::Value,
+    ) -> Result<bool, ApiError> {
+        self.require_animator(layer, index)?;
+        let interp = parse_interpolation(interp)?;
+        self.edit("Change animator keys", |ed| {
+            Ok(ed.set_animator_interpolation(LayerId(layer), index, interp))
         })
     }
 
@@ -1428,20 +1474,7 @@ impl<'a> Api<'a> {
     ) -> Result<bool, ApiError> {
         self.require(layer)?;
         let ch = self.channel_of(layer, channel)?;
-        let interp: fanimate_core::Interpolation = serde_json::from_value(interp).map_err(|e| {
-            ApiError::new(
-                ErrorCode::InvalidArgument,
-                format!("that is not an interpolation: {e}"),
-            )
-        })?;
-        if let fanimate_core::Interpolation::Bezier(b) = interp
-            && !b.is_sound()
-        {
-            return Err(ApiError::new(
-                ErrorCode::InvalidArgument,
-                "a curve's x values are 0 to 1000 and its y values -2000 to 3000",
-            ));
-        }
+        let interp = parse_interpolation(interp)?;
         self.edit("Change key curve", |ed| {
             ed.change_key_curve(LayerId(layer), ch, frame, interp)
                 .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
@@ -1814,4 +1847,25 @@ fn collect(layer: &Layer, parent: Option<u32>, out: &mut Vec<LayerInfo>) {
     for child in children {
         collect(child, Some(layer.id.0), out);
     }
+}
+
+/// An interpolation as the API writes it (`"smooth"`, `{"ease":"overshoot"}`,
+/// `{"bezier":[x1, y1, x2, y2]}`), refused when it is not one or its curve is
+/// out of range.
+fn parse_interpolation(value: serde_json::Value) -> Result<fanimate_core::Interpolation, ApiError> {
+    let interp: fanimate_core::Interpolation = serde_json::from_value(value).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidArgument,
+            format!("that is not an interpolation: {e}"),
+        )
+    })?;
+    if let fanimate_core::Interpolation::Bezier(b) = interp
+        && !b.is_sound()
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            "a curve's x values are 0 to 1000 and its y values -2000 to 3000",
+        ));
+    }
+    Ok(interp)
 }

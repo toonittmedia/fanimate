@@ -126,6 +126,8 @@ pub enum Action {
     DuplicateTextAnimator(usize),
     /// Move one of the selected text layer's animators down the list (1) or up it (-1).
     MoveTextAnimator(usize, i8),
+    /// How every key of one of the selected text layer's animators moves on to the next.
+    SetAnimatorInterpolation(usize, fanimate_core::Interpolation),
     /// Turn the selected text layer into shapes: drawing instead of text.
     /// Make the selected text layer follow the first shape of the other selected layer.
     SetTextPath,
@@ -287,6 +289,7 @@ impl Action {
                 | RemoveTextAnimator(_)
                 | DuplicateTextAnimator(_)
                 | MoveTextAnimator(..)
+                | SetAnimatorInterpolation(..)
                 | ConvertTextToShapes
                 | SetTextPath
                 | ClearTextPath
@@ -498,6 +501,7 @@ impl Action {
             DeleteChannelKey(_) => "Delete Keyframe on This Property",
             SetChannelInterpolation(_, i) => interp_label!("Property Key: ", i),
             SetKeyInterpolation(i) => interp_label!("New Keys: ", i),
+            SetAnimatorInterpolation(_, i) => interp_label!("Animator Keys: ", i),
             ToggleOnionSkin => "Onion Skin",
             ToggleLightTable => "Light Table",
             ZoomIn => "Zoom In",
@@ -535,6 +539,7 @@ impl Action {
             | RemoveTextAnimator(_)
             | DuplicateTextAnimator(_)
             | MoveTextAnimator(..)
+            | SetAnimatorInterpolation(..)
             | ConvertTextToShapes
             | SetTextPath
             | ClearTextPath

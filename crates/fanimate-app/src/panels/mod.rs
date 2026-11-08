@@ -10,6 +10,7 @@ pub mod handles;
 mod history;
 mod layers;
 mod properties;
+mod range_sticks;
 pub mod rulers;
 mod selbar;
 mod style;

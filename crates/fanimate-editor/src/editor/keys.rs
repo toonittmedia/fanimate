@@ -140,7 +140,7 @@ fn channel_frames(doc: &Document, layer: Option<LayerId>, ch: ChannelId) -> Vec<
 fn summary_frames(doc: &Document, layer: Option<LayerId>) -> Vec<Frame> {
     match layer {
         None => doc.camera.key_frames(),
-        Some(id) => doc.find(id).map(Layer::key_frames).unwrap_or_default(),
+        Some(id) => doc.find(id).map(Layer::own_key_frames).unwrap_or_default(),
     }
 }
 
@@ -680,7 +680,7 @@ impl Editor {
             }
             (Some(id), None) => {
                 if let Some(l) = self.doc.find_mut(id) {
-                    l.key_lists_mut(|list| f(list));
+                    l.own_key_lists_mut(|list| f(list));
                 }
             }
             (None, Some(ch)) => {

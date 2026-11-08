@@ -127,6 +127,16 @@ pub const METHODS: &[Method] = &[
         "Copy a text animator, returns the copy's index",
     ),
     edit(
+        "set_text_animator_range",
+        "layer: number, index: number, first: number, last: number",
+        "Put a text animator's keys over frames first to last (moved, or stretched)",
+    ),
+    edit(
+        "set_text_animator_interpolation",
+        "layer: number, index: number, interp: value",
+        "Change how every key of a text animator moves on, returns whether it changed",
+    ),
+    edit(
         "move_text_animator",
         "layer: number, index: number, by: number",
         "Move a text animator down the list (negative: up), returns its new index",
@@ -383,6 +393,20 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
         "duplicate_text_animator" => {
             json_of(api.duplicate_text_animator(param(params, "layer")?, param(params, "index")?)?)
         }
+        "set_text_animator_range" => {
+            api.set_text_animator_range(
+                param(params, "layer")?,
+                param(params, "index")?,
+                param(params, "first")?,
+                param(params, "last")?,
+            )?;
+            Ok(Value::Null)
+        }
+        "set_text_animator_interpolation" => json_of(api.set_text_animator_interpolation(
+            param(params, "layer")?,
+            param(params, "index")?,
+            param(params, "interp")?,
+        )?),
         "move_text_animator" => json_of(api.move_text_animator(
             param(params, "layer")?,
             param(params, "index")?,

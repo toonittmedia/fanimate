@@ -466,6 +466,55 @@ fn animators_are_copied_moved_and_removed_one_undo_step_each() {
 }
 
 #[test]
+fn an_animators_range_is_read_and_set_in_one_undo_step() {
+    let (mut ed, id) = titled();
+    let mut api = Api::new(&mut ed);
+    api.add_text_animator(id, "typewriter").unwrap();
+    let range = |api: &mut Api| api.text(id).unwrap().animators[0].key_range;
+    let from = range(&mut api).expect("a preset has keys");
+    assert_eq!(from[1] - from[0], 24, "a second at 24 fps");
+    // moved: the same span
+    api.set_text_animator_range(id, 0, 40, 64).unwrap();
+    assert_eq!(range(&mut api), Some([40, 64]));
+    // stretched
+    api.set_text_animator_range(id, 0, 40, 100).unwrap();
+    assert_eq!(range(&mut api), Some([40, 100]));
+    assert_eq!(
+        api.set_text_animator_range(id, 0, 50, 10).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        api.set_text_animator_range(id, 0, 0, 10).unwrap_err().code,
+        ErrorCode::InvalidArgument,
+        "not onto the rest pose"
+    );
+    assert_eq!(
+        api.set_text_animator_range(id, 3, 1, 2).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert!(
+        api.set_text_animator_interpolation(id, 0, serde_json::json!("step"))
+            .unwrap()
+    );
+    assert!(
+        !api.set_text_animator_interpolation(id, 0, serde_json::json!("step"))
+            .unwrap()
+    );
+    assert_eq!(
+        api.set_text_animator_interpolation(id, 0, serde_json::json!("wobbly"))
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    ed.run(Action::Undo);
+    ed.run(Action::Undo);
+    assert_eq!(
+        Api::new(&mut ed).text(id).unwrap().animators[0].key_range,
+        Some([40, 64])
+    );
+}
+
+#[test]
 fn text_calls_name_what_went_wrong() {
     let (mut ed, id) = titled();
     let vector = ed.doc.new_layer("v", LayerKind::vector(vec![]));

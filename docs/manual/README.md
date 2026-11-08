@@ -62,6 +62,8 @@ To use an action on a different rig, right-click it in the Actions panel and cho
 
 An animator acts on the text one **character, word or line** at a time. The easy way in is **Layer › Text animator** (or **+ Add** beside Animators in the Text panel): *fade in by character*, *typewriter*, *rise in by word*, *pop in by character* and a looping *wave*, starting at the playhead and running for a second. Each is an ordinary animator you can change.
 
+On the timeline an animator is a white **range stick** under its text layer, from its first key to its last, so its keys are not confused with the diamonds of the layer's own move, turn, scale and fade. Sticks that overlap in time sit in separate lanes, and a lane is used again once the animator before it has ended. Click a stick to pick the animator (double-click to open it in the Text panel), drag it to move all its keys, drag either end to stretch or squeeze them, and right-click for Duplicate, Delete and **Key type** (how every key of the animator moves on).
+
 An animator has:
 
 - a **range** (start, end and offset, in percent of the text) saying which units it reaches, and a **selection** shape saying how much: a hard edge, a ramp, a bell. Moving the range along the text is what makes an effect sweep across it. The **soft edge** lets the square shape fade units in and out at the ends of the range instead of switching them;

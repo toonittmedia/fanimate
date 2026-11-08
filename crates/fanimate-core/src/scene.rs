@@ -504,7 +504,18 @@ impl Layer {
     /// and exposure keys, a switch's choices and the drawings of a
     /// frame-by-frame layer. Not its
     /// children's, which are their own layers on the timeline.
-    pub fn key_lists(&self, mut f: impl FnMut(&dyn KeyList)) {
+    pub fn key_lists(&self, f: impl FnMut(&dyn KeyList)) {
+        self.key_lists_with(true, f);
+    }
+
+    /// [`key_lists`](Self::key_lists) without a text layer's animators, whose
+    /// keys the timeline shows as range sticks of their own rather than as the
+    /// layer's keys. The same for every other layer.
+    pub fn own_key_lists(&self, f: impl FnMut(&dyn KeyList)) {
+        self.key_lists_with(false, f);
+    }
+
+    fn key_lists_with(&self, animators: bool, mut f: impl FnMut(&dyn KeyList)) {
         f(&self.opacity.keys);
         f(&self.order.keys);
         f(&self.transform.position.keys);
@@ -536,13 +547,22 @@ impl Layer {
                 });
             }
             LayerKind::Switch { switch, .. } => f(switch),
-            LayerKind::Text(t) => t.key_lists(&mut f),
+            LayerKind::Text(t) => t.key_lists_with(animators, &mut f),
             LayerKind::Group { .. } | LayerKind::Image(_) | LayerKind::Audio(_) => {}
         }
     }
 
     /// Mutable version of [`key_lists`](Self::key_lists).
-    pub fn key_lists_mut(&mut self, mut f: impl FnMut(&mut dyn KeyList)) {
+    pub fn key_lists_mut(&mut self, f: impl FnMut(&mut dyn KeyList)) {
+        self.key_lists_mut_with(true, f);
+    }
+
+    /// Mutable version of [`own_key_lists`](Self::own_key_lists).
+    pub fn own_key_lists_mut(&mut self, f: impl FnMut(&mut dyn KeyList)) {
+        self.key_lists_mut_with(false, f);
+    }
+
+    fn key_lists_mut_with(&mut self, animators: bool, mut f: impl FnMut(&mut dyn KeyList)) {
         f(&mut self.opacity.keys);
         f(&mut self.order.keys);
         f(&mut self.transform.position.keys);
@@ -574,9 +594,20 @@ impl Layer {
                 });
             }
             LayerKind::Switch { switch, .. } => f(switch),
-            LayerKind::Text(t) => t.key_lists_mut(&mut f),
+            LayerKind::Text(t) => t.key_lists_mut_with(animators, &mut f),
             LayerKind::Group { .. } | LayerKind::Image(_) | LayerKind::Audio(_) => {}
         }
+    }
+
+    /// [`key_frames`](Self::key_frames) without a text layer's animators (see
+    /// [`own_key_lists`](Self::own_key_lists)): the frames the timeline marks
+    /// with the layer's own keys.
+    pub fn own_key_frames(&self) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        self.own_key_lists(|k| k.frames_into(&mut frames));
+        frames.sort_unstable();
+        frames.dedup();
+        frames
     }
 
     /// Frames with a key in any of the layer's own key lists, sorted.

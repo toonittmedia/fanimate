@@ -512,6 +512,37 @@ impl Animator {
         }
     }
 
+    /// The frames the animator's keys run over: from its first key to its last,
+    /// leaving out the keys on the rest pose, which only hold the value there.
+    /// `None` when it has no other key (nothing is animated).
+    pub fn key_range(&self) -> Option<(Frame, Frame)> {
+        let mut frames = Vec::new();
+        self.key_lists(|k| k.frames_into(&mut frames));
+        let mut after_rest = frames.into_iter().filter(|f| *f > crate::REST_FRAME);
+        let first = after_rest.next()?;
+        Some(after_rest.fold((first, first), |(lo, hi), f| (lo.min(f), hi.max(f))))
+    }
+
+    /// Move every key after the rest pose to the frame `map` gives it. Keys
+    /// that land on one frame keep the later one. Each list is moved the same
+    /// way, so keys that shared a frame still do.
+    pub fn retime_keys(&mut self, map: impl Fn(Frame) -> Frame) {
+        // park every key out of the way first, so none lands on one still to move
+        const PARK: Frame = 1 << 28;
+        self.key_lists_mut(|list| {
+            let mut frames = Vec::new();
+            list.frames_into(&mut frames);
+            frames.retain(|f| *f > crate::REST_FRAME);
+            frames.sort_unstable();
+            for f in &frames {
+                list.move_key(*f, *f + PARK);
+            }
+            for f in &frames {
+                list.move_key(*f + PARK, map(*f));
+            }
+        });
+    }
+
     /// The same with the lists editable.
     pub fn key_lists_mut(&mut self, mut f: impl FnMut(&mut dyn crate::anim::KeyList)) {
         f(&mut self.selector.start.keys);
@@ -1010,19 +1041,37 @@ impl Text {
     }
 
     /// Every list of keys the text's animators hold.
-    pub fn key_lists(&self, mut f: impl FnMut(&dyn crate::anim::KeyList)) {
+    pub fn key_lists(&self, f: impl FnMut(&dyn crate::anim::KeyList)) {
+        self.key_lists_with(true, f);
+    }
+
+    /// The key lists, with or without the animators' (see
+    /// [`Layer::own_key_lists`](crate::Layer::own_key_lists)).
+    pub(crate) fn key_lists_with(&self, animators: bool, mut f: impl FnMut(&dyn crate::anim::KeyList)) {
         f(&self.path_offset.keys);
-        for a in &self.animators {
-            a.key_lists(&mut f);
+        if animators {
+            for a in &self.animators {
+                a.key_lists(&mut f);
+            }
         }
     }
 
     /// The same with the lists editable. Animators are not part of the layout,
     /// so this keeps it.
-    pub fn key_lists_mut(&mut self, mut f: impl FnMut(&mut dyn crate::anim::KeyList)) {
+    pub fn key_lists_mut(&mut self, f: impl FnMut(&mut dyn crate::anim::KeyList)) {
+        self.key_lists_mut_with(true, f);
+    }
+
+    pub(crate) fn key_lists_mut_with(
+        &mut self,
+        animators: bool,
+        mut f: impl FnMut(&mut dyn crate::anim::KeyList),
+    ) {
         f(&mut self.path_offset.keys);
-        for a in &mut self.animators {
-            a.key_lists_mut(&mut f);
+        if animators {
+            for a in &mut self.animators {
+                a.key_lists_mut(&mut f);
+            }
         }
     }
 
@@ -1900,6 +1949,74 @@ mod tests {
         let mut odd = Text::new("Hi");
         odd.look_mut().family = "No Such Font".into();
         assert_eq!(crate::evaluate(&doc_with(odd), 1.0).len(), 2);
+    }
+
+    #[test]
+    fn the_layers_own_keys_leave_out_the_animators_keys() {
+        let mut text = fade_in_by_character();
+        text.path_offset.set_key(5, 0.0, crate::Interpolation::Linear);
+        let mut doc = doc_with(text);
+        assert_eq!(
+            doc.layers[0].key_frames(),
+            [1, 5, 21],
+            "all of them, for the layer as a whole"
+        );
+        assert_eq!(
+            doc.layers[0].own_key_frames(),
+            [5],
+            "the sticks show the animators"
+        );
+        doc.layers[0].own_key_lists_mut(|k| {
+            k.move_key(5, 6);
+        });
+        assert_eq!(
+            doc.layers[0].key_frames(),
+            [1, 6, 21],
+            "a drag of the layer's key leaves theirs"
+        );
+    }
+
+    #[test]
+    fn an_animators_range_runs_from_its_first_key_to_its_last_leaving_out_the_rest_pose() {
+        let a = TextPreset::Typewriter.animator(10, 24);
+        assert_eq!(a.key_range(), Some((10, 34)));
+        // a key on the rest pose only holds the value there
+        let mut seeded = a.clone();
+        seeded
+            .opacity
+            .set_key(crate::REST_FRAME, 1.0, crate::Interpolation::Linear);
+        assert_eq!(seeded.key_range(), Some((10, 34)));
+        // nothing keyed after the rest pose: no range
+        assert_eq!(Animator::new("x", TextUnit::Word).key_range(), None);
+        let mut only_rest = Animator::new("x", TextUnit::Word);
+        only_rest
+            .opacity
+            .set_key(crate::REST_FRAME, 1.0, crate::Interpolation::Linear);
+        assert_eq!(only_rest.key_range(), None);
+    }
+
+    #[test]
+    fn retiming_an_animators_keys_moves_them_all_alike_and_keeps_the_rest_pose() {
+        let mut a = TextPreset::Typewriter.animator(10, 24);
+        a.opacity
+            .set_key(crate::REST_FRAME, 1.0, crate::Interpolation::Linear);
+        a.opacity.set_key(20, 0.5, crate::Interpolation::Linear);
+        let frames = |a: &Animator| {
+            let mut v = Vec::new();
+            a.key_lists(|k| k.frames_into(&mut v));
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        assert_eq!(frames(&a), [0, 10, 20, 34]);
+        // doubled from frame 10: 10 -> 10, 20 -> 30, 34 -> 58
+        a.retime_keys(|f| 10 + (f - 10) * 2);
+        assert_eq!(frames(&a), [0, 10, 30, 58]);
+        assert_eq!(a.key_range(), Some((10, 58)));
+        // folded onto one frame, the later key wins and nothing is lost on the way
+        a.retime_keys(|_| 40);
+        assert_eq!(frames(&a), [0, 40]);
+        assert_eq!(a.opacity.keys.last().map(|k| (k.frame, k.value)), Some((40, 0.5)));
     }
 
     #[test]

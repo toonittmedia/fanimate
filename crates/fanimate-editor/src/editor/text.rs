@@ -6,10 +6,25 @@
 //! on the rest pose they change the value itself, on a later frame they set a
 //! key (and seed one on the rest pose so nothing jumps).
 
-use fanimate_core::{Animator, Channel, Color, Look, Text, TextPreset, Vec2};
+use fanimate_core::{
+    Animator, Channel, Color, Frame, Interpolation, Look, REST_FRAME, Text, TextPreset, Vec2,
+};
 use fanimate_core::{LayerId, LayerKind};
 
 use super::{Editor, StatusKind, labelled};
+
+/// The furthest frame a range stick can be taken to.
+const MAX_RANGE_FRAME: Frame = 1_000_000;
+
+/// A text animator's range stick being dragged: what the animator was, and the
+/// frames its keys ran over, so every step of the drag works from the start.
+pub(super) struct AnimatorDrag {
+    layer: LayerId,
+    index: usize,
+    original: Animator,
+    from: (Frame, Frame),
+    recorded: bool,
+}
 
 /// Which of an animator's values a change is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -224,6 +239,98 @@ impl Editor {
         self.checkpoint("Remove text animator");
         if let Some(text) = self.text_mut(id) {
             text.animators.remove(index);
+        }
+        true
+    }
+
+    /// The frames an animator's keys run over (see [`Animator::key_range`]).
+    pub fn animator_key_range(&self, id: LayerId, index: usize) -> Option<(Frame, Frame)> {
+        self.text(id)?.animators.get(index)?.key_range()
+    }
+
+    /// Take hold of an animator's range stick. Returns the frames it runs over,
+    /// or `None` when it has no keys to move (or the animation is playing).
+    pub fn begin_animator_drag(&mut self, id: LayerId, index: usize) -> Option<(Frame, Frame)> {
+        if self.editing_blocked() {
+            return None;
+        }
+        let original = self.text(id)?.animators.get(index)?.clone();
+        let from = original.key_range()?;
+        self.animator_drag = Some(AnimatorDrag {
+            layer: id,
+            index,
+            original,
+            from,
+            recorded: false,
+        });
+        Some(from)
+    }
+
+    /// The frames the stick being dragged ran over when it was taken hold of.
+    pub fn animator_drag_origin(&self) -> Option<(Frame, Frame)> {
+        self.animator_drag.as_ref().map(|d| d.from)
+    }
+
+    /// Put the dragged animator's keys over `first` to `last`: moved when the
+    /// two are as far apart as before, stretched or squeezed when not. Every
+    /// call works from where the keys were when the drag began, and the drag is
+    /// one undo step. The rest pose keeps its keys.
+    pub fn drag_animator_range(&mut self, first: Frame, last: Frame) {
+        let Some(mut d) = self.animator_drag.take() else {
+            return;
+        };
+        let (f0, l0) = d.from;
+        let first = first.clamp(REST_FRAME + 1, MAX_RANGE_FRAME);
+        let last = last.clamp(first, MAX_RANGE_FRAME);
+        if d.recorded || (first, last) != d.from {
+            if !d.recorded {
+                self.checkpoint("Move text animator keys");
+                d.recorded = true;
+            }
+            let map = move |f: Frame| -> Frame {
+                if l0 == f0 {
+                    first
+                } else {
+                    let t = first as f64 + (f - f0) as f64 * (last - first) as f64 / (l0 - f0) as f64;
+                    (t.round() as Frame).clamp(first, last)
+                }
+            };
+            if let Some(a) = self.text_mut(d.layer).and_then(|t| t.animators.get_mut(d.index)) {
+                *a = d.original.clone();
+                a.retime_keys(map);
+            }
+        }
+        self.animator_drag = Some(d);
+    }
+
+    pub fn end_animator_drag(&mut self) {
+        self.animator_drag = None;
+    }
+
+    /// How every key of an animator moves on to the next key. One undo step,
+    /// and none when they all do already.
+    pub fn set_animator_interpolation(&mut self, id: LayerId, index: usize, interp: Interpolation) -> bool {
+        let Some(animator) = self.text(id).and_then(|t| t.animators.get(index)) else {
+            return false;
+        };
+        let mut differs = false;
+        animator.key_lists(|k| {
+            let mut frames = Vec::new();
+            k.frames_into(&mut frames);
+            differs |= frames.iter().any(|f| k.interp_at(*f) != Some(interp));
+        });
+        if !differs || self.editing_blocked() {
+            return false;
+        }
+        self.checkpoint("Change animator keys");
+        if let Some(a) = self.text_mut(id).and_then(|t| t.animators.get_mut(index)) {
+            a.key_lists_mut(|k| {
+                let mut frames = Vec::new();
+                k.frames_into(&mut frames);
+                for f in frames {
+                    k.set_interp(f, interp);
+                }
+            });
         }
         true
     }
@@ -859,6 +966,101 @@ mod tests {
         assert_eq!(names(&ed)[0], TextPreset::Typewriter.label());
         assert_eq!(ed.duplicate_text_animator(id, 9), None);
         assert_eq!(ed.duplicate_text_animator(LayerId(9999), 0), None);
+    }
+
+    #[test]
+    fn dragging_a_range_stick_moves_or_stretches_the_keys_in_one_undo_step() {
+        let (mut ed, id) = with_text();
+        ed.go_to(10);
+        ed.add_text_animator(id, TextPreset::Typewriter);
+        let range = |ed: &Editor| ed.animator_key_range(id, 0);
+        assert_eq!(range(&ed), Some((10, 34)));
+        assert_eq!(ed.begin_animator_drag(id, 0), Some((10, 34)));
+        // moved: both ends by the same amount
+        ed.drag_animator_range(20, 44);
+        assert_eq!(range(&ed), Some((20, 44)));
+        // every call works from the start, not from the last one
+        ed.drag_animator_range(12, 36);
+        assert_eq!(range(&ed), Some((12, 36)));
+        // stretched by one end
+        ed.drag_animator_range(10, 58);
+        assert_eq!(range(&ed), Some((10, 58)));
+        // never onto the rest pose
+        ed.drag_animator_range(-5, 20);
+        assert_eq!(range(&ed).map(|r| r.0), Some(1));
+        ed.end_animator_drag();
+        ed.run(Action::Undo);
+        assert_eq!(range(&ed), Some((10, 34)), "the whole drag is one undo step");
+        // an animator with no keys cannot be taken hold of, nor while playing
+        ed.run(Action::AddTextAnimator(TextPreset::Wave));
+        let none = fanimate_core::Animator::new("x", fanimate_core::TextUnit::Word);
+        ed.text_mut(id).unwrap().animators.push(none);
+        assert_eq!(ed.begin_animator_drag(id, 2), None);
+        ed.playing = true;
+        assert_eq!(ed.begin_animator_drag(id, 0), None);
+    }
+
+    #[test]
+    fn the_layers_key_drag_and_delete_leave_the_animators_keys_alone() {
+        let (mut ed, id) = with_text();
+        ed.go_to(10);
+        ed.add_text_animator(id, TextPreset::Typewriter);
+        ed.text_mut(id)
+            .unwrap()
+            .path_offset
+            .set_key(10, 0.0, Interpolation::Linear);
+        ed.select(id, crate::editor::SelectMode::Replace);
+        assert!(ed.begin_key_drag(10));
+        ed.drag_keys_to(15);
+        ed.end_key_drag();
+        assert_eq!(
+            ed.text(id).unwrap().path_offset.keys[0].frame,
+            15,
+            "the layer's own key moved"
+        );
+        assert_eq!(
+            ed.animator_key_range(id, 0),
+            Some((10, 34)),
+            "the animator's did not"
+        );
+    }
+
+    #[test]
+    fn an_animators_keys_take_a_type_all_at_once() {
+        let (mut ed, id) = with_text();
+        ed.add_text_animator(id, TextPreset::Typewriter);
+        assert!(ed.set_animator_interpolation(id, 0, Interpolation::Step));
+        let a = &ed.text(id).unwrap().animators[0];
+        assert!(
+            a.selector
+                .start
+                .keys
+                .iter()
+                .all(|k| k.interp == Interpolation::Step)
+        );
+        assert!(
+            !ed.set_animator_interpolation(id, 0, Interpolation::Step),
+            "already so: no step"
+        );
+        ed.run(Action::Undo);
+        assert!(
+            ed.text(id).unwrap().animators[0]
+                .selector
+                .start
+                .keys
+                .iter()
+                .any(|k| k.interp != Interpolation::Step)
+        );
+        ed.run(Action::SetAnimatorInterpolation(0, Interpolation::Linear));
+        assert!(
+            ed.text(id).unwrap().animators[0]
+                .selector
+                .start
+                .keys
+                .iter()
+                .all(|k| k.interp == Interpolation::Linear)
+        );
+        assert!(!ed.can_run(Action::SetAnimatorInterpolation(4, Interpolation::Linear)));
     }
 
     #[test]
