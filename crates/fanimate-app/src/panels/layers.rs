@@ -297,34 +297,49 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
 
     // selection and rename
     let mods = ui.input(|i| i.modifiers);
+    // Ctrl-click on the icon of a text or bone layer picks the layer and opens
+    // the panel for that kind of layer (Text, Bones); anywhere else Ctrl-click
+    // adds to the selection as in every list
+    let icon_panel = shell.editor.doc.find(id).and_then(|l| match l.kind {
+        fanimate_core::LayerKind::Text(_) => Some(crate::panels::Tab::Text),
+        fanimate_core::LayerKind::Bone { .. } => Some(crate::panels::Tab::Bones),
+        _ => None,
+    });
     if response.clicked() {
-        let mode = if mods.command {
-            SelectMode::Toggle
-        } else if mods.shift {
-            SelectMode::Range
-        } else {
-            SelectMode::Replace
-        };
-        shell.editor.select(id, mode);
-    }
-    if response.double_clicked() {
-        // on the icon it opens the panel for that kind of layer (text, bones);
-        // anywhere else it renames, as in a file manager
         let on_icon = response
             .interact_pointer_pos()
             .is_some_and(|pos| icon_rect.expand(3.0).contains(pos));
-        let panel = shell.editor.doc.find(id).and_then(|l| match l.kind {
-            fanimate_core::LayerKind::Text(_) => Some(crate::panels::Tab::Text),
-            fanimate_core::LayerKind::Bone { .. } => Some(crate::panels::Tab::Bones),
-            _ => None,
-        });
-        match panel.filter(|_| on_icon) {
-            Some(tab) => shell.ui.open_tab = Some(tab),
+        match icon_panel.filter(|_| mods.command && on_icon) {
+            Some(tab) => {
+                if !selected {
+                    shell.editor.select(id, SelectMode::Replace);
+                }
+                shell.ui.open_tab = Some(tab);
+            }
             None => {
-                shell.ui.renaming = Some((id, name.clone()));
-                shell.ui.rename_focus = true;
+                let mode = if mods.command {
+                    SelectMode::Toggle
+                } else if mods.shift {
+                    SelectMode::Range
+                } else {
+                    SelectMode::Replace
+                };
+                shell.editor.select(id, mode);
             }
         }
+    }
+    if response.double_clicked() {
+        shell.ui.renaming = Some((id, name.clone()));
+        shell.ui.rename_focus = true;
+    }
+    if let Some(tab) = icon_panel
+        && response
+            .hover_pos()
+            .is_some_and(|pos| icon_rect.expand(3.0).contains(pos))
+    {
+        response
+            .clone()
+            .on_hover_text(format!("Ctrl-click to open the {} panel", tab.title()));
     }
     if shell.editor.rename_request == Some(id) {
         shell.editor.rename_request = None;

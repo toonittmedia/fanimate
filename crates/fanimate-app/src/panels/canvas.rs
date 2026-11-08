@@ -239,6 +239,18 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         crate::panels::rulers::rulers(ui, shell, full_rect, &to_doc_z, &to_screen_v);
     }
 
+    // Frame 0 is the rest pose, where an edit changes the artwork itself and
+    // does not key it: the canvas area has an amber border, the colour of
+    // keyframes, so it is plain which of the two an edit will be.
+    if shell.editor.current_frame() <= fanimate_core::REST_FRAME {
+        ui.painter_at(rect).rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(3.0, shell.palette.keyframe),
+            egui::StrokeKind::Inside,
+        );
+    }
+
     if looking {
         let p = shell.palette;
         ui.painter_at(rect).text(

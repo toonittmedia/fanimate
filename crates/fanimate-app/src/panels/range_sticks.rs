@@ -12,7 +12,7 @@
 //! which a double-click brings to the front), drag it to move all its keys,
 //! drag either end to stretch or squeeze them. Right-click for the menu.
 
-use eframe::egui::{self, Id, Rect, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Id, Rangef, Rect, Sense, Stroke, pos2, vec2};
 use fanimate_core::{Frame, Interpolation, LayerId, Text};
 use fanimate_editor::{Action, SelectMode};
 
@@ -21,15 +21,20 @@ use super::timeline::key_outline;
 use crate::app::Shell;
 use crate::menus;
 
-/// Height of one lane of sticks, and of a stick in it.
-const LANE_HEIGHT: f32 = 12.0;
-const STICK_HEIGHT: f32 = 8.0;
-/// The ends of a stick that stretch it, and the room a stick has beyond its
-/// first and last key so a one-frame range can still be taken hold of.
-const GRIP: f32 = 6.0;
-const CAP: f32 = 4.0;
-/// Wide enough to show a name inside it.
-const NAME_ROOM: f32 = 48.0;
+/// Height of one lane of sticks. A stick fills its lane, so lanes touch.
+const LANE_HEIGHT: f32 = 20.0;
+const STICK_HEIGHT: f32 = LANE_HEIGHT;
+/// Space above and below the lanes.
+const PAD: f32 = 2.0;
+/// The ends of a stick that stretch it, the room a stick has beyond its first
+/// and last key, and the least width it is drawn with, so a range of one frame
+/// can still be taken hold of by either end.
+const GRIP: f32 = 9.0;
+const CAP: f32 = 5.0;
+const MIN_STICK: f32 = 2.0 * GRIP + 6.0;
+/// Room between the grips needed to show some of the name, and its size.
+const NAME_ROOM: f32 = 24.0;
+const NAME_SIZE: f32 = 11.5;
 
 /// One animator's stick: its place in the layer's list, the frames it runs over
 /// and the lane it sits in.
@@ -104,14 +109,10 @@ pub fn rows(
     keys_clip: Rect,
     x_of: &impl Fn(f32) -> f32,
     frame_at: &impl Fn(f32) -> Frame,
-) {
-    let Some(text) = shell.editor.text(id) else {
-        return;
-    };
+) -> Option<Rect> {
+    let text = shell.editor.text(id)?;
     let sticks = sticks(text);
-    let Some(lanes) = sticks.iter().map(|s| s.lane + 1).max() else {
-        return;
-    };
+    let lanes = sticks.iter().map(|s| s.lane + 1).max()?;
     let names: Vec<String> = text.animators.iter().map(|a| a.name.clone()).collect();
     let label = shell
         .editor
@@ -120,7 +121,7 @@ pub fn rows(
         .map(|l| crate::theme::label_color(l.shown_label()))
         .unwrap_or_default();
     let p = shell.palette;
-    let height = lanes as f32 * LANE_HEIGHT + 6.0;
+    let height = lanes as f32 * LANE_HEIGHT + 2.0 * PAD;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let names_col = Rect::from_min_max(
         rect.min,
@@ -156,27 +157,21 @@ pub fn rows(
     let key_painter = ui.painter_at(clip);
     let layer_picked = shell.editor.is_selected(id);
     for s in &sticks {
-        let y = keys.top() + 3.0 + (s.lane as f32 + 0.5) * LANE_HEIGHT;
+        // sticks fill their lane, so the lanes touch
+        let top = keys.top() + PAD + s.lane as f32 * LANE_HEIGHT;
         let (x0, x1) = (x_of(s.first as f32), x_of(s.last as f32));
-        let stick = Rect::from_min_max(
-            pos2(x0 - CAP, y - STICK_HEIGHT / 2.0),
-            pos2(x1.max(x0) + CAP, y + STICK_HEIGHT / 2.0),
-        );
+        // wide enough to take hold of by either end, even for a range of one frame
+        let right = (x1 + CAP).max(x0 - CAP + MIN_STICK);
+        let stick = Rect::from_min_max(pos2(x0 - CAP, top), pos2(right, top + STICK_HEIGHT));
         let picked = layer_picked && shell.ui.text_animator == Some((id, s.index));
         key_painter.rect(
             stick,
-            STICK_HEIGHT / 2.0,
+            3.0,
             egui::Color32::WHITE,
             key_outline(&p, picked),
             egui::StrokeKind::Inside,
         );
         let name = names.get(s.index).map_or("", String::as_str);
-        if stick.width() >= NAME_ROOM {
-            let galley = key_painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(8.5), p.bg);
-            if galley.size().x + 10.0 <= stick.width() {
-                key_painter.galley(pos2(stick.left() + 6.0, y - galley.size().y / 2.0), galley, p.bg);
-            }
-        }
         let grip = GRIP.min(stick.width() / 3.0);
         let zones = [
             (Zone::Body, stick),
@@ -189,24 +184,59 @@ pub fn rows(
                 Rect::from_min_max(pos2(stick.right() - grip, stick.top()), stick.max),
             ),
         ];
+        // the name between the grips, cut short with an ellipsis when the stick is narrow
+        let room = stick.width() - 2.0 * GRIP - 8.0;
+        if room >= NAME_ROOM {
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                name.to_owned(),
+                egui::FontId::proportional(NAME_SIZE),
+                p.bg,
+            );
+            job.wrap = egui::text::TextWrapping {
+                max_width: room,
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+            let galley = key_painter.layout_job(job);
+            key_painter.galley(
+                pos2(
+                    stick.left() + GRIP + 4.0,
+                    stick.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                p.bg,
+            );
+        }
         for (zone, area) in zones {
-            // the pressable part is as tall as the lane, so a thin stick is easy to hit
-            let area = Rect::from_min_max(
-                pos2(area.left(), y - LANE_HEIGHT / 2.0),
-                pos2(area.right(), y + LANE_HEIGHT / 2.0),
-            )
-            .intersect(clip);
+            let area = area.intersect(clip);
             if area.is_negative() {
                 continue;
             }
             let salt = Id::new(("animator-stick", id, s.index, zone as u8));
             let resp = ui.interact(area, salt, Sense::click_and_drag());
-            if zone != Zone::Body && (resp.hovered() || resp.dragged()) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            if zone != Zone::Body {
+                // the ends are marked with a short bar, which lights up under the pointer
+                let hot = resp.hovered() || resp.dragged();
+                let edge = if zone == Zone::Start {
+                    area.left() + 3.0
+                } else {
+                    area.right() - 3.0
+                };
+                if hot {
+                    key_painter.rect_filled(area.shrink2(vec2(0.0, 1.0)), 3.0, p.accent.gamma_multiply(0.4));
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                key_painter.vline(
+                    edge,
+                    Rangef::new(stick.top() + 5.0, stick.bottom() - 5.0),
+                    Stroke::new(2.0, if hot { p.accent } else { p.bg.gamma_multiply(0.45) }),
+                );
             }
             work(ui, shell, &resp, zone, id, s, name, frame_at);
         }
     }
+    Some(rect)
 }
 
 /// What a press, a drag or a click on one part of a stick does.
@@ -243,15 +273,15 @@ fn work(
         && let Some(from) = shell.editor.animator_drag_origin()
         && let Some(pos) = resp.interact_pointer_pos()
     {
+        // by how far the pointer has moved since the press, whichever part was taken hold of, so a
+        // stick drawn wider than its range (a one-frame one) does not jump
         let now = frame_at(pos.x);
+        let press: Frame = ui.data_mut(|d| d.get_temp(press_at)).unwrap_or(now);
+        let by = now - press;
         let (first, last) = match zone {
-            Zone::Body => {
-                let press: Frame = ui.data_mut(|d| d.get_temp(press_at)).unwrap_or(now);
-                let by = now - press;
-                (from.0 + by, from.1 + by)
-            }
-            Zone::Start => (now.min(from.1), from.1),
-            Zone::End => (from.0, now.max(from.0)),
+            Zone::Body => (from.0 + by, from.1 + by),
+            Zone::Start => ((from.0 + by).min(from.1), from.1),
+            Zone::End => (from.0, (from.1 + by).max(from.0)),
         };
         shell.editor.drag_animator_range(first, last);
     }

@@ -135,7 +135,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         } else {
             p.text_muted
         };
-        let second = timecode::is_second_start(f, fps);
+        // the rest pose is not a second, and has no number of its own
+        let rest = f == REST_FRAME;
+        let second = timecode::is_second_start(f, fps) && !rest;
         let h = if second {
             10.0
         } else if f % label_every == 0 {
@@ -147,7 +149,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             [pos2(x, ruler.bottom() - h), pos2(x, ruler.bottom())],
             Stroke::new(1.0, tick),
         );
-        if f % label_every == 0 {
+        if f % label_every == 0 && !rest {
             painter.text(
                 pos2(x + 2.0, ruler.top() + 2.0),
                 egui::Align2::LEFT_TOP,
@@ -177,6 +179,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rows_rect));
     // where each row's keys are this frame, for box select and the scale grips
     let mut key_rows: Vec<KeyRow> = Vec::new();
+    // the bottom of the animator sticks, which are rows too: the empty space
+    // that catches clicks must start under them, not over them
+    let mut stick_bottom = rows_rect.top();
     egui::ScrollArea::vertical()
         .id_salt("timeline-rows")
         .auto_shrink([false, false])
@@ -204,7 +209,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             for (id, depth) in shown {
                 row(ui, shell, id, depth, keys_clip, &x_of, &frame_at, &mut key_rows);
                 // a text layer's animators, as range sticks under it
-                range_sticks::rows(ui, shell, id, depth, keys_clip, &x_of, &frame_at);
+                if let Some(strip) = range_sticks::rows(ui, shell, id, depth, keys_clip, &x_of, &frame_at) {
+                    stick_bottom = stick_bottom.max(strip.bottom());
+                }
                 // a layer opened with a double-click lists its properties
                 if shell.ui.timeline_expanded.contains(&id) {
                     let channels = shell
@@ -241,31 +248,8 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             p.bg.gamma_multiply(0.45),
         );
     }
-    // the rest pose column is a little dimmer than the frames that play, and
-    // a hairline closes it
-    let rest_right = x_of(REST_FRAME as f32) + fw / 2.0;
-    if rest_right > frames_rect.left() {
-        painter.rect_filled(
-            Rect::from_min_max(
-                pos2(rest_cell.left().max(frames_rect.left()), ruler.top()),
-                pos2(rest_right, full.bottom()),
-            ),
-            0.0,
-            p.bg.gamma_multiply(0.3),
-        );
-        painter.vline(
-            rest_right,
-            Rangef::new(ruler.top(), full.bottom()),
-            Stroke::new(1.0, p.border),
-        );
-    }
-    let boundary = Stroke::new(1.5, p.text_muted);
-    // the range starts at a clear line on the left edge of its first frame
-    let start_x = x_of(start as f32) - fw / 2.0;
-    if start_x >= frames_rect.left() - 0.5 {
-        let x = start_x.max(frames_rect.left()) + 0.75;
-        painter.line_segment([pos2(x, ruler.top()), pos2(x, full.bottom())], boundary);
-    }
+    // (the rest pose is a frame like the others here: no dimmed column and no
+    // line at the start of the range; the canvas has an amber border on it)
     let x = x_of(shell.editor.frame.floor());
     painter.line_segment(
         [pos2(x, ruler.top()), pos2(x, full.bottom())],
@@ -286,7 +270,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     let rows_bottom = key_rows
         .iter()
         .map(|r| r.rect.bottom())
-        .fold(rows_rect.top(), f32::max);
+        .fold(stick_bottom, f32::max);
     let below = Rect::from_min_max(pos2(keys_clip.left(), rows_bottom), keys_clip.max);
     if below.height() > 2.0 && !grip_busy(ui.ctx()) {
         let resp = ui.interact(below, Id::new("timeline-below-rows"), Sense::click_and_drag());
