@@ -68,6 +68,17 @@ impl GraphView {
         self.v1 += by;
     }
 
+    /// Keep the view inside `bounds`: no wider or taller than they are, and
+    /// slid back in when it has gone past an edge.
+    fn clamp_to(&mut self, bounds: &GraphView) {
+        let frames = (self.f1 - self.f0).min(bounds.f1 - bounds.f0);
+        self.f0 = self.f0.clamp(bounds.f0, bounds.f1 - frames);
+        self.f1 = self.f0 + frames;
+        let values = (self.v1 - self.v0).min(bounds.v1 - bounds.v0);
+        self.v0 = self.v0.clamp(bounds.v0, bounds.v1 - values);
+        self.v1 = self.v0 + values;
+    }
+
     fn is_sound(&self) -> bool {
         [self.f0, self.f1, self.v0, self.v1].iter().all(|v| v.is_finite())
             && self.f1 > self.f0
@@ -201,11 +212,8 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
         .get(&(layer, ch))
         .copied()
         .filter(GraphView::is_sound);
-    // fitted to the curves, not only the keys: an overshoot or a bounce goes
-    // past them. Skipped while the view is the user's own.
-    let fitted = if manual.is_some() {
-        (0.0, 1.0)
-    } else {
+    // fitted to the curves, not only the keys: an overshoot or a bounce goes past them
+    let (lo, hi) = {
         let mut lo_hi = curves
             .iter()
             .flatten()
@@ -221,14 +229,30 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
                 }
             }
         }
-        let span = (lo_hi.1 - lo_hi.0).max(1.0);
-        (lo_hi.0 - span * 0.1, lo_hi.1 + span * 0.1)
+        lo_hi
     };
+    let span = (hi - lo).max(1.0);
+    let fitted = (lo - span * 0.1, hi + span * 0.1);
     let (v0, v1) = match (drag, ui.ctx().data(|d| d.get_temp::<(f32, f32)>(range_id))) {
         (Some(_), Some(held)) if manual.is_none() => held,
         _ => fitted,
     };
+    // how far the view may go: the frames and values there are, and a little more
+    let pad = (f1 - f0) * 0.05;
+    let room = (fitted.1 - fitted.0) * 0.3;
+    let bounds = GraphView {
+        f0: f0 - pad,
+        f1: f1 + pad,
+        v0: fitted.0 - room,
+        v1: fitted.1 + room,
+    };
     let mut view = manual.unwrap_or(GraphView { f0, f1, v0, v1 });
+    if manual.is_some() {
+        view.clamp_to(&bounds);
+        if Some(view) != manual {
+            shell.ui.graph_views.insert((layer, ch), view);
+        }
+    }
 
     let (outer, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let rect = Rect::from_min_max(
@@ -266,6 +290,7 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
         } else if scroll.y != 0.0 {
             view.pan_values(scroll.y / rect.height() * (view.v1 - view.v0));
         }
+        view.clamp_to(&bounds);
         if view != before && view.is_sound() {
             shell.ui.graph_views.insert((layer, ch), view);
         } else {
@@ -286,9 +311,19 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
             v0 + (rect.bottom() - pos.y) / rect.height() * (v1 - v0),
         )
     };
-    let painter = ui.painter_at(outer);
+    // everything in the plot is clipped to it: a key that has been scrolled off
+    // must not be drawn in the margin
+    let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 3.0, p.panel);
-    draw_grid(&painter, rect, (f0, f1), (v0, v1), p.border, p.text_muted);
+    draw_grid(
+        &painter,
+        &ui.painter_at(outer),
+        rect,
+        (f0, f1),
+        (v0, v1),
+        p.border,
+        p.text_muted,
+    );
     // the playhead
     let head = to_screen(shell.editor.frame, v0).x;
     if (rect.left()..=rect.right()).contains(&head) {
@@ -339,18 +374,6 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
             painter.rect_filled(Rect::from_center_size(at, vec2(r * 2.0, r * 2.0)), 1.5, fill);
         }
     }
-    painter.text(
-        pos2(outer.left() + 4.0, rect.top()),
-        Align2::LEFT_TOP,
-        shell
-            .editor
-            .doc
-            .find(layer)
-            .map_or_else(String::new, |l| l.channel_label(ch)),
-        FontId::proportional(11.0),
-        p.text_muted,
-    );
-
     // taking hold, dragging, letting go
     let pointer = response.interact_pointer_pos();
     // a drag is reported once the pointer has moved off, so take hold of what
@@ -426,6 +449,27 @@ fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
                     }
                 }
             }
+        }
+    }
+    // a key, handle or the playhead taken to the edge of the plot pulls the view after it
+    if response.dragged()
+        && drag.is_some()
+        && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+    {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let (px, py) = (
+            edge_push(pos.x, rect.left(), rect.right()),
+            edge_push(pos.y, rect.top(), rect.bottom()),
+        );
+        let mut moved = view;
+        moved.pan_frames(px * 0.6 * (view.f1 - view.f0) * dt);
+        if !matches!(drag, Some(Drag::Scrub)) {
+            moved.pan_values(-py * 0.6 * (view.v1 - view.v0) * dt);
+        }
+        moved.clamp_to(&bounds);
+        if moved != view && moved.is_sound() {
+            shell.ui.graph_views.insert((layer, ch), moved);
+            ui.ctx().request_repaint();
         }
     }
     if response.drag_stopped() {
@@ -546,8 +590,30 @@ fn handle_points(curves: &[Vec<CurveKey>], frame: Frame, scale: f32) -> Option<H
 }
 
 /// Lines and numbers at round values and frames.
+/// How hard the pointer pushes on an edge of the plot (negative towards `lo`),
+/// 0 when it is well inside, growing as it nears the edge and to twice as much past it.
+fn edge_push(pos: f32, lo: f32, hi: f32) -> f32 {
+    const BAND: f32 = 24.0;
+    if pos < lo + BAND {
+        -((lo + BAND - pos) / BAND).min(2.0)
+    } else if pos > hi - BAND {
+        ((pos - (hi - BAND)) / BAND).min(2.0)
+    } else {
+        0.0
+    }
+}
+
+/// A number for a label: at most two decimals and never "-0".
+fn label(v: f32) -> String {
+    let r = (v * 100.0).round() / 100.0;
+    if r == 0.0 { "0".to_owned() } else { format!("{r}") }
+}
+
+/// The grid and its numbers: the lines and frame numbers are `painter`'s
+/// (clipped to the plot), the value numbers beside it `margin`'s.
 fn draw_grid(
     painter: &egui::Painter,
+    margin: &egui::Painter,
     rect: Rect,
     (f0, f1): (f32, f32),
     (v0, v1): (f32, f32),
@@ -573,10 +639,10 @@ fn draw_grid(
     while v <= v1 {
         let y = rect.bottom() - (v - v0) / (v1 - v0) * rect.height();
         painter.hline(rect.x_range(), y, Stroke::new(1.0, line.gamma_multiply(0.5)));
-        painter.text(
+        margin.text(
             pos2(rect.left() - 6.0, y),
             Align2::RIGHT_CENTER,
-            format!("{}", (v * 100.0).round() / 100.0),
+            label(v),
             FontId::monospace(10.0),
             text,
         );
@@ -638,6 +704,55 @@ mod tests {
         }
         assert_eq!(v, view());
         assert!(v.is_sound());
+    }
+
+    #[test]
+    fn the_view_cannot_leave_its_bounds() {
+        let bounds = view();
+        // panned far past every edge, then zoomed out far past them
+        let mut v = GraphView {
+            f0: 450.0,
+            f1: 500.0,
+            v0: -900.0,
+            v1: -700.0,
+        };
+        v.clamp_to(&bounds);
+        // slid back in, keeping its size: the right-hand frames, the lowest values
+        assert_eq!((v.f0, v.f1, v.v0, v.v1), (50.0, 100.0, 0.0, 200.0));
+        let mut v = GraphView {
+            f0: -1000.0,
+            f1: 1000.0,
+            v0: -1000.0,
+            v1: 1000.0,
+        };
+        v.clamp_to(&bounds);
+        assert_eq!(v, bounds, "no wider or taller than the bounds");
+        // a view already inside is left alone
+        let mut v = GraphView {
+            f0: 20.0,
+            f1: 60.0,
+            v0: 40.0,
+            v1: 120.0,
+        };
+        let before = v;
+        v.clamp_to(&bounds);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn the_edges_push_harder_the_nearer_the_pointer_is() {
+        assert_eq!(edge_push(50.0, 0.0, 100.0), 0.0);
+        assert!(edge_push(95.0, 0.0, 100.0) > 0.0 && edge_push(5.0, 0.0, 100.0) < 0.0);
+        assert!(edge_push(99.0, 0.0, 100.0) > edge_push(80.0, 0.0, 100.0));
+        assert_eq!(edge_push(900.0, 0.0, 100.0), 2.0, "capped");
+    }
+
+    #[test]
+    fn labels_never_say_minus_zero() {
+        assert_eq!(label(-0.0), "0");
+        assert_eq!(label(-0.001), "0");
+        assert_eq!(label(2.5), "2.5");
+        assert_eq!(label(-100.0), "-100");
     }
 
     #[test]
