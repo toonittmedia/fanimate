@@ -253,6 +253,7 @@ pub fn layer(ui: &mut egui::Ui, shell: &mut Shell) {
         ],
     );
     label_menu(ui, shell);
+    compositing_menu(ui, shell);
     ui.menu_button("Align", |ui| align_items(ui, shell));
     convert_menu(ui, shell);
     switch_items(ui, shell);
@@ -499,6 +500,39 @@ pub fn help(ui: &mut egui::Ui, shell: &mut Shell) {
 }
 
 /// Label colours for the selected layers, each with its swatch.
+/// How the selected layers are mixed with the others: blend mode, mask role,
+/// unmasked, clip to the layer below and flatten, each ticked as it is on the
+/// layer picked first.
+pub fn compositing_menu(ui: &mut egui::Ui, shell: &mut Shell) {
+    let enabled = shell.editor.can_run(Action::ToggleClip);
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.menu_button("Compositing", |ui| {
+            ui.set_min_width(MENU_MIN_WIDTH);
+            let current = shell
+                .editor
+                .primary()
+                .and_then(|id| shell.editor.doc.find(id))
+                .map(|l| l.composite)
+                .unwrap_or_default();
+            for blend in fanimate_core::Blend::ALL {
+                item_checked(ui, shell, Action::SetBlend(blend), current.blend == blend);
+            }
+            ui.separator();
+            for role in [
+                fanimate_core::MaskRole::None,
+                fanimate_core::MaskRole::Add,
+                fanimate_core::MaskRole::Subtract,
+            ] {
+                item_checked(ui, shell, Action::SetMaskRole(role), current.mask == role);
+            }
+            ui.separator();
+            item_checked(ui, shell, Action::ToggleUnmasked, current.unmasked);
+            item_checked(ui, shell, Action::ToggleClip, current.clip);
+            item_checked(ui, shell, Action::ToggleFlatten, current.flatten);
+        });
+    });
+}
+
 pub fn label_menu(ui: &mut egui::Ui, shell: &mut Shell) {
     let enabled = shell.editor.can_run(Action::SetLabel(fanimate_core::Label::Red));
     ui.add_enabled_ui(enabled, |ui| {

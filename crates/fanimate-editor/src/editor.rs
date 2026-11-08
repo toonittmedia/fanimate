@@ -21,6 +21,7 @@ mod bones;
 mod booleans;
 mod captions;
 mod clipboard_shapes;
+mod compositing;
 mod construct;
 mod controllers;
 mod draw;
@@ -711,6 +712,21 @@ impl Editor {
             DeleteKey => self.delete_key(),
             SetInterpolation(interp) => self.set_interpolation(interp),
             ToggleLock => self.toggle_lock(),
+            SetBlend(blend) => {
+                self.set_blend(blend);
+            }
+            SetMaskRole(role) => {
+                self.set_mask_role(role);
+            }
+            ToggleUnmasked => {
+                self.toggle_unmasked();
+            }
+            ToggleClip => {
+                self.toggle_clip();
+            }
+            ToggleFlatten => {
+                self.toggle_flatten();
+            }
             Align(to) => self.align_selected(to),
             SetShapeVisible(layer, index, visible) => self.set_shape_visible(layer, index, visible),
             DeleteShapes => self.delete_shapes(),
@@ -870,7 +886,8 @@ impl Editor {
                 .selected_text()
                 .and_then(|id| self.text(id))
                 .is_some_and(|t| t.look().path.is_some()),
-            ToggleLock | Align(_) => has_sel,
+            ToggleLock | Align(_) | SetBlend(_) | SetMaskRole(_) | ToggleUnmasked | ToggleClip
+            | ToggleFlatten => has_sel,
             ResetCamera => !self.doc.camera.is_default(),
             DeleteShapes | DuplicateShapes => !self.selected_shapes().is_empty(),
             ConvertLayerType(to) | ConfirmConvertLayerType(to) => self

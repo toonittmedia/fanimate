@@ -515,6 +515,50 @@ fn an_animators_range_is_read_and_set_in_one_undo_step() {
 }
 
 #[test]
+fn a_layers_compositing_is_read_and_changed_in_one_undo_step() {
+    use fanimate_api::CompositeChange;
+    use fanimate_core::{Blend, MaskRole};
+    let (mut ed, id) = titled();
+    let mut api = Api::new(&mut ed);
+    assert!(api.layer(id).unwrap().composite.is_plain());
+    let change = CompositeChange {
+        blend: Some(Blend::Screen),
+        mask: Some(MaskRole::Add),
+        clip: Some(true),
+        ..Default::default()
+    };
+    assert!(api.set_layer_composite(id, change.clone()).unwrap());
+    let c = api.layer(id).unwrap().composite;
+    assert_eq!(
+        (c.blend, c.mask, c.clip, c.unmasked, c.flatten),
+        (Blend::Screen, MaskRole::Add, true, false, false)
+    );
+    // a field left out is left as it is; the same change again changes nothing
+    assert!(!api.set_layer_composite(id, change).unwrap());
+    assert!(
+        api.set_layer_composite(
+            id,
+            CompositeChange {
+                flatten: Some(true),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+    );
+    assert_eq!(api.layer(id).unwrap().composite.blend, Blend::Screen);
+    assert_eq!(
+        api.set_layer_composite(9999, CompositeChange::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    ed.run(Action::Undo);
+    assert!(!Api::new(&mut ed).layer(id).unwrap().composite.flatten);
+    ed.run(Action::Undo);
+    assert!(Api::new(&mut ed).layer(id).unwrap().composite.is_plain());
+}
+
+#[test]
 fn text_calls_name_what_went_wrong() {
     let (mut ed, id) = titled();
     let vector = ed.doc.new_layer("v", LayerKind::vector(vec![]));

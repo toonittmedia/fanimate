@@ -23,6 +23,17 @@ This is the outline of the manual, with the essentials of each chapter. Chapters
 - Select Points and Transform Points edit drawings point by point. Combine Shapes joins, subtracts and intersects.
 - The Style panel sets colours, line width and taper for new drawings.
 
+### Masks, clips and blend modes
+
+Layer › **Compositing** (or the Compositing section of Properties, and the right-click menu of a layer) says how a layer is mixed with the others:
+
+- **Mask.** Set a layer's mask role to **Add to mask** or **Subtract from mask** and it stops being drawn. The mask layers of one group (or of the top level) together decide where that group's other layers show: what an adding layer covers is let through, what a subtracting layer covers is taken out of it. A layer marked **not held back by the mask** shows regardless. Hiding every mask layer turns the mask off, so you can look past it. The Layers panel says "Mask" beside such a layer.
+- **Clip to the layer below.** The layer shows only where the layer under it is drawn, and takes its own colours there, as a clipping mask in a paint program does. Several layers clipped in a row to one base and the base are one picture; hiding the base hides them.
+- **Blend mode.** Multiply darkens, Screen lightens and Add adds light. A layer with a blend mode is drawn as a picture of its own and laid over the rest, its opacity applying to the picture.
+- **Flatten** (groups). Without it a group's opacity fades each shape separately, so overlapping shapes show through each other; with it the group is drawn as one picture and then faded.
+
+Masks, clips and blend modes are drawn on the canvas, in renders and in the browser. SVG and Lottie exports draw such layers plain (the mask layers are left out) and say so. The Moho, Animate and PSD importers still count them as left out.
+
 ## 4. Animating
 
 - Every value on the timeline can have keys. Editing an animated value sets a key on the current frame; editing an unanimated one changes it for the whole animation.

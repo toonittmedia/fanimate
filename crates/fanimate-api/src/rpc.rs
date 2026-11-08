@@ -117,6 +117,11 @@ pub const METHODS: &[Method] = &[
         "Add a ready-made animator, returns its index",
     ),
     edit(
+        "set_layer_composite",
+        "layer: number, blend?: string, mask?: string, unmasked?: bool, clip?: bool, flatten?: bool",
+        "Change how a layer is mixed with the others, returns whether it changed",
+    ),
+    edit(
         "remove_text_animator",
         "layer: number, index: number",
         "Remove a text animator",
@@ -327,6 +332,14 @@ fn param<T: for<'de> Deserialize<'de>>(params: &Value, key: &str) -> Result<T, A
     serde_json::from_value(value.clone()).map_err(|e| bad(format!("parameter \"{key}\": {e}")))
 }
 
+/// A parameter that may be left out (or null).
+fn optional<T: for<'de> Deserialize<'de>>(params: &Value, key: &str) -> Result<Option<T>, ApiError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => param(params, key).map(Some),
+    }
+}
+
 fn json_of<T: serde::Serialize>(value: T) -> Result<Value, ApiError> {
     serde_json::to_value(value).map_err(|e| bad(format!("the answer could not be written: {e}")))
 }
@@ -385,6 +398,16 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
         }
         "add_text_animator" => {
             json_of(api.add_text_animator(param(params, "layer")?, &param::<String>(params, "preset")?)?)
+        }
+        "set_layer_composite" => {
+            let change = crate::CompositeChange {
+                blend: optional(params, "blend")?,
+                mask: optional(params, "mask")?,
+                unmasked: optional(params, "unmasked")?,
+                clip: optional(params, "clip")?,
+                flatten: optional(params, "flatten")?,
+            };
+            json_of(api.set_layer_composite(param(params, "layer")?, change)?)
         }
         "remove_text_animator" => {
             api.remove_text_animator(param(params, "layer")?, param(params, "index")?)?;

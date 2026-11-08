@@ -213,6 +213,29 @@ mod tests {
     }
 
     #[test]
+    fn masks_and_blend_modes_are_drawn_plain_and_the_report_says_so_and_mask_layers_are_left_out() {
+        let mut doc = doc_with(vec![square(Style::fill(Color::rgb(1.0, 0.0, 0.0)))]);
+        let mut mask = doc.new_layer(
+            "mask",
+            LayerKind::Vector {
+                shapes: vec![square(Style::fill(Color::rgb(0.0, 1.0, 0.0)))],
+            },
+        );
+        mask.composite.mask = fanimate_core::MaskRole::Add;
+        doc.layers.push(mask);
+        let (svg, report) = frame(&doc, 1.0);
+        assert_eq!(
+            report.count("masks, clips, blend modes and flattened groups drawn as plain layers"),
+            1
+        );
+        assert!(svg.contains("fill=\"#ff0000\""), "the masked artwork is drawn");
+        assert!(!svg.contains("fill=\"#00ff00\""), "the mask layer is not: {svg}");
+        // a document with none of it has nothing to report
+        let plain = doc_with(vec![square(Style::fill(Color::rgb(1.0, 0.0, 0.0)))]);
+        assert!(frame(&plain, 1.0).1.is_empty());
+    }
+
+    #[test]
     fn a_frame_is_a_document_with_the_background_and_each_shape_where_it_is_drawn() {
         let doc = doc_with(vec![square(Style::fill(Color::rgb(1.0, 0.0, 0.0)))]);
         let (svg, report) = frame(&doc, 1.0);

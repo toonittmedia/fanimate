@@ -39,6 +39,16 @@ pub enum Blend {
 impl Blend {
     pub const ALL: [Blend; 4] = [Self::Normal, Self::Multiply, Self::Screen, Self::Add];
 
+    /// The name the project file and the API use.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Multiply => "multiply",
+            Self::Screen => "screen",
+            Self::Add => "add",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
@@ -63,6 +73,17 @@ pub enum MaskRole {
 }
 
 impl MaskRole {
+    pub const ALL: [MaskRole; 3] = [Self::None, Self::Add, Self::Subtract];
+
+    /// The name the project file and the API use.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Add => "add",
+            Self::Subtract => "subtract",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "Not a mask",
@@ -76,9 +97,9 @@ impl MaskRole {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Composite {
-    #[serde(skip_serializing_if = "is_normal")]
+    #[serde(deserialize_with = "lenient_blend", skip_serializing_if = "is_normal")]
     pub blend: Blend,
-    #[serde(skip_serializing_if = "is_no_mask")]
+    #[serde(deserialize_with = "lenient_mask", skip_serializing_if = "is_no_mask")]
     pub mask: MaskRole,
     /// Not held back by the group's mask.
     #[serde(skip_serializing_if = "is_false")]
@@ -89,6 +110,24 @@ pub struct Composite {
     /// For a group (or a switch or bone layer): draw it as one picture, then fade it as one.
     #[serde(skip_serializing_if = "is_false")]
     pub flatten: bool,
+}
+
+/// A blend mode this version does not know (from a newer Fanimate) is read as
+/// normal rather than failing the whole load; the project's required feature
+/// is what keeps older readers from opening what they cannot show.
+fn lenient_blend<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Blend, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name
+        .and_then(|n| Blend::ALL.into_iter().find(|b| b.id() == n))
+        .unwrap_or_default())
+}
+
+/// A mask role this version does not know is read as none.
+fn lenient_mask<'de, D: serde::Deserializer<'de>>(d: D) -> Result<MaskRole, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name
+        .and_then(|n| MaskRole::ALL.into_iter().find(|m| m.id() == n))
+        .unwrap_or_default())
 }
 
 fn is_normal(b: &Blend) -> bool {
@@ -181,6 +220,13 @@ mod tests {
             r#"{"blend":"multiply","mask":"subtract","unmasked":true,"clip":true,"flatten":true}"#
         );
         assert_eq!(serde_json::from_str::<Composite>(&text).unwrap(), all);
+        // a name this version does not know is read as the default, not a failed load
+        let odd: Composite =
+            serde_json::from_str(r#"{"blend":"soft_light","mask":"intersect","clip":true}"#).unwrap();
+        assert_eq!(
+            (odd.blend, odd.mask, odd.clip),
+            (Blend::Normal, MaskRole::None, true)
+        );
         // a file with nothing in it, or one setting, is read with the rest off
         assert!(serde_json::from_str::<Composite>("{}").unwrap().is_plain());
         let one: Composite = serde_json::from_str(r#"{"clip":true}"#).unwrap();

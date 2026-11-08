@@ -29,6 +29,13 @@ pub visible: bool,
 pub locked: bool,
 pub children: usize,
 pub provenance: Option<Provenance>,
+pub composite: Composite,
+pub struct CompositeChange {
+pub blend: Option<Blend>,
+pub mask: Option<MaskRole>,
+pub unmasked: Option<bool>,
+pub clip: Option<bool>,
+pub flatten: Option<bool>,
 pub struct BoneInfo {
 pub id: u32,
 pub name: String,
@@ -145,6 +152,7 @@ pub fn set_text_style(&mut self, layer: u32, style: TextStyle) -> Result<(), Api
 pub fn add_text_animator(&mut self, layer: u32, preset: &str) -> Result<usize, ApiError> {
 pub fn set_text_animator_range( &mut self, layer: u32, index: usize, first: i32, last: i32, ) -> Result<(), ApiError> {
 pub fn set_text_animator_interpolation( &mut self, layer: u32, index: usize, interp: serde_json::Value, ) -> Result<bool, ApiError> {
+pub fn set_layer_composite(&mut self, layer: u32, change: CompositeChange) -> Result<bool, ApiError> {
 pub fn remove_text_animator(&mut self, layer: u32, index: usize) -> Result<(), ApiError> {
 pub fn duplicate_text_animator(&mut self, layer: u32, index: usize) -> Result<usize, ApiError> {
 pub fn move_text_animator(&mut self, layer: u32, index: usize, by: i32) -> Result<usize, ApiError> {

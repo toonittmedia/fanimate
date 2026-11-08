@@ -264,7 +264,24 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
         let color = if visible { p.text } else { p.text_muted };
         let font = egui::FontId::proportional(13.0);
         // stop short of the padlock; a cut name shows whole in the tooltip
-        let room = (lock_rect.left() - 4.0 - name_rect.left()).max(0.0);
+        // what the layer does to the others, in small words before the padlock
+        let badge = badge_of(shell.editor.doc.find(id).map(|l| l.composite).unwrap_or_default());
+        let badge_width = if let Some(text) = &badge {
+            let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(10.5), p.text_muted);
+            let width = galley.size().x;
+            painter.galley(
+                egui::pos2(
+                    lock_rect.left() - 4.0 - width,
+                    rect.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                p.text_muted,
+            );
+            width + 6.0
+        } else {
+            0.0
+        };
+        let room = (lock_rect.left() - 4.0 - badge_width - name_rect.left()).max(0.0);
         let (shown, cut) = fit_name(&painter, &name, &font, color, room);
         painter.text(
             egui::pos2(name_rect.left(), rect.center().y),
@@ -323,6 +340,30 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
     menus::context_menu(&response, |ui| menus::layer_context(ui, shell));
 
     drag_and_drop(ui, shell, &response, rect, id, is_container);
+}
+
+/// What a layer's compositing settings say, in a few words for its row:
+/// "Mask", "Clip", a blend mode, "Flat".
+fn badge_of(c: fanimate_core::Composite) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    match c.mask {
+        fanimate_core::MaskRole::Add => parts.push("Mask"),
+        fanimate_core::MaskRole::Subtract => parts.push("Mask (take away)"),
+        fanimate_core::MaskRole::None => {}
+    }
+    if c.unmasked {
+        parts.push("Unmasked");
+    }
+    if c.clip {
+        parts.push("Clip");
+    }
+    if c.blend != fanimate_core::Blend::Normal {
+        parts.push(c.blend.label());
+    }
+    if c.flatten {
+        parts.push("Flat");
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// `name` cut with a real ellipsis so it is at most `room` points wide, and whether it was cut.

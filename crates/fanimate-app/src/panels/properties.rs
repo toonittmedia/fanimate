@@ -303,6 +303,9 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
                 .set_layer_pivot(id, fanimate_core::Vec2::new(p.x, p.y));
         }
     }
+    if drawn {
+        compositing(ui, shell, id);
+    }
     rectangle(ui, shell);
     stroke_exposure(ui, shell);
 
@@ -480,6 +483,86 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
     }
     if shell.editor.text(id).is_some() {
         super::text_props::pointer(ui, shell);
+    }
+}
+
+/// How the layer is mixed with the others: a blend mode, a mask role and the
+/// switches (see `fanimate_core::compositing`). Each change is an action on
+/// the selected layers, so it is one undo step and the menus say the same.
+fn compositing(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
+    let Some(layer) = shell.editor.doc.find(id) else {
+        return;
+    };
+    let c = layer.composite;
+    let container = matches!(
+        layer.kind,
+        LayerKind::Group { .. } | LayerKind::Switch { .. } | LayerKind::Bone { .. }
+    );
+    ui.add_space(8.0);
+    heading(ui, shell, "Compositing");
+    prop_row_full(ui, "Blend", |ui| {
+        egui::ComboBox::from_id_salt("layer-blend")
+            .selected_text(c.blend.label())
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for blend in fanimate_core::Blend::ALL {
+                    if ui.selectable_label(c.blend == blend, blend.label()).clicked() {
+                        shell.pending.push(Action::SetBlend(blend));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("How this layer's colours mix with what is under it");
+    });
+    prop_row_full(ui, "Mask", |ui| {
+        egui::ComboBox::from_id_salt("layer-mask")
+            .selected_text(c.mask.label())
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for role in [
+                    fanimate_core::MaskRole::None,
+                    fanimate_core::MaskRole::Add,
+                    fanimate_core::MaskRole::Subtract,
+                ] {
+                    if ui.selectable_label(c.mask == role, role.label()).clicked() {
+                        shell.pending.push(Action::SetMaskRole(role));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "A mask layer is not drawn: the mask layers of a group together decide where its \
+                 other layers show",
+            );
+    });
+    let mut switch = |ui: &mut egui::Ui, label: &str, on: bool, action: Action, tip: &str| {
+        let mut value = on;
+        if ui.checkbox(&mut value, label).on_hover_text(tip).changed() {
+            shell.pending.push(action);
+        }
+    };
+    switch(
+        ui,
+        "Not held back by the mask",
+        c.unmasked,
+        Action::ToggleUnmasked,
+        "Show this layer even where its group's mask hides the others",
+    );
+    switch(
+        ui,
+        "Clip to the layer below",
+        c.clip,
+        Action::ToggleClip,
+        "Show this layer only where the layer under it is drawn",
+    );
+    if container {
+        switch(
+            ui,
+            "Flatten",
+            c.flatten,
+            Action::ToggleFlatten,
+            "Draw what is inside as one picture before fading or mixing it, so overlapping shapes do not show through each other",
+        );
     }
 }
 

@@ -49,6 +49,7 @@ A request without an `id` is a notification: it runs and nothing is answered. A 
 | `set_text_content` | `layer`, `content` | |
 | `set_text_style` | `layer`, `style` (`family`, `size`, `weight`, `tracking`, `line_height`, `width`, `wrap`) | |
 | `add_text_animator` | `layer`, `preset` (`fade_in`, `typewriter`, `rise_in`, `pop_in`, `wave`) | The animator's index |
+| `set_layer_composite` | `layer`, optional `blend` (`normal`, `multiply`, `screen`, `add`), `mask` (`none`, `add`, `subtract`), `unmasked`, `clip`, `flatten` | How the layer is mixed with the others (see the file format's `composite`): a mask layer is not drawn and lets its group's other layers show only inside it (adding) or not (subtracting); `clip` shows the layer only where the layer below is drawn; `flatten` draws a group as one picture before it is faded. Fields left out stay as they are; returns whether anything changed. `layers` and `layer` report each layer's `composite` |
 | `remove_text_animator` | `layer`, `index` | |
 | `duplicate_text_animator` | `layer`, `index` | The copy's index (it sits just after the original, named "<name> copy") |
 | `set_text_animator_range` | `layer`, `index`, `first`, `last` | Puts the animator's keys over frames `first` to `last` (its range stick on the timeline): moved when the span is unchanged, stretched when not. The rest pose keeps its keys. `text` reports each animator's `key_range` |

@@ -24,9 +24,9 @@ pub mod rpc;
 
 pub use permissions::{MAX_MANIFEST_BYTES, Manifest, Permission, Permissions};
 
-use fanimate_core::{Layer, LayerId, LayerKind, Provenance, Skeleton};
+use fanimate_core::{Blend, Composite, Layer, LayerId, LayerKind, MaskRole, Provenance, Skeleton};
 use fanimate_editor::{Editor, TxError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The API's own version, not Fanimate's. `0.x` is unstable; the freeze at
 /// 1.0 makes it `1.0.0`, after which changes follow semantic versioning and
@@ -153,6 +153,24 @@ pub struct LayerInfo {
     pub children: usize,
     /// What made its content, when a tool rather than the artist did.
     pub provenance: Option<Provenance>,
+    /// How it is mixed with the others: `blend` (`"normal"`, `"multiply"`,
+    /// `"screen"`, `"add"`), `mask` (`"none"`, `"add"`, `"subtract"`),
+    /// `unmasked`, `clip` and `flatten`. Settings that are off are left out, and
+    /// a layer with none set has no `composite` at all.
+    #[serde(skip_serializing_if = "Composite::is_plain")]
+    pub composite: Composite,
+}
+
+/// A change to how a layer is mixed with the others. A field left out is left
+/// as it is.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct CompositeChange {
+    pub blend: Option<Blend>,
+    pub mask: Option<MaskRole>,
+    pub unmasked: Option<bool>,
+    pub clip: Option<bool>,
+    pub flatten: Option<bool>,
 }
 
 /// One bone of a bone layer. Bones are named by `id`, which never changes,
@@ -680,6 +698,37 @@ impl<'a> Api<'a> {
         let interp = parse_interpolation(interp)?;
         self.edit("Change animator keys", |ed| {
             Ok(ed.set_animator_interpolation(LayerId(layer), index, interp))
+        })
+    }
+
+    /// Change how a layer is mixed with the others (blend mode, mask role,
+    /// unmasked, clip, flatten; see the file format's `composite`). Fields
+    /// left out stay as they are. Returns whether anything changed.
+    pub fn set_layer_composite(&mut self, layer: u32, change: CompositeChange) -> Result<bool, ApiError> {
+        self.require(layer)?;
+        let mut composite = self
+            .editor
+            .doc
+            .find(LayerId(layer))
+            .map(|l| l.composite)
+            .unwrap_or_default();
+        if let Some(blend) = change.blend {
+            composite.blend = blend;
+        }
+        if let Some(mask) = change.mask {
+            composite.mask = mask;
+        }
+        if let Some(unmasked) = change.unmasked {
+            composite.unmasked = unmasked;
+        }
+        if let Some(clip) = change.clip {
+            composite.clip = clip;
+        }
+        if let Some(flatten) = change.flatten {
+            composite.flatten = flatten;
+        }
+        self.edit("Change layer compositing", |ed| {
+            Ok(ed.set_layer_composite(LayerId(layer), composite))
         })
     }
 
@@ -1843,6 +1892,7 @@ fn collect(layer: &Layer, parent: Option<u32>, out: &mut Vec<LayerInfo>) {
         locked: layer.locked,
         children: children.len(),
         provenance: layer.provenance.clone(),
+        composite: layer.composite,
     });
     for child in children {
         collect(child, Some(layer.id.0), out);

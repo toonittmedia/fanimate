@@ -226,6 +226,17 @@ pub enum Action {
     SetKeyInterpolation(fanimate_core::Interpolation),
     /// Lock the selected layers, or unlock them when they all are locked.
     ToggleLock,
+    /// How the selected layers' pictures mix with what is under them.
+    SetBlend(fanimate_core::Blend),
+    /// Make the selected layers part of their group's mask (adding to it or
+    /// subtracting from it), or not.
+    SetMaskRole(fanimate_core::MaskRole),
+    /// Keep the selected layers out of their group's mask.
+    ToggleUnmasked,
+    /// Clip the selected layers to the layer below them.
+    ToggleClip,
+    /// Draw the selected groups as one picture.
+    ToggleFlatten,
     /// Line the selected layers up with the canvas (one layer) or each other.
     Align(crate::editor::AlignTo),
     /// Show or hide one shape of a layer (the eye in the Properties panel's
@@ -329,6 +340,11 @@ impl Action {
                 | DeleteChannelKey(_)
                 | SetChannelInterpolation(..)
                 | ToggleLock
+                | SetBlend(_)
+                | SetMaskRole(_)
+                | ToggleUnmasked
+                | ToggleClip
+                | ToggleFlatten
                 | Align(_)
                 | SetShapeVisible(..)
                 | DeleteShapes
@@ -481,6 +497,16 @@ impl Action {
             DeleteKey => "Delete Keyframe",
             SetInterpolation(i) => interp_label!("Interpolation: ", i),
             ToggleLock => "Lock/Unlock Layer",
+            SetBlend(b) => match b {
+                fanimate_core::Blend::Normal => "Blend: Normal",
+                fanimate_core::Blend::Multiply => "Blend: Multiply",
+                fanimate_core::Blend::Screen => "Blend: Screen",
+                fanimate_core::Blend::Add => "Blend: Add",
+            },
+            SetMaskRole(r) => r.label(),
+            ToggleUnmasked => "Unmasked",
+            ToggleClip => "Clip to Layer Below",
+            ToggleFlatten => "Flatten Group",
             ResetCamera => "Reset Camera",
             LookThroughCamera => "Look Through Camera",
             Align(to) => to.label(),
@@ -550,6 +576,11 @@ impl Action {
             | MoveLayerDown
             | ToggleVisibility
             | ToggleLock
+            | SetBlend(_)
+            | SetMaskRole(_)
+            | ToggleUnmasked
+            | ToggleClip
+            | ToggleFlatten
             | Align(_)
             | LayerProperties
             | PickPivot
@@ -706,6 +737,16 @@ impl Action {
         v.extend(fanimate_core::Interpolation::ALL.map(SetInterpolation));
         v.extend(fanimate_core::TextPreset::ALL.map(AddTextAnimator));
         v.extend(fanimate_core::Interpolation::ALL.map(SetKeyInterpolation));
+        v.extend(fanimate_core::Blend::ALL.map(SetBlend));
+        v.extend(
+            [
+                fanimate_core::MaskRole::None,
+                fanimate_core::MaskRole::Add,
+                fanimate_core::MaskRole::Subtract,
+            ]
+            .map(SetMaskRole),
+        );
+        v.extend([ToggleUnmasked, ToggleClip, ToggleFlatten]);
         v.extend(fanimate_core::LoopMode::ALL.map(SetLoop));
         v.extend(fanimate_core::Part::ALL.map(SetPart));
         v.extend(Sample::ALL.iter().map(|s| OpenSample(*s)));
