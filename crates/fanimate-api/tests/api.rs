@@ -421,6 +421,51 @@ fn animators_are_added_by_preset_name() {
 }
 
 #[test]
+fn animators_are_copied_moved_and_removed_one_undo_step_each() {
+    let (mut ed, id) = titled();
+    let mut api = Api::new(&mut ed);
+    api.add_text_animator(id, "typewriter").unwrap();
+    api.add_text_animator(id, "wave").unwrap();
+    let names = |api: &mut Api| -> Vec<String> {
+        api.text(id)
+            .unwrap()
+            .animators
+            .iter()
+            .map(|a| a.name.clone())
+            .collect()
+    };
+    assert_eq!(api.duplicate_text_animator(id, 0).unwrap(), 1);
+    assert_eq!(names(&mut api), ["Typewriter", "Typewriter copy", "Wave"]);
+    assert_eq!(api.move_text_animator(id, 2, -2).unwrap(), 0);
+    assert_eq!(names(&mut api), ["Wave", "Typewriter", "Typewriter copy"]);
+    api.remove_text_animator(id, 1).unwrap();
+    assert_eq!(names(&mut api), ["Wave", "Typewriter copy"]);
+    // what cannot be done says why
+    assert_eq!(
+        api.remove_text_animator(id, 5).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        api.duplicate_text_animator(id, 5).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        api.move_text_animator(id, 0, -1).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        api.remove_text_animator(9999, 0).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    ed.run(Action::Undo);
+    assert_eq!(
+        names(&mut Api::new(&mut ed)).len(),
+        3,
+        "removing was one undo step"
+    );
+}
+
+#[test]
 fn text_calls_name_what_went_wrong() {
     let (mut ed, id) = titled();
     let vector = ed.doc.new_layer("v", LayerKind::vector(vec![]));

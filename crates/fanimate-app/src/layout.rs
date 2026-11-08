@@ -40,9 +40,13 @@ impl Tab {
     pub fn region(self) -> Region {
         match self {
             Self::Timeline | Self::XSheet | Self::Graph => Region::Bottom,
-            Self::Layers | Self::Properties | Self::Style | Self::Actions | Self::History | Self::Bones => {
-                Region::Right
-            }
+            Self::Layers
+            | Self::Properties
+            | Self::Style
+            | Self::Actions
+            | Self::History
+            | Self::Bones
+            | Self::Text => Region::Right,
         }
     }
 }
@@ -66,6 +70,11 @@ pub struct Layout {
     /// Simple mode: the Tools panel shows only the basic tool groups.
     #[serde(default)]
     pub simple: bool,
+    /// Whether the Text panel has been offered: layouts saved before it existed
+    /// get it beside Bones once (`add_text_tab`), and a panel closed since
+    /// stays closed.
+    #[serde(default)]
+    pub text_tab_added: bool,
 }
 
 impl Default for Layout {
@@ -93,15 +102,18 @@ impl Layout {
             bottom_height: 230.0,
             generation: 0,
             simple: w == Workspace::Simple,
+            text_tab_added: true,
         };
         // History is not shown until it is asked for (Window menu); it then
-        // joins Layers. Bones is a tab beside Layers, where the room is.
+        // joins Layers. Bones and Text are tabs beside Layers, where the room
+        // is; the workspaces without them open Text when the Text tool is
+        // picked.
         match w {
             Workspace::Animate => {
                 layout.right.main_surface_mut().split_below(
                     NodeIndex::root(),
                     0.42,
-                    vec![Tab::Layers, Tab::Bones],
+                    vec![Tab::Layers, Tab::Bones, Tab::Text],
                 );
             }
             Workspace::Draw => {
@@ -115,7 +127,7 @@ impl Layout {
             Workspace::Rig => {
                 layout.right = DockState::new(vec![Tab::Properties, Tab::Actions, Tab::Style]);
                 let s = layout.right.main_surface_mut();
-                s.split_below(NodeIndex::root(), 0.4, vec![Tab::Layers, Tab::Bones]);
+                s.split_below(NodeIndex::root(), 0.4, vec![Tab::Layers, Tab::Bones, Tab::Text]);
                 layout.right_width = 340.0;
                 layout.bottom_height = 250.0;
             }
@@ -184,7 +196,7 @@ impl Layout {
         let region = tab.region();
         self.show(region);
         let dock = self.dock(region);
-        if matches!(tab, Tab::History | Tab::Bones)
+        if matches!(tab, Tab::History | Tab::Bones | Tab::Text)
             && let Some(layers) = dock.find_tab(&Tab::Layers)
         {
             dock.set_focused_node_and_surface(layers.node_path());
@@ -192,6 +204,24 @@ impl Layout {
         dock.push_to_focused_leaf(tab);
         if let Some(path) = dock.find_tab(&tab) {
             let _ = dock.set_active_tab(path);
+        }
+    }
+
+    /// A layout saved before the Text panel existed gets it, once, as a tab
+    /// beside Layers and Bones; the one that is in front stays in front.
+    pub fn add_text_tab(&mut self) {
+        if std::mem::replace(&mut self.text_tab_added, true) || self.right.find_tab(&Tab::Text).is_some() {
+            return;
+        }
+        let Some(layers) = self.right.find_tab(&Tab::Layers) else {
+            return;
+        };
+        let front = self.right.find_tab(&Tab::Bones).filter(|b| b.node == layers.node);
+        self.right.set_focused_node_and_surface(layers.node_path());
+        self.right.push_to_focused_leaf(Tab::Text);
+        // a new tab is put in front; put the one that was there back
+        if let Some(path) = front.or(self.right.find_tab(&Tab::Layers)) {
+            let _ = self.right.set_active_tab(path);
         }
     }
 
@@ -373,6 +403,44 @@ mod tests {
     }
 
     #[test]
+    fn text_is_a_tab_beside_bones_and_layers() {
+        for w in [Workspace::Animate, Workspace::Rig] {
+            let layout = Layout::for_workspace(w);
+            let text = layout.right.find_tab(&Tab::Text).expect("Text is open");
+            let layers = layout.right.find_tab(&Tab::Layers).unwrap();
+            assert_eq!(text.node, layers.node, "{w:?}: Text shares the leaf of Layers");
+        }
+        // the others open it beside Layers when it is asked for
+        let mut layout = Layout::for_workspace(Workspace::Draw);
+        assert!(!layout.is_open(Tab::Text));
+        layout.open(Tab::Text);
+        let text = layout.right.find_tab(&Tab::Text).unwrap();
+        let layers = layout.right.find_tab(&Tab::Layers).unwrap();
+        assert_eq!(text.node, layers.node);
+    }
+
+    #[test]
+    fn a_layout_saved_before_the_text_panel_gets_it_once() {
+        // what an older release wrote: no Text tab anywhere, and no mark that it was offered
+        let mut without = Layout::for_workspace(Workspace::Animate);
+        without.right.retain_tabs(|t| *t != Tab::Text);
+        let mut store = Store::default();
+        eframe::set_value(&mut store, Layout::KEY, &without);
+        let text = store.get_string(Layout::KEY).unwrap();
+        assert!(text.contains("text_tab_added:true"), "{text}");
+        store.set_string(Layout::KEY, text.replace(",text_tab_added:true", ""));
+        let mut layout: Layout = eframe::get_value(&store, Layout::KEY).expect("an old layout reads");
+        assert!(!layout.text_tab_added);
+        layout.add_text_tab();
+        let text = layout.right.find_tab(&Tab::Text).expect("added");
+        assert_eq!(text.node, layout.right.find_tab(&Tab::Layers).unwrap().node);
+        // closed again by the user: it stays closed
+        layout.right.retain_tabs(|t| *t != Tab::Text);
+        layout.add_text_tab();
+        assert!(layout.right.find_tab(&Tab::Text).is_none());
+    }
+
+    #[test]
     fn every_workspace_has_every_panel_it_needs() {
         for w in Workspace::ALL {
             let layout = Layout::for_workspace(w);
@@ -401,7 +469,8 @@ mod tests {
         eframe::set_value(&mut store, Layout::KEY, &Layout::for_workspace(Workspace::Simple));
         let text = store.get_string(Layout::KEY).unwrap();
         assert!(text.contains("simple:true"), "{text}");
-        store.set_string(Layout::KEY, text.replace("simple:true", ""));
+        // (the fields after it are newer than the switch too)
+        store.set_string(Layout::KEY, text.replace("simple:true,text_tab_added:true", ""));
         let old: Layout = eframe::get_value(&store, Layout::KEY).expect("an old layout reads");
         assert!(!old.simple);
     }

@@ -116,6 +116,21 @@ pub const METHODS: &[Method] = &[
         "layer: number, preset: string",
         "Add a ready-made animator, returns its index",
     ),
+    edit(
+        "remove_text_animator",
+        "layer: number, index: number",
+        "Remove a text animator",
+    ),
+    edit(
+        "duplicate_text_animator",
+        "layer: number, index: number",
+        "Copy a text animator, returns the copy's index",
+    ),
+    edit(
+        "move_text_animator",
+        "layer: number, index: number, by: number",
+        "Move a text animator down the list (negative: up), returns its new index",
+    ),
     query(
         "actions",
         "layer: number",
@@ -361,6 +376,18 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
         "add_text_animator" => {
             json_of(api.add_text_animator(param(params, "layer")?, &param::<String>(params, "preset")?)?)
         }
+        "remove_text_animator" => {
+            api.remove_text_animator(param(params, "layer")?, param(params, "index")?)?;
+            Ok(Value::Null)
+        }
+        "duplicate_text_animator" => {
+            json_of(api.duplicate_text_animator(param(params, "layer")?, param(params, "index")?)?)
+        }
+        "move_text_animator" => json_of(api.move_text_animator(
+            param(params, "layer")?,
+            param(params, "index")?,
+            param(params, "by")?,
+        )?),
         "actions" => json_of(api.actions(param(params, "layer")?)?),
         "save_pose" => {
             let name: Option<String> = params

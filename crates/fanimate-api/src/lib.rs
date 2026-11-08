@@ -637,6 +637,56 @@ impl<'a> Api<'a> {
         })
     }
 
+    /// Remove a text layer's animator, by its place in its list.
+    pub fn remove_text_animator(&mut self, layer: u32, index: usize) -> Result<(), ApiError> {
+        self.require_animator(layer, index)?;
+        self.edit("Remove text animator", |ed| {
+            ed.remove_text_animator(LayerId(layer), index);
+            Ok(())
+        })
+    }
+
+    /// Copy a text layer's animator, keys and all, to just after the original.
+    /// Returns the copy's index.
+    pub fn duplicate_text_animator(&mut self, layer: u32, index: usize) -> Result<usize, ApiError> {
+        self.require_animator(layer, index)?;
+        self.edit("Duplicate text animator", |ed| {
+            ed.duplicate_text_animator(LayerId(layer), index).ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    "a text layer has at most 64 animators",
+                )
+            })
+        })
+    }
+
+    /// Move a text layer's animator `by` places down its list (negative: up).
+    /// Animators are applied in list order. Returns its new index.
+    pub fn move_text_animator(&mut self, layer: u32, index: usize, by: i32) -> Result<usize, ApiError> {
+        self.require_animator(layer, index)?;
+        self.edit("Move text animator", |ed| {
+            ed.move_text_animator(LayerId(layer), index, by as isize)
+                .ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::InvalidArgument,
+                        format!("animator {index} cannot move by {by}: it would leave the list"),
+                    )
+                })
+        })
+    }
+
+    fn require_animator(&self, layer: u32, index: usize) -> Result<(), ApiError> {
+        self.require_text(layer)?;
+        let count = self.editor.text(LayerId(layer)).map_or(0, |t| t.animators.len());
+        if index >= count {
+            return Err(ApiError::new(
+                ErrorCode::NotFound,
+                format!("layer {layer} has no animator {index} (it has {count})"),
+            ));
+        }
+        Ok(())
+    }
+
     /// Read an SRT or WebVTT file's text into a new layer of captions: a
     /// switch layer holding one text layer per caption, shown at its time.
     /// The animation is lengthened to the last caption if it is shorter.

@@ -60,7 +60,7 @@ To use an action on a different rig, right-click it in the Actions panel and cho
 
 ### Text animators
 
-An animator acts on the text one **character, word or line** at a time. The easy way in is **Layer › Text animator** (or **Add animator…** in Properties): *fade in by character*, *typewriter*, *rise in by word*, *pop in by character* and a looping *wave*, starting at the playhead and running for a second. Each is an ordinary animator you can change.
+An animator acts on the text one **character, word or line** at a time. The easy way in is **Layer › Text animator** (or **+ Add** beside Animators in the Text panel): *fade in by character*, *typewriter*, *rise in by word*, *pop in by character* and a looping *wave*, starting at the playhead and running for a second. Each is an ordinary animator you can change.
 
 An animator has:
 
@@ -88,7 +88,7 @@ A tail, an ear or a scarf should lag behind the body and swing back, not turn ri
 
 ### The Text tool
 
-Press **T** (or choose the **T** in the Draw tools) and click the canvas to type: the words appear where you clicked, set in the font and colour of any new text (the line colour). Click existing text to edit it in place. **Escape** or a click elsewhere finishes; the Properties panel still sets the font, size and the rest. The tool makes the layer when you type the first letter, so a click that types nothing leaves nothing behind.
+Press **T** (or choose the **T** in the Draw tools) and click the canvas to type: the words appear where you clicked, set in the font and colour of any new text (the line colour). Click existing text to edit it in place. **Escape** or a click elsewhere finishes; the Text panel (a tab beside Bones, brought to the front by the Text tool) sets the font, size and the rest. The tool makes the layer when you type the first letter, so a click that types nothing leaves nothing behind.
 
 Not built yet: text following a shape live (a copy of the path is used), templates, and animator rows in the timeline.
 

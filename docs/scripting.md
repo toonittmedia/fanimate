@@ -49,6 +49,9 @@ A request without an `id` is a notification: it runs and nothing is answered. A 
 | `set_text_content` | `layer`, `content` | |
 | `set_text_style` | `layer`, `style` (`family`, `size`, `weight`, `tracking`, `line_height`, `width`, `wrap`) | |
 | `add_text_animator` | `layer`, `preset` (`fade_in`, `typewriter`, `rise_in`, `pop_in`, `wave`) | The animator's index |
+| `remove_text_animator` | `layer`, `index` | |
+| `duplicate_text_animator` | `layer`, `index` | The copy's index (it sits just after the original, named "<name> copy") |
+| `move_text_animator` | `layer`, `index`, `by` | Moves the animator down the list (negative: up); animators apply in list order. The new index |
 | `set_text_animator_value` | `layer`, `index`, `property`, `value`, optional `frame` | Sets one value of an animator by the keying rule. Properties: `range_start`, `range_end`, `range_offset`, `position`, `anchor`, `rotation` (degrees), `scale`, `opacity`, `tracking`, `stroke_width` (numbers, or `[x, y]` for `position`, `anchor` and `scale`), `fill` and `stroke_color` (`"#RRGGBB"`) |
 | `set_text_path` | `layer`, `shape_layer` | |
 | `clear_text_path` | `layer` | |

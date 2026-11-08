@@ -228,6 +228,56 @@ impl Editor {
         true
     }
 
+    /// Whether the selected text layer has an animator at this place in its list.
+    pub(crate) fn has_text_animator(&self, index: usize) -> bool {
+        self.selected_text()
+            .and_then(|id| self.text(id))
+            .is_some_and(|t| index < t.animators.len())
+    }
+
+    /// Whether the animator at `index` has room to move `by` places.
+    pub(crate) fn text_animator_can_move(&self, index: usize, by: i8) -> bool {
+        let len = self
+            .selected_text()
+            .and_then(|id| self.text(id))
+            .map_or(0, |t| t.animators.len());
+        index < len
+            && index
+                .checked_add_signed(by as isize)
+                .is_some_and(|to| to < len && to != index)
+    }
+
+    /// Copy an animator, keys and all, to just after the original under the
+    /// name "<name> copy". Returns the copy's index.
+    pub fn duplicate_text_animator(&mut self, id: LayerId, index: usize) -> Option<usize> {
+        let len = self.text(id)?.animators.len();
+        if self.editing_blocked() || index >= len || len >= fanimate_core::text::MAX_ANIMATORS {
+            return None;
+        }
+        self.checkpoint("Duplicate text animator");
+        let animators = &mut self.text_mut(id)?.animators;
+        let mut copy = animators[index].clone();
+        copy.name = format!("{} copy", copy.name).chars().take(80).collect();
+        animators.insert(index + 1, copy);
+        Some(index + 1)
+    }
+
+    /// Move an animator `by` places down the list (negative: up). Animators
+    /// are applied in list order, so this changes what the later ones see.
+    /// Returns its new index, or `None` when it cannot move that far.
+    pub fn move_text_animator(&mut self, id: LayerId, index: usize, by: isize) -> Option<usize> {
+        let len = self.text(id)?.animators.len();
+        let to = index.checked_add_signed(by).filter(|to| *to < len)?;
+        if self.editing_blocked() || index >= len || by == 0 {
+            return None;
+        }
+        self.checkpoint("Move text animator");
+        let animators = &mut self.text_mut(id)?.animators;
+        let moved = animators.remove(index);
+        animators.insert(to, moved);
+        Some(to)
+    }
+
     /// Change what is not animated about an animator: its name, unit, the
     /// shape and randomness of its selector, its soft edge. One undo step, and
     /// none if nothing changed.
@@ -775,6 +825,54 @@ mod tests {
             ed.text(id).unwrap().animators.len(),
             fanimate_core::text::MAX_ANIMATORS
         );
+    }
+
+    #[test]
+    fn animators_can_be_copied_and_reordered_one_undo_step_each() {
+        let (mut ed, id) = with_text();
+        ed.add_text_animator(id, TextPreset::Typewriter);
+        ed.add_text_animator(id, TextPreset::Wave);
+        let names = |ed: &Editor| -> Vec<String> {
+            ed.text(id)
+                .unwrap()
+                .animators
+                .iter()
+                .map(|a| a.name.clone())
+                .collect()
+        };
+        assert_eq!(ed.duplicate_text_animator(id, 0), Some(1));
+        let n = names(&ed);
+        assert_eq!(n.len(), 3);
+        assert_eq!(n[1], format!("{} copy", n[0]));
+        let animators = &ed.text(id).unwrap().animators;
+        assert_eq!(
+            animators[1].selector.start.keys, animators[0].selector.start.keys,
+            "keys come along"
+        );
+        ed.run(Action::Undo);
+        assert_eq!(names(&ed).len(), 2, "one undo step");
+        assert_eq!(ed.move_text_animator(id, 0, 1), Some(1));
+        assert_eq!(names(&ed)[1], TextPreset::Typewriter.label());
+        assert_eq!(ed.move_text_animator(id, 1, 1), None, "not past the end");
+        assert_eq!(ed.move_text_animator(id, 0, -1), None, "not before the start");
+        ed.run(Action::Undo);
+        assert_eq!(names(&ed)[0], TextPreset::Typewriter.label());
+        assert_eq!(ed.duplicate_text_animator(id, 9), None);
+        assert_eq!(ed.duplicate_text_animator(LayerId(9999), 0), None);
+    }
+
+    #[test]
+    fn the_animator_actions_work_on_the_selected_text_layer() {
+        let (mut ed, id) = with_text();
+        ed.run(Action::AddTextAnimator(TextPreset::Wave));
+        ed.run(Action::AddTextAnimator(TextPreset::FadeIn));
+        assert!(ed.can_run(Action::DuplicateTextAnimator(1)));
+        assert!(!ed.can_run(Action::DuplicateTextAnimator(2)));
+        ed.run(Action::MoveTextAnimator(0, 1));
+        assert_eq!(ed.text(id).unwrap().animators[1].name, TextPreset::Wave.label());
+        ed.run(Action::RemoveTextAnimator(0));
+        assert_eq!(ed.text(id).unwrap().animators.len(), 1);
+        assert!(!ed.can_run(Action::RemoveTextAnimator(1)));
     }
 
     #[test]

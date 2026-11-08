@@ -223,15 +223,11 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
             }
         }
     }
-    icons::paint(
-        &painter,
-        Rect::from_center_size(
-            egui::pos2(arrow_rect.right() + 10.0, rect.center().y),
-            egui::vec2(16.0, 16.0),
-        ),
-        kind_icon,
-        p.text_muted,
+    let icon_rect = Rect::from_center_size(
+        egui::pos2(arrow_rect.right() + 10.0, rect.center().y),
+        egui::vec2(16.0, 16.0),
     );
+    icons::paint(&painter, icon_rect, kind_icon, p.text_muted);
 
     // name, or the rename field
     let name_rect = Rect::from_min_max(egui::pos2(arrow_rect.right() + 24.0, rect.top()), rect.max);
@@ -295,8 +291,23 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
         shell.editor.select(id, mode);
     }
     if response.double_clicked() {
-        shell.ui.renaming = Some((id, name.clone()));
-        shell.ui.rename_focus = true;
+        // on the icon it opens the panel for that kind of layer (text, bones);
+        // anywhere else it renames, as in a file manager
+        let on_icon = response
+            .interact_pointer_pos()
+            .is_some_and(|pos| icon_rect.expand(3.0).contains(pos));
+        let panel = shell.editor.doc.find(id).and_then(|l| match l.kind {
+            fanimate_core::LayerKind::Text(_) => Some(crate::panels::Tab::Text),
+            fanimate_core::LayerKind::Bone { .. } => Some(crate::panels::Tab::Bones),
+            _ => None,
+        });
+        match panel.filter(|_| on_icon) {
+            Some(tab) => shell.ui.open_tab = Some(tab),
+            None => {
+                shell.ui.renaming = Some((id, name.clone()));
+                shell.ui.rename_focus = true;
+            }
+        }
     }
     if shell.editor.rename_request == Some(id) {
         shell.editor.rename_request = None;

@@ -577,6 +577,21 @@ impl Editor {
                 }
                 None => self.set_status(StatusKind::Info, "Select a text layer first."),
             },
+            RemoveTextAnimator(i) => {
+                if let Some(id) = self.selected_text() {
+                    self.remove_text_animator(id, i);
+                }
+            }
+            DuplicateTextAnimator(i) => {
+                if let Some(id) = self.selected_text() {
+                    self.duplicate_text_animator(id, i);
+                }
+            }
+            MoveTextAnimator(i, by) => {
+                if let Some(id) = self.selected_text() {
+                    self.move_text_animator(id, i, by as isize);
+                }
+            }
             ConvertTextToShapes => self.text_to_shapes(),
             BakeSpring => self.bake_spring_selected(),
             SetTextPath => self.set_text_path_from_selection(),
@@ -831,6 +846,8 @@ impl Editor {
             ExpandShape => self.expandable_shapes() > 0,
             SetInterpolation(_) => self.key_interpolation().is_some(),
             AddTextAnimator(_) | ConvertTextToShapes => self.selected_text().is_some(),
+            RemoveTextAnimator(i) | DuplicateTextAnimator(i) => self.has_text_animator(i),
+            MoveTextAnimator(i, by) => self.text_animator_can_move(i, by),
             ExportCaptions => self
                 .primary()
                 .and_then(|id| self.captions_of(id))

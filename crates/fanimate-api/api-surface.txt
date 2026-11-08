@@ -142,6 +142,9 @@ pub fn add_text_layer(&mut self, content: &str, x: f32, y: f32) -> Result<u32, A
 pub fn set_text_content(&mut self, layer: u32, content: &str) -> Result<(), ApiError> {
 pub fn set_text_style(&mut self, layer: u32, style: TextStyle) -> Result<(), ApiError> {
 pub fn add_text_animator(&mut self, layer: u32, preset: &str) -> Result<usize, ApiError> {
+pub fn remove_text_animator(&mut self, layer: u32, index: usize) -> Result<(), ApiError> {
+pub fn duplicate_text_animator(&mut self, layer: u32, index: usize) -> Result<usize, ApiError> {
+pub fn move_text_animator(&mut self, layer: u32, index: usize, by: i32) -> Result<usize, ApiError> {
 pub fn import_captions(&mut self, content: &str, name: &str) -> Result<CaptionInfo, ApiError> {
 pub fn restyle_captions(&mut self, layer: u32) -> Result<u32, ApiError> {
 pub fn export_captions(&self, layer: u32, format: &str) -> Result<String, ApiError> {

@@ -120,6 +120,12 @@ pub enum Action {
     NewTextLayer,
     /// Put a ready-made animator on the selected text layer.
     AddTextAnimator(fanimate_core::TextPreset),
+    /// Remove one of the selected text layer's animators, by its place in the list.
+    RemoveTextAnimator(usize),
+    /// Copy one of the selected text layer's animators, keys and all.
+    DuplicateTextAnimator(usize),
+    /// Move one of the selected text layer's animators down the list (1) or up it (-1).
+    MoveTextAnimator(usize, i8),
     /// Turn the selected text layer into shapes: drawing instead of text.
     /// Make the selected text layer follow the first shape of the other selected layer.
     SetTextPath,
@@ -278,6 +284,9 @@ impl Action {
                 | NewSwitchLayer
                 | NewTextLayer
                 | AddTextAnimator(_)
+                | RemoveTextAnimator(_)
+                | DuplicateTextAnimator(_)
+                | MoveTextAnimator(..)
                 | ConvertTextToShapes
                 | SetTextPath
                 | ClearTextPath
@@ -409,6 +418,10 @@ impl Action {
                 fanimate_core::TextPreset::PopIn => "Text Animator: Pop In by Character",
                 fanimate_core::TextPreset::Wave => "Text Animator: Wave",
             },
+            RemoveTextAnimator(_) => "Delete Text Animator",
+            DuplicateTextAnimator(_) => "Duplicate Text Animator",
+            MoveTextAnimator(_, by) if by < 0 => "Move Text Animator Up",
+            MoveTextAnimator(..) => "Move Text Animator Down",
             ConvertTextToShapes => "Convert Text to Shapes",
             SetTextPath => "Set Text Path from Shape",
             ClearTextPath => "Remove Text Path",
@@ -519,6 +532,9 @@ impl Action {
             | NewSwitchLayer
             | NewTextLayer
             | AddTextAnimator(_)
+            | RemoveTextAnimator(_)
+            | DuplicateTextAnimator(_)
+            | MoveTextAnimator(..)
             | ConvertTextToShapes
             | SetTextPath
             | ClearTextPath

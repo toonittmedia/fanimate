@@ -478,7 +478,9 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
             shell.ui.open_tab = Some(crate::panels::Tab::Bones);
         }
     }
-    super::text_props::section(ui, shell, id);
+    if shell.editor.text(id).is_some() {
+        super::text_props::pointer(ui, shell);
+    }
 }
 
 /// Which sub-layer of a drawing the tools draw on.

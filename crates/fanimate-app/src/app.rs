@@ -248,6 +248,9 @@ pub struct UiState {
     /// The widget being edited in the Properties or Style panel, so one
     /// drag or one typed value makes one undo step.
     pub active_edit: Option<egui::Id>,
+    /// The animator being edited in the Text panel (and picked on the timeline):
+    /// its text layer and its place in that layer's list.
+    pub text_animator: Option<(LayerId, usize)>,
     /// Text being typed on the canvas with the Text tool.
     pub text_edit: Option<crate::panels::text_tool::TextEdit>,
     /// Show (or reopen) a panel on the next frame.
@@ -411,6 +414,8 @@ impl FanimateApp {
             .storage
             .and_then(|s| eframe::get_value::<Layout>(s, Layout::KEY))
             .unwrap_or_default();
+        let mut layout = layout;
+        layout.add_text_tab();
         let palette = theme::apply(&cc.egui_ctx, settings.theme);
 
         // the blank document the Home tab hides until a document is opened
@@ -934,6 +939,10 @@ pub fn dispatch(ctx: &egui::Context, shell: &mut Shell, action: Action) {
 
 /// Run an action without the unsaved-changes check (already answered).
 pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
+    // the Text panel is where a text layer's words and look are edited
+    if action == Action::Tool(fanimate_editor::Tool::Text) {
+        shell.ui.open_tab = Some(Tab::Text);
+    }
     // a paste from a menu reads the system clipboard like Ctrl+V does, by
     // asking for it: the text comes back as a paste event
     if matches!(action, Action::Paste | Action::PasteLayers) && shell.editor.can_run(action) {

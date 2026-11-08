@@ -41,10 +41,11 @@ pub enum Tab {
     XSheet,
     Bones,
     Graph,
+    Text,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Self::Layers,
         Self::Timeline,
         Self::Properties,
@@ -54,6 +55,7 @@ impl Tab {
         Self::XSheet,
         Self::Bones,
         Self::Graph,
+        Self::Text,
     ];
 
     pub fn title(self) -> &'static str {
@@ -67,6 +69,7 @@ impl Tab {
             Self::XSheet => "X-Sheet",
             Self::Bones => "Bones",
             Self::Graph => "Graph",
+            Self::Text => "Text",
         }
     }
 }
@@ -119,6 +122,9 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                 ui.add_enabled_ui(editable, |ui| bones::show(ui, shell));
             }),
             Tab::Graph => ui.add_enabled_ui(editable, |ui| graph::show(ui, shell)).inner,
+            Tab::Text => padded(ui, |ui| {
+                ui.add_enabled_ui(editable, |ui| text_props::show(ui, shell));
+            }),
         }
     }
 
