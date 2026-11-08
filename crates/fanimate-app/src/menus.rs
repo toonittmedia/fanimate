@@ -188,6 +188,15 @@ pub fn edit(ui: &mut egui::Ui, shell: &mut Shell) {
         ui.set_min_width(MENU_MIN_WIDTH);
         shape_items(ui, shell);
     });
+    // classical helpers: no model, no network, each one undo step
+    ui.menu_button("Assist", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        items(
+            ui,
+            shell,
+            &[Action::CleanUpLines, Action::SuggestInbetween, Action::AutoRig],
+        );
+    });
     ui.separator();
     keymap_menu(ui, shell);
     item(ui, shell, Action::Preferences);
@@ -205,12 +214,6 @@ pub fn shape_items(ui: &mut egui::Ui, shell: &mut Shell) {
             Action::ExpandShape,
             Action::OffsetPath,
         ],
-    );
-    ui.separator();
-    items(
-        ui,
-        shell,
-        &[Action::CleanUpLines, Action::SuggestInbetween, Action::AutoRig],
     );
 }
 

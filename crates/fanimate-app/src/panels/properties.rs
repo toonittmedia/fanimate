@@ -308,6 +308,9 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
     }
     rectangle(ui, shell);
     stroke_exposure(ui, shell);
+    if drawn {
+        outline_tools(ui, shell);
+    }
 
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
@@ -683,6 +686,49 @@ fn stroke_exposure(ui: &mut egui::Ui, shell: &mut Shell) {
         &shell.palette.clone(),
         "Show only part of the stroke. Do the same on another frame to animate it.",
     );
+}
+
+/// Offset Path and Clean Up Lines with the numbers they use. The numbers are
+/// settings of the editor, not of the project, so changing one is no edit.
+fn outline_tools(ui: &mut egui::Ui, shell: &mut Shell) {
+    ui.add_space(8.0);
+    heading(ui, shell, "Outline");
+    let can_offset = shell.editor.can_run(Action::OffsetPath);
+    prop_row_full(ui, "Offset", |ui| {
+        number(
+            ui,
+            egui::DragValue::new(&mut shell.editor.offset_distance)
+                .range(-fanimate_core::boolean::MAX_OFFSET..=fanimate_core::boolean::MAX_OFFSET)
+                .speed(0.5)
+                .suffix(" px")
+                .max_decimals(1),
+        );
+        if ui
+            .add_enabled(can_offset, egui::Button::new("Offset Path"))
+            .on_hover_text("Add an outline this far outside the shape, or inside when negative")
+            .clicked()
+        {
+            shell.pending.push(Action::OffsetPath);
+        }
+    });
+    let can_clean = shell.editor.can_run(Action::CleanUpLines);
+    prop_row_full(ui, "Tolerance", |ui| {
+        number(
+            ui,
+            egui::DragValue::new(&mut shell.editor.clean_options.tolerance)
+                .range(0.05..=50.0)
+                .speed(0.05)
+                .suffix(" px")
+                .max_decimals(2),
+        );
+        if ui
+            .add_enabled(can_clean, egui::Button::new("Clean Up Lines"))
+            .on_hover_text("Refit rough lines with fewer, smoother curves that stay this close to them")
+            .clicked()
+        {
+            shell.pending.push(Action::CleanUpLines);
+        }
+    });
 }
 
 /// A drag field for a corner radius, in pixels or as a percentage of the

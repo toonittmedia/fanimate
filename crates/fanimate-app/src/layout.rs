@@ -31,6 +31,10 @@ pub const RIGHT_MIN_WIDTH: f32 = 300.0;
 /// The Assistant column: wide enough for a sentence a line, narrow enough
 /// that a 1366 px screen keeps most of its canvas.
 pub const ASSISTANT_WIDTH: f32 = 340.0;
+
+/// Below this width (the space the panels share, in points) the Assistant replaces the right column
+/// instead of sitting beside it.
+const NARROW_WINDOW: f32 = 1500.0;
 pub const ASSISTANT_MIN_WIDTH: f32 = 280.0;
 
 /// Where a docked panel lives (the tools column is not docked).
@@ -270,16 +274,20 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, layout: &mut Layout, style: &e
     let generation = layout.generation;
     let frame = || egui::Frame::NONE.fill(p.panel);
 
+    let window_width = ui.available_width();
     // outermost on the right, so it runs the full height of the window
     if layout.show_assistant {
         egui::Panel::right(Id::new(("layout-assistant", generation)))
             .resizable(true)
             .default_size(ASSISTANT_WIDTH)
-            .size_range(ASSISTANT_MIN_WIDTH..=620.0)
+            .size_range(ASSISTANT_MIN_WIDTH..=480.0)
             .frame(frame())
             .show(ui, |ui| crate::panels::assistant::show(ui, shell));
     }
-    if layout.show_right {
+    // On a small window the Assistant takes the place of the right column while it is open (the
+    // canvas and timeline matter more than Properties while chatting); closing it brings the column back.
+    let room_for_both = window_width >= NARROW_WINDOW;
+    if layout.show_right && (room_for_both || !layout.show_assistant) {
         egui::Panel::right(Id::new(("layout-right", generation)))
             .resizable(true)
             .default_size(layout.right_width.max(RIGHT_MIN_WIDTH))
