@@ -35,6 +35,12 @@ pub struct DrawStyle {
     /// How hard the edge of a pixel brush stroke is on a raster layer, from 0 (all soft) to 1.
     /// A tool setting like the eraser size, not part of a saved style.
     pub hardness: f32,
+    /// How far a pixel's colour may differ from the one clicked (0 to 1) and still be filled by
+    /// the Paint Bucket on a raster layer. A tool setting, not part of a saved style.
+    pub fill_tolerance: f32,
+    /// How many pixels the Paint Bucket on a raster layer thickens lines by, so a break in an
+    /// outline up to twice this wide holds the paint in (0 to 8; 0 leaks through any break).
+    pub fill_gap: u32,
     /// Weight brush diameter, in document units.
     pub weight_brush: f32,
 }
@@ -51,6 +57,8 @@ impl Default for DrawStyle {
             pressure: true,
             eraser: 20.0,
             hardness: 0.8,
+            fill_tolerance: 0.1,
+            fill_gap: 3,
             weight_brush: 40.0,
         }
     }

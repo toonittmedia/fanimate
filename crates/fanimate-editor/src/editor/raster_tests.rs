@@ -319,3 +319,20 @@ fn the_closing_bucket_stays_inside_an_outline_with_a_small_gap() {
     assert!(held > 150 * 150 && held < 60_000, "{held}");
     assert_eq!(pixel(&ed, id, Vec2::new(50.5, 50.5))[3], 0, "outside stays clear");
 }
+
+#[test]
+fn the_bucket_settings_default_sensibly_and_older_settings_files_still_read() {
+    let d = crate::DrawStyle::default();
+    assert_eq!((d.fill_tolerance, d.fill_gap), (0.1, 3));
+    // a settings file from before the bucket had these reads with the defaults
+    let old: crate::DrawStyle = serde_json::from_str(r#"{"width": 9.0, "hardness": 0.5}"#).unwrap();
+    assert_eq!((old.fill_tolerance, old.fill_gap, old.hardness), (0.1, 3, 0.5));
+    // and the settings the user chose are kept when written and read back
+    let chosen = crate::DrawStyle {
+        fill_tolerance: 0.25,
+        fill_gap: 6,
+        ..d
+    };
+    let again: crate::DrawStyle = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+    assert_eq!(again, chosen);
+}

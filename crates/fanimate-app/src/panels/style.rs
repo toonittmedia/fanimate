@@ -185,6 +185,22 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
                 .on_hover_text("Eraser size, in canvas pixels");
             ui.end_row();
 
+            ui.label(RichText::new("Bucket tolerance").color(muted));
+            let mut tolerance = d.fill_tolerance * 100.0;
+            if ui
+                .add(egui::Slider::new(&mut tolerance, 0.0..=50.0).suffix("%").max_decimals(0))
+                .on_hover_text("How different a pixel's colour may be from the one you click and still be filled by the Paint Bucket on a raster layer. Higher fills across soft edges and noise.")
+                .changed()
+            {
+                d.fill_tolerance = (tolerance / 100.0).clamp(0.0, 1.0);
+            }
+            ui.end_row();
+
+            ui.label(RichText::new("Bucket gap").color(muted));
+            ui.add(egui::DragValue::new(&mut d.fill_gap).range(0..=8).suffix(" px"))
+                .on_hover_text("The Paint Bucket on a raster layer stays inside an outline that has a break up to about twice this wide. 0 lets the paint out of any break.");
+            ui.end_row();
+
             ui.label(RichText::new("Weight brush").color(muted));
             ui.add(
                 egui::DragValue::new(&mut d.weight_brush)
