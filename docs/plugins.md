@@ -41,7 +41,7 @@ A plugin that does several things can list them in the manifest:
 ]
 ```
 
-Each is an entry of its own in Window > Plugins (the plugin becomes a submenu), and the entry chosen is told to the plugin in the environment variable **`FANIMATE_COMMAND`** (`title-card`, `credits`). A plugin started with no command, such as `plugin run` without `--command`, has no such variable. An `id` is 1 to 40 letters, digits, dashes and underscores, starting with a letter or digit; a `title` is 1 to 60 characters of plain text; at most 20 commands, ids not repeated. `plugin check` lists them and refuses a bad one. Asking for a command the manifest does not declare is refused before anything starts. A command is not a permission: what a plugin may do is its manifest's `permissions`, so the one grant ("Always allow") covers every command, and the prompt still says what the plugin asks for. Try one from a terminal with `fanimate-cli plugin run <folder> --command title-card`.
+Each is an entry of its own in Window > Plugins (the plugin becomes a submenu) and in the command palette ("Plugin: Title Maker: Add a title card"), and the entry chosen is told to the plugin in the environment variable **`FANIMATE_COMMAND`** (`title-card`, `credits`). A plugin started with no command, such as `plugin run` without `--command`, has no such variable. An `id` is 1 to 40 letters, digits, dashes and underscores, starting with a letter or digit; a `title` is 1 to 60 characters of plain text; at most 20 commands, ids not repeated. `plugin check` lists them and refuses a bad one. Asking for a command the manifest does not declare is refused before anything starts. A command is not a permission: what a plugin may do is its manifest's `permissions`, so the one grant ("Always allow") covers every command, and the prompt still says what the plugin asks for. Try one from a terminal with `fanimate-cli plugin run <folder> --command title-card`.
 
 In Python: `import os; command = os.environ.get("FANIMATE_COMMAND")`; in Node: `process.env.FANIMATE_COMMAND`.
 
@@ -85,6 +85,6 @@ Installed plugins live in the `plugins` folder beside Fanimate's settings (`%APP
 
 ## Not built yet
 
-- Plugin panels, menu items in other menus, plugin commands in the command palette and on keyboard shortcuts, and a Console panel for a plugin's output. (Running a plugin from Window > Plugins, with the prompt that grants its permissions, is built.)
+- Plugin panels, menu items in other menus, plugin commands on keyboard shortcuts, and a Console panel for a plugin's output. (Running a plugin from Window > Plugins, with the prompt that grants its permissions, is built.)
 - A plugin gallery or any online source: packages are files you pass around.
 - Signing of packages.
