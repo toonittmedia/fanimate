@@ -334,7 +334,7 @@ pub const METHODS: &[Method] = &[
     ),
     edit(
         "paint",
-        "layer: number, points: [[x, y]], color: string (optional), size: number (optional), hardness: number (optional), flow: number (optional), erase: boolean (optional)",
+        "layer: number, points: [[x, y]], color: string (optional), size: number (optional), hardness: number (optional), flow: number (optional), erase: boolean (optional), spacing: number (optional)",
         "Paint round dabs along the points on a raster layer, or rub them out with erase; returns how many tiles changed",
     ),
     edit(
@@ -726,6 +726,7 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             optional(params, "hardness")?,
             optional(params, "flow")?,
             optional::<bool>(params, "erase")?.unwrap_or(false),
+            optional(params, "spacing")?,
         )?),
         "fill" => json_of(api.fill(
             param(params, "layer")?,

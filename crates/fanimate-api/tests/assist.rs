@@ -337,3 +337,25 @@ fn the_bucket_fills_inside_a_painted_outline_over_json_rpc() {
     assert!(ed.doc == before);
     assert_eq!(rpc::required("fill"), Some(fanimate_api::Permission::Edit));
 }
+
+#[test]
+fn paint_takes_a_spacing_and_refuses_nothing_for_an_odd_one() {
+    let mut ed = editor();
+    let made = call(&mut ed, "add_raster_layer", json!({"name": "Paint"}));
+    let id = made["result"].as_u64().unwrap();
+    for spacing in [json!(0.1), json!(1), json!(0), json!(-4), json!(1.0e9)] {
+        let a = call(
+            &mut ed,
+            "paint",
+            json!({"layer": id, "points": [[20, 20], [160, 20]], "size": 12, "spacing": spacing}),
+        );
+        // an odd spacing is held within range, so the stroke is still painted
+        assert!(a["result"].as_u64().is_some(), "{spacing}: {a}");
+    }
+    let bad = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[20, 20]], "spacing": "wide"}),
+    );
+    assert_eq!(bad["error"]["data"]["code"], "invalid_argument", "{bad}");
+}

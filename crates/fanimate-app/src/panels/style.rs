@@ -174,6 +174,28 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             }
             ui.end_row();
 
+            ui.label(RichText::new("Flow").color(muted));
+            let mut flow = d.brush_flow * 100.0;
+            if ui
+                .add(egui::Slider::new(&mut flow, 1.0..=100.0).suffix("%").max_decimals(0))
+                .on_hover_text("How strongly each dab of a raster brush lays paint. Lower builds the colour up gradually as you go over it again.")
+                .changed()
+            {
+                d.brush_flow = (flow / 100.0).clamp(0.0, 1.0);
+            }
+            ui.end_row();
+
+            ui.label(RichText::new("Spacing").color(muted));
+            let mut spacing = d.brush_spacing * 100.0;
+            if ui
+                .add(egui::Slider::new(&mut spacing, 5.0..=100.0).suffix("%").max_decimals(0))
+                .on_hover_text("The distance between the dabs of a raster brush, as a share of its size. Small is a smooth line; large shows separate dots.")
+                .changed()
+            {
+                d.brush_spacing = (spacing / 100.0).clamp(0.05, 1.0);
+            }
+            ui.end_row();
+
             ui.label(RichText::new("Pen pressure").color(muted));
             ui.checkbox(&mut d.pressure, "").on_hover_text(
                 "A pen's pressure sets the width of a brush stroke. Off draws an even width. A mouse has no pressure, so it draws at full width either way.",

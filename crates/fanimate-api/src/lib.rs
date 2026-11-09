@@ -1211,7 +1211,7 @@ impl<'a> Api<'a> {
 
     /// Paint round dabs along `points` (document units, at least one) on raster layer
     /// `layer`: `color` as `#RRGGBB` (black by default), `size` in pixels (12 by
-    /// default, 1 to 2000), `hardness` of the edge 0 to 1 (0.8), `flow` 0 to 1 (1), or take
+    /// default, 1 to 2000), `hardness` of the edge 0 to 1 (0.8), `flow` 0 to 1 (1), `spacing` between dabs as a fraction of the size, 0.05 to 1 (0.25), or take
     /// paint away with `erase`. Returns how many tiles changed.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
@@ -1223,6 +1223,7 @@ impl<'a> Api<'a> {
         hardness: Option<f32>,
         flow: Option<f32>,
         erase: bool,
+        spacing: Option<f32>,
     ) -> Result<usize, ApiError> {
         if self.editor.doc.find(LayerId(layer)).is_none() {
             return Err(ApiError::no_layer(layer));
@@ -1246,6 +1247,7 @@ impl<'a> Api<'a> {
             hardness: hardness.unwrap_or(0.8),
             flow: flow.unwrap_or(1.0),
             erase,
+            spacing: spacing.unwrap_or(0.25),
         };
         let points: Vec<fanimate_core::Vec2> = points
             .into_iter()

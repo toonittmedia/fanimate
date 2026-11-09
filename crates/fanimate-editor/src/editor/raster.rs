@@ -164,8 +164,9 @@ impl Editor {
             color: rgb8(d.line),
             size: if erase { d.eraser } else { d.width },
             hardness: if erase { 1.0 } else { d.hardness },
-            flow: if erase { 1.0 } else { d.line.a },
+            flow: if erase { 1.0 } else { d.line.a * d.brush_flow },
             erase,
+            spacing: d.brush_spacing,
         };
         self.start_raster_stroke(layer, brush, scale, to_layer);
         self.continue_raster_stroke(at, pressure);

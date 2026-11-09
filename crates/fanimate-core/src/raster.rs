@@ -91,6 +91,9 @@ pub struct Brush {
     pub flow: f32,
     /// Take paint away (lower alpha) instead of adding it.
     pub erase: bool,
+    /// The distance between dabs along a stroke, as a fraction of the size: 0.05 to 1. Close
+    /// dabs build up a smooth line (and, with a low flow, darker paint); far ones show as beads.
+    pub spacing: f32,
 }
 
 impl Default for Brush {
@@ -101,6 +104,7 @@ impl Default for Brush {
             hardness: 0.8,
             flow: 1.0,
             erase: false,
+            spacing: 0.25,
         }
     }
 }
@@ -114,6 +118,7 @@ impl Brush {
             size: fix(self.size, 1.0, 2000.0, 12.0),
             hardness: fix(self.hardness, 0.0, 1.0, 0.8),
             flow: fix(self.flow, 0.0, 1.0, 1.0),
+            spacing: fix(self.spacing, 0.05, 1.0, 0.25),
             ..self
         }
     }
@@ -257,7 +262,8 @@ impl Stroke {
         } else {
             1.0
         };
-        let spacing = (brush.sane().size * 0.25).max(1.0);
+        let brush_sane = brush.sane();
+        let spacing = (brush_sane.size * brush_sane.spacing).max(1.0);
         let Some((from, from_pressure)) = self.last else {
             painting.dab(to, brush, 0.25 + 0.75 * pressure, load);
             self.last = Some((to, pressure));
@@ -901,5 +907,36 @@ mod tests {
         let mut big = square_with_a_break(16);
         let _ = big.flood_fill_closing((20, 20), PAGE, [1, 2, 3], 0.0, 1, u32::MAX, &mut empty);
         assert!(big.dirty().count() <= MAX_TILES);
+    }
+
+    #[test]
+    fn closer_dabs_build_up_a_low_flow_stroke_and_the_spacing_is_kept_in_range() {
+        let run = |spacing: f32| {
+            let brush = Brush {
+                size: 20.0,
+                hardness: 1.0,
+                flow: 0.3,
+                spacing,
+                ..Brush::default()
+            };
+            let mut painting = Painting::default();
+            let mut stroke = Stroke::default();
+            for x in [20.0, 200.0] {
+                stroke.line(&mut painting, &brush, Vec2::new(x, 50.0), 1.0, &mut empty);
+            }
+            pixel(&painting, 110.0, 50.0)[3]
+        };
+        let (close, wide) = (run(0.1), run(1.0));
+        assert!(close > wide, "{close} against {wide}");
+        // nonsense spacing is held within range: never an endless loop or a hole in the line
+        for bad in [0.0, -3.0, f32::NAN, 1.0e9] {
+            let b = Brush {
+                spacing: bad,
+                ..Brush::default()
+            }
+            .sane();
+            assert!((0.05..=1.0).contains(&b.spacing), "{bad} gave {}", b.spacing);
+        }
+        assert_eq!(run(f32::NAN), run(0.25), "an unusable spacing is the default");
     }
 }
