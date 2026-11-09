@@ -196,6 +196,17 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             }
             ui.end_row();
 
+            ui.label(RichText::new("Smudge").color(muted));
+            let mut smudge = d.brush_smudge * 100.0;
+            if ui
+                .add(egui::Slider::new(&mut smudge, 0.0..=100.0).suffix("%").max_decimals(0))
+                .on_hover_text("Above 0 the raster Brush drags the paint under it along the stroke instead of laying the line colour. 0 paints normally.")
+                .changed()
+            {
+                d.brush_smudge = (smudge / 100.0).clamp(0.0, 1.0);
+            }
+            ui.end_row();
+
             ui.label(RichText::new("Spacing").color(muted));
             let mut spacing = d.brush_spacing * 100.0;
             if ui

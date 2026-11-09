@@ -404,3 +404,28 @@ fn the_eyedropper_takes_a_painted_pixels_colour_and_changes_no_document() {
     ed.doc.layers.push(v);
     assert!(!ed.pick_raster_colour(vid, Vec2::new(100.0, 50.0)));
 }
+
+#[test]
+fn the_brush_smudges_when_smudge_is_set_and_the_eraser_never_does() {
+    let mut ed = editor();
+    let id = paint_layer(&mut ed);
+    ed.draw.line = Color::rgb(1.0, 0.0, 0.0);
+    ed.draw.width = 30.0;
+    ed.draw.hardness = 1.0;
+    stroke(&mut ed, &[Vec2::new(50.0, 100.0), Vec2::new(110.0, 100.0)]);
+    // a blue brush with smudge on drags the red out and lays no blue
+    ed.draw.line = Color::rgb(0.0, 0.0, 1.0);
+    ed.draw.brush_smudge = 0.9;
+    stroke(&mut ed, &[Vec2::new(100.0, 100.0), Vec2::new(220.0, 100.0)]);
+    let dragged = pixel(&ed, id, Vec2::new(150.0, 100.0));
+    assert!(
+        dragged[3] > 0 && dragged[0] > 200 && dragged[2] < 30,
+        "{dragged:?}"
+    );
+    // the eraser rubs out as ever, smudge or not
+    ed.draw.eraser = 40.0;
+    assert!(ed.begin_erase(Vec2::new(70.0, 100.0), 1.0));
+    ed.erase_to(Vec2::new(90.0, 100.0));
+    ed.end_erase();
+    assert_eq!(pixel(&ed, id, Vec2::new(80.0, 100.0))[3], 0);
+}

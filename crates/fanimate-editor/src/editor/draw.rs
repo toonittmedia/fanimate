@@ -41,6 +41,9 @@ pub struct DrawStyle {
     /// How much pen pressure also lowers a raster brush's flow, 0 to 1 (0: pressure only changes
     /// the size). A tool setting, not part of a saved style.
     pub brush_flow_pressure: f32,
+    /// Smudge: above 0 the raster Brush drags the paint under it instead of laying the line
+    /// colour (0 to 1; the Eraser ignores it). A tool setting, not part of a saved style.
+    pub brush_smudge: f32,
     /// The distance between a raster brush's dabs as a fraction of its size, 0.05 to 1.
     pub brush_spacing: f32,
     /// How far a pixel's colour may differ from the one clicked (0 to 1) and still be filled by
@@ -67,6 +70,7 @@ impl Default for DrawStyle {
             hardness: 0.8,
             brush_flow: 1.0,
             brush_spacing: 0.25,
+            brush_smudge: 0.0,
             brush_flow_pressure: 0.0,
             fill_tolerance: 0.1,
             fill_gap: 3,
