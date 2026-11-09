@@ -314,12 +314,20 @@ fn the_bucket_fills_inside_a_painted_outline_over_json_rpc() {
     );
     assert_eq!(again["result"], 0);
     assert_eq!(ed.history.cursor(), steps);
+    // a gap is accepted: the fill still works (and is already done, so nothing changes)
+    let closing = call(
+        &mut ed,
+        "fill",
+        json!({"layer": id, "x": 200, "y": 200, "color": "#e63946", "gap": 4}),
+    );
+    assert_eq!(closing["result"], 0, "{closing}");
     // bad arguments are refused with the stable codes and change nothing
     let code = |a: &Value| a["error"]["data"]["code"].as_str().map(str::to_owned);
     let before = ed.doc.clone();
     for bad in [
         json!({"layer": id, "x": 1, "y": 1, "color": "red"}),
         json!({"layer": id, "x": 1, "y": 1, "color": "#000000", "tolerance": 2}),
+        json!({"layer": id, "x": 1, "y": 1, "color": "#000000", "gap": 9}),
         json!({"layer": 9999, "x": 1, "y": 1, "color": "#000000"}),
         json!({"layer": id, "x": 1, "color": "#000000"}),
     ] {

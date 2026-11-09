@@ -339,7 +339,7 @@ pub const METHODS: &[Method] = &[
     ),
     edit(
         "fill",
-        "layer: number, x: number, y: number, color: string, tolerance: number (optional, 0 to 1, default 0.1)",
+        "layer: number, x: number, y: number, color: string, tolerance: number (optional, 0 to 1, default 0.1), gap: number (optional, 0 to 8 pixels, default 0)",
         "Paint Bucket on a raster layer: fill the area joined to the point up to the lines around it and the page edge; returns how many pixels changed",
     ),
     edit(
@@ -733,6 +733,7 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             param(params, "y")?,
             param(params, "color")?,
             optional(params, "tolerance")?,
+            optional(params, "gap")?,
         )?),
         "clean_up_lines" => json_of(api.clean_up_lines(
             param(params, "layer")?,

@@ -1201,6 +1201,10 @@ fn point_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(V
 /// Paint Bucket on a raster layer: enough to cover a soft edge's near shades, not the line.
 const RASTER_FILL_TOLERANCE: f32 = 0.1;
 
+/// How many pixels the Paint Bucket thickens lines by on a raster layer, so a break in an outline up to
+/// twice this wide holds the paint in (a hand-drawn outline is rarely perfectly shut).
+const RASTER_FILL_GAP: u32 = 3;
+
 /// Paint Bucket and Eyedropper act on the shape clicked.
 fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2) {
     let tool = shell.editor.tool;
@@ -1222,10 +1226,13 @@ fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Ve
             .and_then(|l| shell.editor.raster_group_of(l))
     {
         let d = shell.editor.draw;
-        match shell
-            .editor
-            .fill_raster(group, p, d.fill.unwrap_or(d.line), RASTER_FILL_TOLERANCE)
-        {
+        match shell.editor.fill_raster_closing(
+            group,
+            p,
+            d.fill.unwrap_or(d.line),
+            RASTER_FILL_TOLERANCE,
+            RASTER_FILL_GAP,
+        ) {
             Ok(0) => shell.editor.set_status(
                 fanimate_editor::StatusKind::Info,
                 "Nothing to fill there: it is off the page or already that colour",

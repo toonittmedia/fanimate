@@ -231,6 +231,20 @@ impl Editor {
         color: Color,
         tolerance: f32,
     ) -> Result<usize, String> {
+        self.fill_raster_closing(layer, at, color, tolerance, 0)
+    }
+
+    /// [`fill_raster`](Self::fill_raster) that does not leak through gaps in a
+    /// line up to about twice `gap` pixels wide (`gap` is at most 8; see
+    /// `Painting::flood_fill_closing`).
+    pub fn fill_raster_closing(
+        &mut self,
+        layer: LayerId,
+        at: Vec2,
+        color: Color,
+        tolerance: f32,
+        gap: u32,
+    ) -> Result<usize, String> {
         if self.editing_blocked() {
             return Err("Pause the animation to fill.".to_owned());
         }
@@ -269,12 +283,13 @@ impl Editor {
         let changed = {
             let view = &*self;
             let mut load = |key: Key| view.tile_pixels(group, key);
-            painting.flood_fill(
+            painting.flood_fill_closing(
                 (seed.x.floor() as i64, seed.y.floor() as i64),
                 bounds,
                 rgb8(color),
                 tolerance,
                 1,
+                gap,
                 &mut load,
             )
         };

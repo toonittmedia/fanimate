@@ -282,3 +282,40 @@ fn the_bucket_never_spreads_past_the_page_and_refuses_what_it_cannot_fill() {
     ed.doc.layers.push(vector);
     assert!(ed.fill_raster(vid, Vec2::new(200.0, 200.0), blue, 0.0).is_err());
 }
+
+#[test]
+fn the_closing_bucket_stays_inside_an_outline_with_a_small_gap() {
+    let mut ed = editor();
+    let id = paint_layer(&mut ed);
+    // an outline of a box whose top edge has a break about 4 pixels wide
+    let brush = Brush {
+        color: [0, 0, 0],
+        size: 8.0,
+        hardness: 1.0,
+        flow: 1.0,
+        erase: false,
+    };
+    for line in [
+        vec![(100.0, 100.0), (190.0, 100.0)],
+        vec![
+            (210.0, 100.0),
+            (300.0, 100.0),
+            (300.0, 300.0),
+            (100.0, 300.0),
+            (100.0, 100.0),
+        ],
+    ] {
+        let points: Vec<Vec2> = line.iter().map(|(x, y)| Vec2::new(*x, *y)).collect();
+        ed.paint_raster(id, &points, brush).unwrap();
+    }
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    // the break is about 12 pixels wide: the plain fill leaks out of it, closing by 7 holds it
+    assert!(ed.fill_raster(id, Vec2::new(200.0, 200.0), red, 0.1).unwrap() > 500_000);
+    ed.run(Action::Undo);
+    assert_eq!(pixel(&ed, id, Vec2::new(200.5, 200.5))[3], 0, "undone");
+    let held = ed
+        .fill_raster_closing(id, Vec2::new(200.0, 200.0), red, 0.1, 7)
+        .unwrap();
+    assert!(held > 150 * 150 && held < 60_000, "{held}");
+    assert_eq!(pixel(&ed, id, Vec2::new(50.5, 50.5))[3], 0, "outside stays clear");
+}

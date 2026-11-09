@@ -282,6 +282,19 @@ impl Stroke {
     }
 }
 
+/// The up to eight pixels touching (`x`, `y`), corners included, in a `w` by `h` area: growing
+/// by these makes a square around a pixel, so a thickened line and a spread fill keep their corners.
+fn neighbours(x: usize, y: usize, w: usize, h: usize) -> impl Iterator<Item = (usize, usize)> {
+    (-1i64..=1)
+        .flat_map(|dy| (-1i64..=1).map(move |dx| (dx, dy)))
+        .filter(|d| *d != (0, 0))
+        .filter_map(move |(dx, dy)| {
+            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+            (nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h)
+                .then_some((nx as usize, ny as usize))
+        })
+}
+
 /// The most pixels one fill looks at: a 4096 by 4096 area.
 pub const MAX_FILL_PIXELS: i64 = 4096 * 4096;
 
@@ -306,6 +319,28 @@ impl Painting {
         color: [u8; 3],
         tolerance: f32,
         grow: u32,
+        load: &mut dyn FnMut(Key) -> Vec<u8>,
+    ) -> usize {
+        self.flood_fill_closing(seed, bounds, color, tolerance, grow, 0, load)
+    }
+
+    /// [`flood_fill`](Self::flood_fill) that does not leak through small gaps in
+    /// a line: the lines (every pixel that does not look like the seed) are
+    /// thickened by `gap` pixels (at most 8) for the flood, so a break up to
+    /// twice that wide in an outline holds the paint in, and the fill is then
+    /// spread back `gap` pixels over pixels that do look like the seed, so it
+    /// reaches the lines again. A seed that is itself within `gap` pixels of a
+    /// line is filled as if `gap` were 0. Narrow places (under about twice
+    /// `gap` wide) are only filled as far as the spread back reaches.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flood_fill_closing(
+        &mut self,
+        seed: (i64, i64),
+        bounds: FillBounds,
+        color: [u8; 3],
+        tolerance: f32,
+        grow: u32,
+        gap: u32,
         load: &mut dyn FnMut(Key) -> Vec<u8>,
     ) -> usize {
         let lim = i64::from(MAX_TILE_COORD) * i64::from(TILE);
@@ -358,19 +393,50 @@ impl Painting {
             }
             (0..4).all(|c| (i32::from(p[c]) - i32::from(seed_px[c])).abs() <= tol)
         };
+        let open: Vec<bool> = buf.as_chunks::<4>().0.iter().map(|p| alike(p)).collect();
+
+        // thicken the lines to hold the paint in across small gaps
+        let gap = gap.min(8);
+        let seed_i = (seed.1 - y0) as usize * w + (seed.0 - x0) as usize;
+        let mut floodable = open.clone();
+        let mut closing = false;
+        if gap > 0 {
+            let mut walled: Vec<bool> = open.iter().map(|o| !o).collect();
+            let mut frontier: Vec<usize> = (0..w * h).filter(|i| walled[*i]).collect();
+            for _ in 0..gap {
+                let mut next = Vec::new();
+                for i in frontier {
+                    let (x, y) = (i % w, i / w);
+                    for (nx, ny) in neighbours(x, y, w, h) {
+                        let j = ny * w + nx;
+                        if !walled[j] {
+                            walled[j] = true;
+                            next.push(j);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+            if !walled[seed_i] {
+                for (f, wall) in floodable.iter_mut().zip(&walled) {
+                    *f &= !wall;
+                }
+                closing = true;
+            }
+        }
 
         // scanline fill: spans of alike pixels, and the rows above and below them
         let mut mask = vec![false; w * h];
         let mut stack = vec![((seed.0 - x0) as usize, (seed.1 - y0) as usize)];
         while let Some((sx, sy)) = stack.pop() {
-            if mask[sy * w + sx] || !alike(&buf[at(sx, sy)..at(sx, sy) + 4]) {
+            if mask[sy * w + sx] || !floodable[sy * w + sx] {
                 continue;
             }
             let (mut l, mut r) = (sx, sx);
-            while l > 0 && !mask[sy * w + l - 1] && alike(&buf[at(l - 1, sy)..at(l - 1, sy) + 4]) {
+            while l > 0 && !mask[sy * w + l - 1] && floodable[sy * w + l - 1] {
                 l -= 1;
             }
-            while r + 1 < w && !mask[sy * w + r + 1] && alike(&buf[at(r + 1, sy)..at(r + 1, sy) + 4]) {
+            while r + 1 < w && !mask[sy * w + r + 1] && floodable[sy * w + r + 1] {
                 r += 1;
             }
             for x in l..=r {
@@ -382,12 +448,31 @@ impl Painting {
             {
                 let mut open = false;
                 for x in l..=r {
-                    let free = !mask[ny * w + x] && alike(&buf[at(x, ny)..at(x, ny) + 4]);
+                    let free = !mask[ny * w + x] && floodable[ny * w + x];
                     if free && !open {
                         stack.push((x, ny));
                     }
                     open = free;
                 }
+            }
+        }
+
+        // with the lines thickened, spread the fill back over the pixels that look like the seed
+        if closing {
+            let mut frontier: Vec<usize> = (0..w * h).filter(|i| mask[*i]).collect();
+            for _ in 0..gap {
+                let mut next = Vec::new();
+                for i in frontier {
+                    let (x, y) = (i % w, i / w);
+                    for (nx, ny) in neighbours(x, y, w, h) {
+                        let j = ny * w + nx;
+                        if !mask[j] && open[j] {
+                            mask[j] = true;
+                            next.push(j);
+                        }
+                    }
+                }
+                frontier = next;
             }
         }
 
@@ -776,5 +861,45 @@ mod tests {
         // a loader that returns a short tile is padded, never read past its end
         let mut q = Painting::default();
         assert!(q.flood_fill((5, 5), PAGE, [9, 9, 9], 0.0, 0, &mut |_| vec![1, 2]) > 0);
+    }
+
+    /// The hollow square with a break `width` pixels wide in the middle of its top edge.
+    fn square_with_a_break(width: i64) -> Painting {
+        let mut p = square();
+        for x in 20..20 + width {
+            let (key, px, py) = locate(Vec2::new(x as f32 + 0.5, 10.5));
+            let i = ((py * TILE + px) * 4) as usize;
+            p.tiles.get_mut(&key).unwrap()[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+        }
+        p
+    }
+
+    #[test]
+    fn a_gap_tolerant_fill_stays_in_across_a_small_break_and_a_wide_one_still_lets_it_out() {
+        // without closing, a 3 pixel break lets the fill spill over the whole page
+        let mut leaky = square_with_a_break(3);
+        assert!(leaky.flood_fill((20, 20), PAGE, [255, 0, 0], 0.0, 0, &mut empty) > 9000);
+        // closing by 2 holds it in: the inside, and a little way into the break, are filled
+        let mut held = square_with_a_break(3);
+        let n = held.flood_fill_closing((20, 20), PAGE, [255, 0, 0], 0.0, 0, 2, &mut empty);
+        assert!((19 * 19..19 * 19 + 20).contains(&n), "{n}");
+        assert_eq!(pixel(&held, 20.5, 20.5), [255, 0, 0, 255]);
+        assert_eq!(pixel(&held, 5.5, 5.5)[3], 0, "the outside stays clear");
+        assert_eq!(
+            pixel(&held, 20.5, 5.5)[3],
+            0,
+            "and so does the ground just beyond the break"
+        );
+        // a break of 8 is wider than closing by 2 can hold
+        let mut wide = square_with_a_break(8);
+        assert!(wide.flood_fill_closing((20, 20), PAGE, [255, 0, 0], 0.0, 0, 2, &mut empty) > 9000);
+        // closing by more than is allowed is the most allowed, and a seed right beside a line is
+        // filled as if there were no closing, not refused
+        let mut beside = square();
+        let n = beside.flood_fill_closing((11, 20), PAGE, [255, 0, 0], 0.0, 0, 5, &mut empty);
+        assert_eq!(n, 19 * 19);
+        let mut big = square_with_a_break(16);
+        let _ = big.flood_fill_closing((20, 20), PAGE, [1, 2, 3], 0.0, 1, u32::MAX, &mut empty);
+        assert!(big.dirty().count() <= MAX_TILES);
     }
 }

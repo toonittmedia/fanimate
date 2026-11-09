@@ -1260,7 +1260,8 @@ impl<'a> Api<'a> {
     /// Paint Bucket on raster layer `layer`: fill the area joined to the point (`x`, `y`)
     /// in document units, whose pixels look like the one there, with `color` (`#RRGGBB`),
     /// stopping at the lines around it and at the edge of the page. `tolerance` 0 to 1 is how
-    /// far a pixel's colour may differ and still be filled (0.1 by default). Returns how many
+    /// far a pixel's colour may differ and still be filled (0.1 by default). `gap` (0 to 8, 0 by
+    /// default) keeps the paint in across breaks in a line up to about twice that many pixels wide. Returns how many
     /// pixels changed: 0 when the point is off the page or already that colour.
     pub fn fill(
         &mut self,
@@ -1269,6 +1270,7 @@ impl<'a> Api<'a> {
         y: f32,
         color: String,
         tolerance: Option<f32>,
+        gap: Option<u32>,
     ) -> Result<usize, ApiError> {
         if self.editor.doc.find(LayerId(layer)).is_none() {
             return Err(ApiError::no_layer(layer));
@@ -1286,9 +1288,22 @@ impl<'a> Api<'a> {
                 "the tolerance is a number from 0 to 1",
             ));
         }
+        let gap = gap.unwrap_or(0);
+        if gap > 8 {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                "the gap is a whole number of pixels from 0 to 8",
+            ));
+        }
         self.edit("Fill", |ed| {
-            ed.fill_raster(LayerId(layer), fanimate_core::Vec2::new(x, y), color, tolerance)
-                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+            ed.fill_raster_closing(
+                LayerId(layer),
+                fanimate_core::Vec2::new(x, y),
+                color,
+                tolerance,
+                gap,
+            )
+            .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
         })
     }
 
