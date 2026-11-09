@@ -23,6 +23,7 @@
 pub mod history;
 mod io;
 pub mod journal;
+pub mod style_file;
 pub mod validate;
 pub mod zip;
 

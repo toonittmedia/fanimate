@@ -275,6 +275,42 @@ impl StyleBook {
         self.select(&default, draw);
     }
 
+    /// Add a style that came from a file and choose it. A name that is taken gets a number
+    /// ("Airbrush 2"), so importing never replaces what is there. Returns the name used.
+    pub fn import(&mut self, style: &StylePreset, draw: &mut DrawStyle) -> Result<String, StyleError> {
+        if !style.is_sound() {
+            return Err(StyleError::Empty);
+        }
+        let base = StylePreset::tidy_name(&style.name);
+        if base.is_empty() {
+            return Err(StyleError::Empty);
+        }
+        if self.saved.len() >= MAX_STYLES {
+            return Err(StyleError::Full);
+        }
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.get(&name).is_some() {
+            let suffix = format!(" {n}");
+            // keep within the name limit
+            let room = fanimate_core::MAX_STYLE_NAME.saturating_sub(suffix.chars().count());
+            name = format!(
+                "{}{suffix}",
+                base.chars().take(room).collect::<String>().trim_end()
+            );
+            n += 1;
+            if n > 1000 {
+                return Err(StyleError::Taken);
+            }
+        }
+        self.saved.push(StylePreset {
+            name: name.clone(),
+            ..style.clone()
+        });
+        self.select(&name, draw);
+        Ok(name)
+    }
+
     /// Add styles from elsewhere (a project that was opened) that this book
     /// does not have by name. Unusable ones are skipped. Returns how many
     /// were added.
@@ -576,5 +612,45 @@ mod tests {
         assert_eq!(now.brush_flow, 0.6);
         assert!(now.is_look_of(&old));
         assert!(!now.is_look_of(&preset));
+    }
+
+    #[test]
+    fn importing_a_style_adds_and_chooses_it_and_never_replaces_one_with_the_same_name() {
+        let mut book = StyleBook::default();
+        let mut draw = DrawStyle::default();
+        let incoming = DrawStyle {
+            hardness: 0.1,
+            ..inked()
+        }
+        .to_preset("Airbrush");
+        assert_eq!(book.import(&incoming, &mut draw).unwrap(), "Airbrush");
+        assert_eq!(book.current(), "Airbrush");
+        assert_eq!(draw.hardness, 0.1);
+        // the same name again is numbered, and the first is untouched
+        assert_eq!(book.import(&incoming, &mut draw).unwrap(), "Airbrush 2");
+        assert_eq!(book.import(&incoming, &mut draw).unwrap(), "Airbrush 3");
+        assert_eq!(book.saved().len(), 3);
+        // the built-in style's name counts as taken
+        let mut like_default = incoming.clone();
+        like_default.name = BUILT_IN.to_owned();
+        assert_eq!(book.import(&like_default, &mut draw).unwrap(), "Default 2");
+        // an unusable one and a full book are refused
+        let mut bad = incoming.clone();
+        bad.width = f32::NAN;
+        assert!(book.import(&bad, &mut draw).is_err());
+        let mut full = StyleBook::default();
+        for i in 0..fanimate_core::MAX_STYLES {
+            let mut s = incoming.clone();
+            s.name = format!("s{i}");
+            full.import(&s, &mut draw).unwrap();
+        }
+        assert_eq!(full.import(&incoming, &mut draw), Err(StyleError::Full));
+        // a long name is cut to leave room for the number
+        let mut long = incoming.clone();
+        long.name = "x".repeat(60);
+        let mut b2 = StyleBook::default();
+        b2.import(&long, &mut draw).unwrap();
+        let second = b2.import(&long, &mut draw).unwrap();
+        assert!(second.chars().count() <= 60 && second.ends_with(" 2"), "{second}");
     }
 }

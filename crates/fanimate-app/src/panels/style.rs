@@ -377,6 +377,13 @@ fn style_line(ui: &mut egui::Ui, shell: &mut Shell) {
                 }
             }
             ui.separator();
+            if item(ui, true, "Export style…") {
+                export_style(shell);
+            }
+            if item(ui, true, "Import style…") {
+                import_style(shell);
+            }
+            ui.separator();
             if item(ui, shell.styles.default_name() != current, "Set as default") {
                 shell.styles.set_default();
                 shell
@@ -389,6 +396,73 @@ fn style_line(ui: &mut egui::Ui, shell: &mut Shell) {
         })
         .on_hover_text("More");
     });
+}
+
+/// Style > Export style…: the chosen style as a `.fnstyle` file to share.
+fn export_style(shell: &mut Shell) {
+    let name = shell.styles.current().to_owned();
+    let Some(style) = shell.styles.get(&name).cloned() else {
+        return;
+    };
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Export this style")
+        .set_file_name(format!("{}.fnstyle", safe.trim()))
+        .add_filter("Fanimate style", &["fnstyle"])
+        .save_file()
+    else {
+        return;
+    };
+    match std::fs::write(&path, fanimate_fnm::style_file::to_text(&style)) {
+        Ok(()) => shell
+            .editor
+            .set_status(StatusKind::Success, format!("Exported \"{name}\"")),
+        Err(e) => shell.editor.set_status(
+            StatusKind::Error,
+            format!("The style could not be written to {}: {e}", path.display()),
+        ),
+    }
+}
+
+/// Style > Import style…: read a `.fnstyle` file, add it to the list and choose it.
+fn import_style(shell: &mut Shell) {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Import a style")
+        .add_filter("Fanimate style", &["fnstyle"])
+        .pick_file()
+    else {
+        return;
+    };
+    // never read more than a style file can be
+    let read = std::fs::File::open(&path).and_then(|f| {
+        use std::io::Read;
+        let mut text = String::new();
+        f.take(fanimate_fnm::style_file::MAX_STYLE_FILE as u64 + 1)
+            .read_to_string(&mut text)?;
+        Ok(text)
+    });
+    let result = match read {
+        Ok(text) => fanimate_fnm::style_file::from_text(&text),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    };
+    match result {
+        Ok(style) => match shell.styles.import(&style, &mut shell.editor.draw) {
+            Ok(name) => shell
+                .editor
+                .set_status(StatusKind::Success, format!("Imported \"{name}\"")),
+            Err(e) => shell.editor.set_status(StatusKind::Warning, e.message()),
+        },
+        Err(message) => shell.editor.set_status(StatusKind::Warning, message),
+    }
 }
 
 fn begin_naming(ui: &egui::Ui, text: &str, rename: bool) {
