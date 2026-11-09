@@ -235,3 +235,57 @@ sys.exit(0 if a["result"] == "from the handler" else 4)
     assert!(report.elapsed < Duration::from_secs(10));
     assert!(report.summary().contains("you stopped it"));
 }
+
+fn with_commands(dir: &Path, code: &str) -> Plugin {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.json"),
+        r#"{"name": "Cmds", "version": "1.0.0", "api": "0.1", "entry": "main.py", "timeout_seconds": 30,
+            "permissions": ["read"], "commands": [{"id": "wobble", "title": "Wobble"}, {"id": "calm", "title": "Calm down"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.py"), code).unwrap();
+    Plugin::load(dir).unwrap()
+}
+
+#[test]
+fn a_plugin_is_told_which_command_was_chosen() {
+    if find_python().is_none() {
+        eprintln!("skipped: no Python on this computer");
+        return;
+    }
+    let dir = temp("cmds").join("p");
+    let code = "import os, sys
+print('cmd=' + os.environ.get('FANIMATE_COMMAND', 'none'), file=sys.stderr)
+";
+    let plugin = with_commands(&dir, code);
+    for (chosen, expect) in [(Some("wobble"), "cmd=wobble"), (Some("calm"), "cmd=calm")] {
+        let options = RunOptions {
+            command: chosen.map(str::to_owned),
+            ..RunOptions::default()
+        };
+        let report = run(&mut editor(), &plugin, &options).unwrap();
+        assert!(report.succeeded(), "{report:?}");
+        assert!(report.stderr.contains(expect), "{}", report.stderr);
+    }
+    // with no command the plugin is told none
+    let report = run(&mut editor(), &plugin, &RunOptions::default()).unwrap();
+    assert!(report.stderr.contains("cmd=none"), "{}", report.stderr);
+}
+
+#[test]
+fn a_command_the_manifest_does_not_declare_is_refused_before_anything_starts() {
+    let dir = temp("nocmd").join("p");
+    let plugin = with_commands(
+        &dir,
+        "raise SystemExit('must not run')
+",
+    );
+    let options = RunOptions {
+        command: Some("rm-rf".to_owned()),
+        ..RunOptions::default()
+    };
+    let e = run(&mut editor(), &plugin, &options).unwrap_err();
+    assert!(matches!(e, PluginError::UnknownCommand { .. }), "{e}");
+    assert!(e.to_string().contains("rm-rf"));
+}

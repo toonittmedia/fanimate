@@ -94,6 +94,13 @@ fn check(args: &[String]) -> CmdResult {
         }
     );
     println!("may {}", describe(m.permissions));
+    // the rest of the manifest (the time limit, the commands) is checked too
+    let text = std::fs::read_to_string(&manifest_file).map_err(|e| format!("{}: {e}", manifest_file))?;
+    let plugin = fanimate_plugin::Plugin::from_text(&text, PathBuf::from("."))
+        .map_err(|e| format!("{}: {e}", manifest_file))?;
+    for c in &plugin.commands {
+        println!("command: {} ({})", c.id, c.title);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -171,7 +178,7 @@ fn new(args: &[String]) -> CmdResult {
 /// `run` edits the project and saves it when `--save` is given; `test` runs
 /// the plugin on a copy and never saves, then says what changed.
 fn run(args: &[String], real: bool) -> CmdResult {
-    let a = Args::parse(args, &["--save", "--timeout", "--folder"])?;
+    let a = Args::parse(args, &["--save", "--timeout", "--folder", "--command"])?;
     let (what, project) = match a.positional.as_slice() {
         [what] => (what, None),
         [what, project] => (what, Some(project.as_str())),
@@ -187,8 +194,16 @@ fn run(args: &[String], real: bool) -> CmdResult {
     let options = RunOptions {
         timeout: a.get::<u64>("--timeout")?.map(Duration::from_secs),
         save_to: save_to.as_ref().map(PathBuf::from),
+        command: a.get::<String>("--command")?,
         ..RunOptions::default()
     };
+    if options.command.is_none() && !plugin.commands.is_empty() {
+        let ids: Vec<&str> = plugin.commands.iter().map(|c| c.id.as_str()).collect();
+        eprintln!(
+            "fanimate-cli: this plugin declares commands ({}); running it with none. Choose one with --command <id>",
+            ids.join(", ")
+        );
+    }
     eprintln!(
         "fanimate-cli: {} {} may {}",
         plugin.manifest.name,

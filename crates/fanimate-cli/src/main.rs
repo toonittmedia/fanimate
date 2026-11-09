@@ -57,9 +57,9 @@ usage:
   fanimate-cli plugin list [--folder DIR]
   fanimate-cli plugin new <name> [--lang py|js|ts] [-o DIR]
                       (a starter plugin: plugin.json and an entry that adds a layer)
-  fanimate-cli plugin test <folder|name> [<project.fnm>] [--timeout S]
+  fanimate-cli plugin test <folder|name> [<project.fnm>] [--timeout S] [--command ID]
                       (runs the plugin on the project, or an empty one, and says what it did; never saves)
-  fanimate-cli plugin run <folder|name> [<project.fnm>] [--save <out.fnm>] [--timeout S] [--folder DIR]
+  fanimate-cli plugin run <folder|name> [<project.fnm>] [--save <out.fnm>] [--timeout S] [--folder DIR] [--command ID]
                       (runs the plugin as a separate program that may do only what its manifest asks for)
   fanimate-cli plugin pack <folder> [-o <name.fnplugin>]
   fanimate-cli plugin install <name.fnplugin> [--folder DIR]

@@ -40,6 +40,10 @@ pub struct RunOptions {
     pub save_to: Option<PathBuf>,
     /// Set from another thread to stop the plugin (the Stop button in the app).
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The id of one of the plugin's declared commands, told to it in
+    /// `$FANIMATE_COMMAND`. None runs the plugin with no command (the variable
+    /// is removed, so a value in Fanimate's own environment never reaches it).
+    pub command: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -49,6 +53,7 @@ impl Default for RunOptions {
             max_calls: 100_000,
             save_to: None,
             cancel: None,
+            command: None,
         }
     }
 }
@@ -158,6 +163,14 @@ pub fn run_with(
     options: &RunOptions,
     handler: &mut dyn FnMut(&str, &mut RunReport) -> Handled,
 ) -> Result<RunReport, PluginError> {
+    if let Some(command) = &options.command
+        && plugin.command(command).is_none()
+    {
+        return Err(PluginError::UnknownCommand {
+            plugin: plugin.manifest.name.clone(),
+            command: command.clone(),
+        });
+    }
     let kind = plugin
         .entry_kind()
         .ok_or_else(|| PluginError::NoEntry(plugin.manifest.name.clone()))?;
@@ -171,6 +184,10 @@ pub fn run_with(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    match &options.command {
+        Some(command) => cmd.env("FANIMATE_COMMAND", command),
+        None => cmd.env_remove("FANIMATE_COMMAND"),
+    };
     no_window(&mut cmd);
     let child = cmd.spawn().map_err(PluginError::Spawn)?;
     Ok(serve(plugin, options, child, handler))

@@ -79,6 +79,8 @@ pub enum PluginError {
     EntryMissing(PathBuf),
     #[error("the plugin's entry {} leads outside the plugin's folder", .0.display())]
     EntryEscapes(PathBuf),
+    #[error("the plugin \"{plugin}\" has no command \"{command}\"")]
+    UnknownCommand { plugin: String, command: String },
     #[error("{0}")]
     NoInterpreter(String),
     #[error("the plugin could not be started: {0}")]
@@ -103,6 +105,23 @@ pub struct Plugin {
     /// The manifest's `timeout_seconds` (at most [`MAX_TIMEOUT_SECONDS`]), or
     /// [`DEFAULT_TIMEOUT`].
     pub timeout: Duration,
+    /// The commands the manifest declares (`commands`), each its own entry in
+    /// Fanimate's Plugins menu; the plugin is told which one was chosen in
+    /// `$FANIMATE_COMMAND`. Empty when it declares none.
+    pub commands: Vec<PluginCommand>,
+}
+
+/// The most commands a plugin may declare.
+pub const MAX_COMMANDS: usize = 20;
+
+/// One thing a plugin can be asked to do, as its manifest declares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginCommand {
+    /// What the plugin is told (`$FANIMATE_COMMAND`): 1 to 40 letters, digits,
+    /// dashes and underscores, starting with a letter or digit.
+    pub id: String,
+    /// What the menu shows: 1 to 60 characters.
+    pub title: String,
 }
 
 impl Plugin {
@@ -126,11 +145,18 @@ impl Plugin {
     pub fn from_text(text: &str, dir: PathBuf) -> Result<Self, String> {
         let manifest = Manifest::parse(text)?;
         let timeout = timeout_of(text)?;
+        let commands = commands_of(text)?;
         Ok(Self {
             manifest,
             dir,
             timeout,
+            commands,
         })
+    }
+
+    /// The declared command with this id.
+    pub fn command(&self, id: &str) -> Option<&PluginCommand> {
+        self.commands.iter().find(|c| c.id == id)
     }
 
     /// How the entry is started, when the manifest names one.
@@ -188,6 +214,57 @@ fn timeout_of(text: &str) -> Result<Duration, String> {
             )),
         },
     }
+}
+
+/// The manifest's `commands`: a list of `{"id": "...", "title": "..."}`. Left out,
+/// none. Ids are short names that are safe to pass in the environment and
+/// are not repeated; titles are plain text for a menu.
+fn commands_of(text: &str) -> Result<Vec<PluginCommand>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("the manifest is not valid JSON: {e}"))?;
+    let list = match value.get("commands") {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(serde_json::Value::Array(list)) => list,
+        Some(_) => return Err("\"commands\" must be a list of {\"id\", \"title\"}".to_owned()),
+    };
+    if list.len() > MAX_COMMANDS {
+        return Err(format!("a plugin may declare at most {MAX_COMMANDS} commands"));
+    }
+    let mut out: Vec<PluginCommand> = Vec::new();
+    for (i, item) in list.iter().enumerate() {
+        let field = |name: &str| item.get(name).and_then(serde_json::Value::as_str);
+        let (Some(id), Some(title)) = (field("id"), field("title")) else {
+            return Err(format!(
+                "command {} needs a text \"id\" and a text \"title\"",
+                i + 1
+            ));
+        };
+        let id_ok = !id.is_empty()
+            && id.len() <= 40
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+        if !id_ok {
+            return Err(format!(
+                "command \"{id}\": an id is 1 to 40 letters, digits, dashes and underscores, starting with a letter or digit"
+            ));
+        }
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 60 || title.chars().any(char::is_control) {
+            return Err(format!(
+                "command \"{id}\": a title is 1 to 60 characters of plain text"
+            ));
+        }
+        if out.iter().any(|c| c.id == id) {
+            return Err(format!("the command id \"{id}\" is used twice"));
+        }
+        out.push(PluginCommand {
+            id: id.to_owned(),
+            title: title.to_owned(),
+        });
+    }
+    Ok(out)
 }
 
 /// What starts a plugin's entry, chosen by its extension.
@@ -590,5 +667,66 @@ mod tests {
             assert!(dir.ends_with("plugins"), "{}", dir.display());
         }
         assert_eq!(folders(&[PathBuf::from("x")]).last(), Some(&PathBuf::from("x")));
+    }
+
+    fn with_commands(commands: &str) -> Result<Plugin, String> {
+        let text = format!(
+            r#"{{"name": "T", "version": "1.0", "api": "0.1", "entry": "main.py", "permissions": [], "commands": {commands}}}"#
+        );
+        Plugin::from_text(&text, PathBuf::from("."))
+    }
+
+    #[test]
+    fn declared_commands_are_read_with_their_ids_and_titles() {
+        let none = Plugin::from_text(
+            r#"{"name": "T", "version": "1.0", "api": "0.1", "entry": "main.py", "permissions": []}"#,
+            PathBuf::from("."),
+        )
+        .unwrap();
+        assert!(none.commands.is_empty());
+        let p = with_commands(
+            r#"[{"id": "wobble", "title": " Wobble the layer "}, {"id": "n-2_x", "title": "Number two"}]"#,
+        )
+        .unwrap();
+        assert_eq!(p.commands.len(), 2);
+        assert_eq!(p.command("wobble").unwrap().title, "Wobble the layer");
+        assert!(p.command("missing").is_none());
+        assert_eq!(with_commands("null").unwrap().commands.len(), 0);
+    }
+
+    #[test]
+    fn bad_commands_are_refused_with_a_message_that_names_the_problem() {
+        let long_id = "x".repeat(41);
+        let long_title = "y".repeat(61);
+        let many: Vec<String> = (0..=MAX_COMMANDS)
+            .map(|i| format!(r#"{{"id": "c{i}", "title": "C"}}"#))
+            .collect();
+        for (bad, expect) in [
+            ("{}", "must be a list"),
+            ("[1]", "needs a text"),
+            (r#"[{"id": "a"}]"#, "needs a text"),
+            (r#"[{"id": "", "title": "T"}]"#, "an id is 1 to 40"),
+            (r#"[{"id": "a b", "title": "T"}]"#, "an id is 1 to 40"),
+            (r#"[{"id": "-a", "title": "T"}]"#, "an id is 1 to 40"),
+            (r#"[{"id": "a=b", "title": "T"}]"#, "an id is 1 to 40"),
+            (
+                &format!(r#"[{{"id": "{long_id}", "title": "T"}}]"#),
+                "an id is 1 to 40",
+            ),
+            (r#"[{"id": "a", "title": "  "}]"#, "a title is"),
+            (
+                &format!(r#"[{{"id": "a", "title": "{long_title}"}}]"#),
+                "a title is",
+            ),
+            (r#"[{"id": "a", "title": "x\u0007y"}]"#, "a title is"),
+            (
+                r#"[{"id": "a", "title": "A"}, {"id": "a", "title": "B"}]"#,
+                "used twice",
+            ),
+            (&format!("[{}]", many.join(",")), "at most"),
+        ] {
+            let e = with_commands(bad).unwrap_err();
+            assert!(e.contains(expect), "{bad}: {e}");
+        }
     }
 }

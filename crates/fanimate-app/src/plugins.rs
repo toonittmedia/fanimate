@@ -68,8 +68,12 @@ pub struct Plugins {
     pub problems: Vec<(PathBuf, String)>,
     /// A plugin waiting for the user's yes.
     asking: Option<Plugin>,
+    /// The id of the command chosen with it, if the plugin declares commands.
+    asking_command: Option<String>,
     /// A plugin to start on the next frame (it needs the frame's context).
     start_next: Option<Plugin>,
+    /// The command to start it with.
+    start_command: Option<String>,
     grants: GrantsFile,
     running: Option<Running>,
     jobs_tx: Sender<Job>,
@@ -84,7 +88,9 @@ impl Default for Plugins {
             found: Vec::new(),
             problems: Vec::new(),
             asking: None,
+            asking_command: None,
             start_next: None,
+            start_command: None,
             grants: GrantsFile::default(),
             running: None,
             jobs_tx,
@@ -151,15 +157,19 @@ impl Plugins {
         }
     }
 
-    /// The user picked `plugin`: run it if it was allowed before, else ask.
-    fn request(&mut self, plugin: Plugin) {
+    /// The user picked `plugin` (and one of its `command`s): run it if it was
+    /// allowed before, else ask. A grant covers the plugin whichever command is chosen:
+    /// what it may do is the manifest's permissions, not the command.
+    fn request(&mut self, plugin: Plugin, command: Option<String>) {
         if self.running.is_some() {
             return;
         }
         if self.allowed(&plugin) {
             self.start_next = Some(plugin);
+            self.start_command = command;
         } else {
             self.asking = Some(plugin);
+            self.asking_command = command;
         }
     }
 }
@@ -174,22 +184,38 @@ pub fn menu(ui: &mut egui::Ui, shell: &mut Shell) {
         ui.add_enabled(false, egui::Button::new("No plugins installed"));
     }
     let no_project = shell.docs.home_front();
-    let mut chosen = None;
+    let mut chosen: Option<(usize, Option<String>)> = None;
     for (i, plugin) in shell.plugins.found.iter().enumerate() {
         let m = &plugin.manifest;
         let can = !running && m.entry.is_some() && !no_project;
-        let mut r = ui.add_enabled(can, egui::Button::new(format!("{} {}", m.name, m.version)));
-        if !m.description.is_empty() {
-            r = r.on_hover_text(&m.description);
-        }
-        if r.clicked() {
-            chosen = Some(i);
-            ui.close();
+        let label = format!("{} {}", m.name, m.version);
+        if plugin.commands.is_empty() {
+            let mut r = ui.add_enabled(can, egui::Button::new(label));
+            if !m.description.is_empty() {
+                r = r.on_hover_text(&m.description);
+            }
+            if r.clicked() {
+                chosen = Some((i, None));
+                ui.close();
+            }
+        } else {
+            // a plugin that declares commands has one menu entry for each
+            let shown = ui.menu_button(label, |ui| {
+                for command in &plugin.commands {
+                    if ui.add_enabled(can, egui::Button::new(&command.title)).clicked() {
+                        chosen = Some((i, Some(command.id.clone())));
+                        ui.close();
+                    }
+                }
+            });
+            if !m.description.is_empty() {
+                shown.response.on_hover_text(&m.description);
+            }
         }
     }
-    if let Some(i) = chosen {
+    if let Some((i, command)) = chosen {
         let plugin = shell.plugins.found[i].clone();
-        shell.plugins.request(plugin);
+        shell.plugins.request(plugin, command);
     }
     ui.separator();
     if running && ui.button("Stop Plugin").clicked() {
@@ -267,8 +293,14 @@ fn start(ctx: &egui::Context, shell: &mut Shell, plugin: Plugin) {
     // nothing is edited while the animation plays, so a plugin starts with it paused
     shell.editor.playing = false;
     let cancel = Arc::new(AtomicBool::new(false));
+    let command = shell
+        .plugins
+        .start_command
+        .take()
+        .filter(|c| plugin.command(c).is_some());
     let options = RunOptions {
         cancel: Some(cancel.clone()),
+        command: command.clone(),
         ..RunOptions::default()
     };
     let (done_tx, done) = mpsc::channel();
@@ -298,7 +330,10 @@ fn start(ctx: &egui::Context, shell: &mut Shell, plugin: Plugin) {
             .set_status(StatusKind::Error, format!("The plugin could not be started: {e}"));
         return;
     }
-    let name = plugin.manifest.name.clone();
+    let name = match command.as_deref().and_then(|c| plugin.command(c)) {
+        Some(c) => format!("{}: {}", plugin.manifest.name, c.title),
+        None => plugin.manifest.name.clone(),
+    };
     shell.plugins.running = Some(Running {
         name: name.clone(),
         permissions: plugin.manifest.permissions,
@@ -381,6 +416,7 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
     };
     let p = shell.palette;
     let m = &plugin.manifest;
+    let command = shell.plugins.asking_command.clone();
     let (mut once, mut always, mut cancel) = (false, false, false);
     let closed = kit::modal(
         ctx,
@@ -391,6 +427,9 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
         Backdrop::Ignored,
         |ui| {
             ui.label(RichText::new(format!("{} {}", m.name, m.version)).strong());
+            if let Some(c) = command.as_deref().and_then(|c| plugin.command(c)) {
+                ui.label(format!("Command: {}", c.title));
+            }
             if !m.description.is_empty() {
                 ui.label(RichText::new(&m.description).color(p.text_muted));
             }
@@ -431,8 +470,10 @@ pub fn window(ctx: &egui::Context, shell: &mut Shell) {
             shell.plugins.remember(&plugin);
         }
         shell.plugins.start_next = Some(plugin);
+        shell.plugins.start_command = shell.plugins.asking_command.take();
     } else if closed || cancel {
         shell.plugins.asking = None;
+        shell.plugins.asking_command = None;
     }
 }
 
@@ -469,11 +510,35 @@ mod tests {
         assert!(!plugins.allowed(&plugin("1.1", r#""read", "edit""#)));
         assert!(!plugins.allowed(&plugin("1.0", r#""read", "edit", "save""#)));
         // a plugin already allowed starts at once, another is asked about
-        plugins.request(one.clone());
+        plugins.request(one.clone(), None);
         assert!(plugins.start_next.is_some() && plugins.asking.is_none());
         let mut fresh = Plugins::default();
-        fresh.request(one);
+        fresh.request(one, None);
         assert!(fresh.start_next.is_none() && fresh.asking.is_some());
+    }
+
+    #[test]
+    fn a_chosen_command_travels_with_the_request_and_one_grant_covers_every_command() {
+        let text = r#"{"name": "Tool", "version": "1.0", "api": "0.1", "entry": "main.py", "permissions": ["read"],
+            "commands": [{"id": "wobble", "title": "Wobble"}, {"id": "calm", "title": "Calm"}]}"#;
+        let tool = Plugin::from_text(text, PathBuf::from(".")).unwrap();
+        // not allowed yet: the command waits with the question
+        let mut plugins = Plugins::default();
+        plugins.request(tool.clone(), Some("wobble".into()));
+        assert!(plugins.asking.is_some() && plugins.start_next.is_none());
+        assert_eq!(plugins.asking_command.as_deref(), Some("wobble"));
+        // after "always allow", any command of it starts at once (the grant is put in
+        // memory: `remember` writes the user's real grants file, which a test must not)
+        plugins.grants.allowed.push(Grant {
+            name: "Tool".into(),
+            version: "1.0".into(),
+            permissions: names(tool.manifest.permissions),
+        });
+        plugins.asking = None;
+        plugins.asking_command = None;
+        plugins.request(tool, Some("calm".into()));
+        assert!(plugins.start_next.is_some() && plugins.asking.is_none());
+        assert_eq!(plugins.start_command.as_deref(), Some("calm"));
     }
 
     #[test]

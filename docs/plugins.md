@@ -14,7 +14,7 @@ title-maker/
   main.py         the entry: the program Fanimate starts
 ```
 
-`plugin.json` is the manifest described in [scripting.md](scripting.md#permissions-and-plugins), plus one optional field, `timeout_seconds` (1 to 600, default 60), the longest a run may take:
+`plugin.json` is the manifest described in [scripting.md](scripting.md#permissions-and-plugins), plus two optional fields: `timeout_seconds` (1 to 600, default 60), the longest a run may take, and `commands` (see below):
 
 ```json
 {
@@ -29,6 +29,21 @@ title-maker/
 ```
 
 The entry is started by what its extension says: `.py` by Python 3 (`$FANIMATE_PYTHON`, else `python`, `py -3` or `python3`), `.js`, `.mjs` and `.cjs` by Node (`$FANIMATE_NODE`, else `node`), `.ts` and `.mts` by Node 22.6 or later (which strips the types), and anything else is run as a program of its own. The entry must be a file inside the plugin's folder.
+
+## Commands a plugin declares
+
+A plugin that does several things can list them in the manifest:
+
+```json
+"commands": [
+  {"id": "title-card", "title": "Add a title card"},
+  {"id": "credits", "title": "Add rolling credits"}
+]
+```
+
+Each is an entry of its own in Window > Plugins (the plugin becomes a submenu), and the entry chosen is told to the plugin in the environment variable **`FANIMATE_COMMAND`** (`title-card`, `credits`). A plugin started with no command, such as `plugin run` without `--command`, has no such variable. An `id` is 1 to 40 letters, digits, dashes and underscores, starting with a letter or digit; a `title` is 1 to 60 characters of plain text; at most 20 commands, ids not repeated. `plugin check` lists them and refuses a bad one. Asking for a command the manifest does not declare is refused before anything starts. A command is not a permission: what a plugin may do is its manifest's `permissions`, so the one grant ("Always allow") covers every command, and the prompt still says what the plugin asks for. Try one from a terminal with `fanimate-cli plugin run <folder> --command title-card`.
+
+In Python: `import os; command = os.environ.get("FANIMATE_COMMAND")`; in Node: `process.env.FANIMATE_COMMAND`.
 
 ## How it talks to Fanimate
 
@@ -51,8 +66,8 @@ A run ends when the plugin exits, asks to `quit`, or passes a limit, and then th
 ```
 fanimate-cli plugin new "Title Maker" [--lang py|js|ts] [-o DIR]    a starter plugin
 fanimate-cli plugin check <folder|plugin.json>                      what it asks for, or what is wrong
-fanimate-cli plugin test <folder|name> [project.fnm]                run it on a copy and say what it did; never saves
-fanimate-cli plugin run <folder|name> [project.fnm] [--save out.fnm]
+fanimate-cli plugin test <folder|name> [project.fnm] [--command ID]     run it on a copy and say what it did; never saves
+fanimate-cli plugin run <folder|name> [project.fnm] [--save out.fnm] [--command ID]
 fanimate-cli plugin pack <folder> [-o name.fnplugin]
 fanimate-cli plugin install <name.fnplugin> [--folder DIR]
 fanimate-cli plugin list [--folder DIR]
@@ -70,6 +85,6 @@ Installed plugins live in the `plugins` folder beside Fanimate's settings (`%APP
 
 ## Not built yet
 
-- Running plugins from the app, with a menu and the prompt that grants a plugin its permissions (the grant is the user's choice, shown with what each permission means).
+- Plugin panels, menu items in other menus, plugin commands in the command palette and on keyboard shortcuts, and a Console panel for a plugin's output. (Running a plugin from Window > Plugins, with the prompt that grants its permissions, is built.)
 - A plugin gallery or any online source: packages are files you pass around.
 - Signing of packages.
