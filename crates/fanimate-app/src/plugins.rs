@@ -95,7 +95,7 @@ impl Default for Plugins {
 }
 
 fn grants_path() -> Option<PathBuf> {
-    eframe::storage_dir("Fanimate").map(|d| d.join(GRANTS_FILE))
+    crate::data::dir().map(|d| d.join(GRANTS_FILE))
 }
 
 fn names(p: Permissions) -> Vec<String> {

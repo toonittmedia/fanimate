@@ -162,7 +162,7 @@ fn update(ctx: &egui::Context, shell: &mut Shell) {
                     (Some(_), _) => {
                         ui.horizontal(|ui| {
                             if ui.add(kit::primary(&p, "Download")).clicked()
-                                && let Some(dir) = eframe::storage_dir("Fanimate")
+                                && let Some(dir) = crate::data::dir()
                             {
                                 shell.updater.download(r.clone(), dir.join("updates"));
                                 close = true;

@@ -22,6 +22,7 @@ mod assistant;
 mod audio;
 mod canvas_gpu;
 mod crash;
+mod data;
 mod dialogs;
 mod docs;
 mod doctabs;
@@ -213,6 +214,10 @@ fn main() -> eframe::Result {
         viewport,
         wgpu_options,
         persist_window: args.bench_bones.is_none(),
+        // the settings file follows FANIMATE_DATA_DIR too (see data.rs)
+        persistence_path: std::env::var_os("FANIMATE_DATA_DIR")
+            .filter(|v| !v.is_empty())
+            .map(|d| std::path::PathBuf::from(d).join("app.ron")),
         ..Default::default()
     };
     let opts = app::Options {

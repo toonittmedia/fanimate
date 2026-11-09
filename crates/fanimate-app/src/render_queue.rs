@@ -29,7 +29,7 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(150);
 
 /// The queue folder, beside the crash recovery folder.
 pub fn root() -> Option<PathBuf> {
-    eframe::storage_dir("Fanimate").map(|dir| dir.join("render-queue"))
+    crate::data::dir().map(|dir| dir.join("render-queue"))
 }
 
 pub fn queue() -> Option<Queue> {

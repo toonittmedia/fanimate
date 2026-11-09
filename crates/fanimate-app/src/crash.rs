@@ -33,7 +33,7 @@ pub fn set_gpu(name: &str) {
 
 /// The crash folder, beside the settings.
 pub fn dir() -> Option<PathBuf> {
-    eframe::storage_dir("Fanimate").map(|d| d.join("crashes"))
+    crate::data::dir().map(|d| d.join("crashes"))
 }
 
 /// Install the panic hook that writes a report before the default hook

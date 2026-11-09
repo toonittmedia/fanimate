@@ -46,7 +46,7 @@ impl Claim {
 
 /// Where the lock and the inbox live: beside the app's settings.
 fn folder() -> Option<PathBuf> {
-    eframe::storage_dir("Fanimate").map(|dir| dir.join("instance"))
+    crate::data::dir().map(|dir| dir.join("instance"))
 }
 
 /// Become the one Fanimate, or hand `files` to the one that is running.

@@ -75,7 +75,7 @@ impl Default for Thumbs {
         let (embedded_tx, embedded) = channel();
         std::thread::spawn(move || worker(job_rx, done_tx, embedded_tx));
         Self {
-            cache: eframe::storage_dir("Fanimate").map(|d| d.join("thumbnails")),
+            cache: crate::data::dir().map(|d| d.join("thumbnails")),
             jobs,
             done,
             embedded,

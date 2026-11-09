@@ -19,7 +19,7 @@ const BACKSTOP: Duration = Duration::from_secs(10);
 
 /// Where journals live: beside the app's settings.
 pub fn root() -> Option<PathBuf> {
-    eframe::storage_dir("Fanimate").map(|dir| dir.join("recovery"))
+    crate::data::dir().map(|dir| dir.join("recovery"))
 }
 
 /// One document's journal. The live document's lives in [`Recovery`]; a

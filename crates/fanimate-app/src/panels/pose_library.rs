@@ -17,7 +17,7 @@ use crate::app::Shell;
 const FILE: &str = "poses.json";
 
 fn path() -> Option<PathBuf> {
-    eframe::storage_dir("Fanimate").map(|dir| dir.join(FILE))
+    crate::data::dir().map(|dir| dir.join(FILE))
 }
 
 /// The library on disk. A missing file is an empty library; a file that

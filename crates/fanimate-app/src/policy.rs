@@ -55,7 +55,7 @@ pub fn load() -> (Policy, Option<String>) {
     {
         files.push(dir.join(ADMIN_FILE));
     }
-    if let Some(dir) = eframe::storage_dir("Fanimate") {
+    if let Some(dir) = crate::data::dir() {
         files.push(dir.join(USER_FILE));
     }
     load_from(&files)

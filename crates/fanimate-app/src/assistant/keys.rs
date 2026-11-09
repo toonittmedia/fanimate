@@ -43,7 +43,7 @@ impl Keys {
     /// The user's data folder.
     pub fn new() -> Self {
         Self {
-            dir: eframe::storage_dir("Fanimate"),
+            dir: crate::data::dir(),
         }
     }
 
