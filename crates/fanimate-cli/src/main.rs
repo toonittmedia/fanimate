@@ -33,7 +33,9 @@ usage:
                        runtime format for games and the web: slots with baked transform keys, see
                        docs/spec/runtime.md; --tolerance N leaves out keys the player would not miss (N document
                        units of drift). -o out.otio is an OpenTimelineIO timeline with the sounds
-                       written beside it; --video names the rendered movie it points at)
+                       written beside it; --video names the rendered movie it points at. -o out.ora is an
+                       OpenRaster file of the raster and picture layers as on --frame N, for Krita and other
+                       painting programs; it lists what it left out)
   fanimate-cli sheet <project.fnm> -o <sheet.png> [--clips walk=1-24,idle=25-48] [--width W] [--height H]
                       [--padding N] [--max-width N] [--no-trim]
                       (a sprite sheet for games: the frames of the clips packed into one PNG, and
@@ -569,6 +571,27 @@ fn export_otio(a: &Args, path: &str, out: &Path) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Export the raster and picture layers of `path`, as on `--frame` (the first
+/// frame by default), as an OpenRaster file, listing what it could not carry.
+fn export_ora(a: &Args, path: &str, out: &Path) -> CmdResult {
+    let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
+    if !report.is_clean() {
+        eprint!("{report}");
+    }
+    let frame = a.get("--frame")?.unwrap_or(doc.start);
+    let (bytes, notes) = fanimate_export::ora::write(&doc, frame)?;
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!(
+        "wrote {} ({} KB, frame {frame})",
+        out.display(),
+        bytes.len().div_ceil(1024)
+    );
+    for line in notes.lines() {
+        println!("  {line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Export `path` as an animated SVG (SMIL), listing what it could not carry.
 fn export_animated_svg(a: &Args, path: &str, out: &Path) -> CmdResult {
     let (doc, report) = fanimate_fnm::load(path).map_err(|e| e.to_string())?;
@@ -714,6 +737,7 @@ fn export(args: &[String]) -> CmdResult {
             "--ffmpeg",
             "--video",
             "--tolerance",
+            "--frame",
         ],
     )?;
     let [path] = a.positional.as_slice() else {
@@ -736,6 +760,9 @@ fn export(args: &[String]) -> CmdResult {
     }
     if a.get::<String>("--format")?.is_none() && ext == "otio" {
         return export_otio(&a, path, &out);
+    }
+    if a.get::<String>("--format")?.is_none() && ext == "ora" {
+        return export_ora(&a, path, &out);
     }
     let format = match a.get::<String>("--format")? {
         Some(name) => parse_format(&name)?,

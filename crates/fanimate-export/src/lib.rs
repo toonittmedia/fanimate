@@ -24,6 +24,7 @@ mod avi;
 pub mod ffmpeg;
 pub mod job;
 pub mod lottie;
+pub mod ora;
 pub mod otio;
 pub mod queue;
 pub mod report;

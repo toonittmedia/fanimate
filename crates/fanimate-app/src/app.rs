@@ -1064,6 +1064,7 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             }
             Action::ExportRuntime => crate::web_export::start(shell, crate::web_export::Kind::Runtime),
             Action::ExportOtio => crate::web_export::start(shell, crate::web_export::Kind::Otio),
+            Action::ExportOpenRaster => crate::web_export::start(shell, crate::web_export::Kind::OpenRaster),
             Action::LipSync => crate::lipsync::start(shell),
             Action::ExportVideo => {
                 shell.ui.export = Some(crate::export::ExportForm::new(shell, shell.export_format));

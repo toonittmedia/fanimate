@@ -10,7 +10,7 @@ use std::sync::mpsc;
 
 use fanimate_editor::StatusKind;
 use fanimate_export::sheet::{self, Clip, Options};
-use fanimate_export::{Report, lottie, otio, runtime, svg, svg_animated};
+use fanimate_export::{Report, lottie, ora, otio, runtime, svg, svg_animated};
 
 use crate::app::Shell;
 
@@ -28,6 +28,8 @@ pub enum Kind {
     Runtime,
     /// The timing and sounds as an OpenTimelineIO timeline.
     Otio,
+    /// The frame at the playhead as raster and picture layers for a painting program.
+    OpenRaster,
 }
 
 /// An export in progress.
@@ -80,6 +82,10 @@ pub fn start(shell: &mut Shell, kind: Kind) {
             .set_title("Export an OpenTimelineIO timeline")
             .set_file_name(format!("{name}.otio"))
             .add_filter("OpenTimelineIO", &["otio"]),
+        Kind::OpenRaster => dialog
+            .set_title("Export paint layers as OpenRaster")
+            .set_file_name(format!("{name}.ora"))
+            .add_filter("OpenRaster", &["ora"]),
     };
     let Some(path) = dialog.save_file() else {
         return;
@@ -94,6 +100,7 @@ pub fn start(shell: &mut Shell, kind: Kind) {
         Kind::AnimatedSvg => "Animated SVG",
         Kind::Runtime => "Runtime file",
         Kind::Otio => "Timeline",
+        Kind::OpenRaster => "OpenRaster",
     };
     std::thread::spawn(move || {
         let _ = tx.send(run(kind, &doc, frame, &path));
@@ -172,6 +179,15 @@ fn run(
             write(&bytes)?;
             let kb = bytes.len().div_ceil(1024);
             Ok((format!("Exported a runtime file ({kb} KB, {keys} keys)"), report))
+        }
+        Kind::OpenRaster => {
+            let (bytes, report) = ora::write(doc, frame)?;
+            write(&bytes)?;
+            let kb = bytes.len().div_ceil(1024);
+            Ok((
+                format!("Exported paint layers as OpenRaster ({kb} KB, as on frame {frame})"),
+                report,
+            ))
         }
         Kind::Otio => {
             let stem = path

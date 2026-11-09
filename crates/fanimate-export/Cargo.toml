@@ -27,6 +27,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+fanimate-import.workspace = true
 resvg = { version = "0.48", default-features = false }
 
 [lints]

@@ -151,6 +151,7 @@ pub fn file(ui: &mut egui::Ui, shell: &mut Shell) {
             ],
         );
     });
+    item(ui, shell, Action::ExportOpenRaster);
     items(
         ui,
         shell,

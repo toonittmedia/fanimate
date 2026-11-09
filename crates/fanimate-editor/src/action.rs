@@ -68,6 +68,8 @@ pub enum Action {
     ExportRuntime,
     /// The timing and sounds as an OpenTimelineIO timeline for editing programs.
     ExportOtio,
+    /// The raster and picture layers as an OpenRaster file (.ora) for Krita and other painting programs.
+    ExportOpenRaster,
     /// Render the animation to a video, GIF or PNG sequence.
     ExportVideo,
     /// Show the render queue window.
@@ -427,6 +429,7 @@ impl Action {
             ExportAnimatedSvg => "Export as Animated SVG…",
             ExportRuntime => "Export Runtime File…",
             ExportOtio => "Export Timeline (OpenTimelineIO)…",
+            ExportOpenRaster => "Export Paint Layers (OpenRaster)…",
             ExportVideo => "Export Video…",
             RenderQueue => "Render Queue",
             RenderPreviewFrame => "Render Preview Frame",
@@ -590,8 +593,10 @@ impl Action {
             New | NewPreset(_) | Open | OpenOther | OpenSample(_) | OpenFolder | CloseDocument
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
             | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
-            | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportVideo
-            | RenderQueue | RenderPreviewFrame | CheckForUpdates | InstallUpdate | Quit => "File",
+            | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportOpenRaster
+            | ExportVideo | RenderQueue | RenderPreviewFrame | CheckForUpdates | InstallUpdate | Quit => {
+                "File"
+            }
             Undo | Redo | UndoLayer | GoToHistory(_) | Cut | Copy | Paste | CutLayers | CopyLayers
             | PasteLayers | Duplicate | Delete | DeleteLayers | SelectAll | SelectNone | Rename
             | FinishPath | Union | Subtract | Intersect | ExpandShape | OffsetPath | CleanUpLines
@@ -703,6 +708,7 @@ impl Action {
             ExportAnimatedSvg,
             ExportRuntime,
             ExportOtio,
+            ExportOpenRaster,
             ExportVideo,
             RenderQueue,
             RenderPreviewFrame,

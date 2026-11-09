@@ -825,9 +825,9 @@ impl Editor {
             New | NewPreset(_) | Open | OpenFolder | OpenOther | OpenSample(_) | CloseDocument
             | CloseOtherDocuments | NextDocument | PreviousDocument | ShowHome | Save | SaveAs
             | SaveAsFolder | Import | ImportCaptions | ExportCaptions | ExportSvgFrame | ExportLottie
-            | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportVideo
-            | RenderQueue | RenderPreviewFrame | LipSync | CheckForUpdates | InstallUpdate | Workspace(_)
-            | Quit | ToggleOnionSkin | ToggleLightTable | LookThroughCamera | Preferences
+            | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportOpenRaster
+            | ExportVideo | RenderQueue | RenderPreviewFrame | LipSync | CheckForUpdates | InstallUpdate
+            | Workspace(_) | Quit | ToggleOnionSkin | ToggleLightTable | LookThroughCamera | Preferences
             | CommandPalette | AskAssistant | LayerProperties | ZoomIn | ZoomOut | FitView | ActualSize
             | RotateViewLeft | RotateViewRight | ResetViewRotation => {
                 return Outcome::App(action);

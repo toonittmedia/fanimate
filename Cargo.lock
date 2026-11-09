@@ -1667,6 +1667,7 @@ version = "0.5.0"
 dependencies = [
  "fanimate-core",
  "fanimate-fnm",
+ "fanimate-import",
  "fanimate-oscodec",
  "fanimate-render",
  "hound",
