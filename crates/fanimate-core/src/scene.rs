@@ -453,6 +453,11 @@ pub struct Layer {
     /// (see [`crate::compositing`]). Plain unless set, and then not written.
     #[serde(default, skip_serializing_if = "Composite::is_plain")]
     pub composite: Composite,
+    /// Version 7: marks a group layer as a raster layer, whose children are the image
+    /// tiles of a painting (see [`crate::raster`]). Readers that do not know it show the
+    /// group of pictures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<crate::raster::RasterInfo>,
     #[serde(flatten)]
     pub kind: LayerKind,
 }
@@ -486,6 +491,7 @@ impl Layer {
             transform: AnimTransform::default(),
             provenance: None,
             composite: Composite::default(),
+            raster: None,
             kind,
         }
     }

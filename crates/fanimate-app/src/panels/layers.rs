@@ -66,6 +66,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
             }
             menus::context_menu(&rest, |ui| {
                 menus::item(ui, shell, Action::NewVectorLayer);
+                menus::item(ui, shell, Action::NewRasterLayer);
                 menus::item(ui, shell, Action::NewGroupLayer);
                 menus::item(ui, shell, Action::NewBoneLayer);
                 menus::item(ui, shell, Action::NewFramesLayer);
@@ -89,6 +90,7 @@ fn toolbar(ui: &mut egui::Ui, shell: &mut Shell) {
         let new = egui::Button::image_and_text(icons::image(ui.ctx(), Icon::Add, 16.0, text), "New");
         menus::menu_button(ui, new, |ui| {
             menus::item(ui, shell, Action::NewVectorLayer);
+            menus::item(ui, shell, Action::NewRasterLayer);
             menus::item(ui, shell, Action::NewGroupLayer);
             menus::item(ui, shell, Action::NewBoneLayer);
             menus::item(ui, shell, Action::NewFramesLayer);

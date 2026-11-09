@@ -264,6 +264,11 @@ impl Renderer {
         media: &Media,
         clear: Color,
     ) {
+        // a picture the project no longer holds (a painted tile that was replaced) is dropped,
+        // so painting does not fill the graphics memory with old versions
+        if self.textures.len() > media.len() {
+            self.textures.retain(|name, _| media.contains_key(name));
+        }
         // upload any new pictures before the pass borrows the cache
         for run in runs {
             if let Some(name) = &run.media {

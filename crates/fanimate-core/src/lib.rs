@@ -33,6 +33,7 @@ pub mod points;
 pub mod policy;
 pub mod poses;
 pub mod provenance;
+pub mod raster;
 pub mod retarget;
 pub mod samples;
 pub mod scene;

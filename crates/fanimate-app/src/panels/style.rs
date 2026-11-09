@@ -98,6 +98,17 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
                 .on_hover_text("Length of the thin ends of a brush stroke, in canvas pixels");
             ui.end_row();
 
+            ui.label(RichText::new("Hardness").color(muted));
+            let mut hard = d.hardness * 100.0;
+            if ui
+                .add(egui::Slider::new(&mut hard, 0.0..=100.0).suffix("%").max_decimals(0))
+                .on_hover_text("How hard the edge of a stroke is on a raster layer: 0 is all soft, 100 a sharp edge")
+                .changed()
+            {
+                d.hardness = hard / 100.0;
+            }
+            ui.end_row();
+
             ui.label(RichText::new("Pen pressure").color(muted));
             ui.checkbox(&mut d.pressure, "").on_hover_text(
                 "A pen's pressure sets the width of a brush stroke. Off draws an even width. A mouse has no pressure, so it draws at full width either way.",

@@ -318,6 +318,16 @@ pub const METHODS: &[Method] = &[
         "Add an offset outline beside a shape: outside it, or inside when distance is negative; returns the new shape's index",
     ),
     edit(
+        "add_raster_layer",
+        "name: string",
+        "Add an empty raster layer (to paint pixels on); returns its id",
+    ),
+    edit(
+        "paint",
+        "layer: number, points: [[x, y]], color: string (optional), size: number (optional), hardness: number (optional), flow: number (optional), erase: boolean (optional)",
+        "Paint round dabs along the points on a raster layer, or rub them out with erase; returns how many tiles changed",
+    ),
+    edit(
         "clean_up_lines",
         "layer: number, shapes: [number] (optional), tolerance: number (optional)",
         "Refit rough lines with the fewest smooth curves within the tolerance; returns the shapes refitted and skipped and the points before and after",
@@ -686,6 +696,16 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             param(params, "layer")?,
             param(params, "index")?,
             param(params, "distance")?,
+        )?),
+        "add_raster_layer" => json_of(api.add_raster_layer(&param::<String>(params, "name")?)?),
+        "paint" => json_of(api.paint(
+            param(params, "layer")?,
+            param(params, "points")?,
+            optional(params, "color")?,
+            optional(params, "size")?,
+            optional(params, "hardness")?,
+            optional(params, "flow")?,
+            optional::<bool>(params, "erase")?.unwrap_or(false),
         )?),
         "clean_up_lines" => json_of(api.clean_up_lines(
             param(params, "layer")?,

@@ -248,6 +248,7 @@ pub fn layer(ui: &mut egui::Ui, shell: &mut Shell) {
         shell,
         &[
             Action::NewVectorLayer,
+            Action::NewRasterLayer,
             Action::NewFramesLayer,
             Action::NewGroupLayer,
             Action::NewSwitchLayer,
@@ -618,6 +619,7 @@ pub fn layer_context(ui: &mut egui::Ui, shell: &mut Shell) {
             shell,
             &[
                 Action::NewVectorLayer,
+                Action::NewRasterLayer,
                 Action::NewGroupLayer,
                 Action::NewBoneLayer,
                 Action::NewFramesLayer,

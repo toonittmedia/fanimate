@@ -129,6 +129,8 @@ pub enum Action {
     AskAssistant,
     // Layer
     NewVectorLayer,
+    /// A layer to paint pixels on with the brush and the eraser.
+    NewRasterLayer,
     NewGroupLayer,
     NewBoneLayer,
     NewFramesLayer,
@@ -318,6 +320,7 @@ impl Action {
                 | SuggestInbetween
                 | AutoRig
                 | NewVectorLayer
+                | NewRasterLayer
                 | NewGroupLayer
                 | NewBoneLayer
                 | NewFramesLayer
@@ -460,6 +463,7 @@ impl Action {
             CommandPalette => "Command Palette…",
             AskAssistant => "Ask Assistant…",
             NewVectorLayer => "New Vector Layer",
+            NewRasterLayer => "New Raster Layer",
             NewGroupLayer => "New Group",
             NewBoneLayer => "New Bone Layer",
             NewFramesLayer => "New Frame-by-Frame Layer",
@@ -593,6 +597,7 @@ impl Action {
             | FinishPath | Union | Subtract | Intersect | ExpandShape | OffsetPath | CleanUpLines
             | SuggestInbetween | AutoRig | Preferences | CommandPalette | AskAssistant => "Edit",
             NewVectorLayer
+            | NewRasterLayer
             | NewGroupLayer
             | NewBoneLayer
             | NewFramesLayer
@@ -732,6 +737,7 @@ impl Action {
             CommandPalette,
             AskAssistant,
             NewVectorLayer,
+            NewRasterLayer,
             NewGroupLayer,
             NewBoneLayer,
             NewFramesLayer,

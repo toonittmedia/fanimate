@@ -36,6 +36,7 @@ mod physics;
 mod points;
 mod points_frame;
 mod poses;
+mod raster;
 mod shapes;
 mod shapesel;
 pub(crate) mod sound;
@@ -157,6 +158,8 @@ pub struct Editor {
     stroke: Option<draw::StrokeInProgress>,
     /// The eraser gesture in progress.
     erase: Option<draw::EraseInProgress>,
+    /// The pixel painting gesture in progress (see `raster.rs`).
+    raster_stroke: Option<raster::RasterStroke>,
     /// The Add Point drag in progress.
     add_point: Option<construct::AddPointDrag>,
     /// The path being drawn with the Pen.
@@ -287,6 +290,7 @@ impl Editor {
             draw: DrawStyle::default(),
             stroke: None,
             erase: None,
+            raster_stroke: None,
             add_point: None,
             pen: None,
             curvature: None,
@@ -720,6 +724,7 @@ impl Editor {
             Rename => self.rename_request = self.primary(),
             SetLabel(label) => self.set_label(label),
             NewVectorLayer => self.new_layer(NewKind::Vector),
+            NewRasterLayer => self.new_raster_layer(),
             NewGroupLayer => self.new_layer(NewKind::Group),
             NewBoneLayer => self.new_layer(NewKind::Bone),
             GroupLayers => self.group_selected(),

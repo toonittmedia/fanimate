@@ -474,6 +474,38 @@ impl Checker {
                 *cels = cels_keys;
             }
             LayerKind::Group { children } => {
+                // a raster layer: tiles of a size this reader knows, not more than it holds
+                if let Some(info) = layer.raster {
+                    if info.tile != fanimate_core::raster::TILE {
+                        self.issue(
+                            Severity::Warning,
+                            &loc,
+                            format!(
+                                "raster tiles of {} pixels are not supported (they are {}); the layer is shown as a group of pictures",
+                                info.tile,
+                                fanimate_core::raster::TILE
+                            ),
+                            true,
+                        );
+                        if self.repair {
+                            layer.raster = None;
+                        }
+                    } else if children.len() > fanimate_core::raster::MAX_TILES {
+                        self.issue(
+                            Severity::Error,
+                            &loc,
+                            format!(
+                                "{} raster tiles; only the first {} are kept",
+                                children.len(),
+                                fanimate_core::raster::MAX_TILES
+                            ),
+                            true,
+                        );
+                        if self.repair {
+                            children.truncate(fanimate_core::raster::MAX_TILES);
+                        }
+                    }
+                }
                 let siblings = children.len();
                 for child in children {
                     self.layer(child, end, bones, siblings);
@@ -1283,6 +1315,27 @@ impl Checker {
 mod tests {
     use super::*;
     use fanimate_core::{Interpolation, Key, samples};
+
+    #[test]
+    fn a_raster_layer_with_an_unknown_tile_size_or_too_many_tiles_is_repaired() {
+        let mut doc = samples::blank();
+        let mut group = doc.new_layer("paint", LayerKind::Group { children: vec![] });
+        group.raster = Some(fanimate_core::raster::RasterInfo { tile: 512 });
+        doc.layers.push(group);
+        let report = repair(&mut doc);
+        assert!(report.repaired_count() > 0, "{report}");
+        assert!(
+            doc.layers.last().unwrap().raster.is_none(),
+            "shown as a plain group"
+        );
+        // a sound raster layer is left as it is
+        let mut ok = samples::blank();
+        let mut g = ok.new_layer("paint", LayerKind::Group { children: vec![] });
+        g.raster = Some(Default::default());
+        ok.layers.push(g);
+        assert!(validate(&ok).is_clean(), "{}", validate(&ok));
+        assert!(ok.layers.last().unwrap().raster.is_some());
+    }
 
     #[test]
     fn samples_are_clean() {

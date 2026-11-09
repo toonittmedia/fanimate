@@ -624,6 +624,7 @@ fn freehand_tool(
         for (pos, pressure) in &moves {
             shell.editor.continue_stroke(doc(*pos), *pressure);
         }
+        shell.editor.flush_paint();
         if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
             shell.editor.finish_stroke();
         }
@@ -683,6 +684,7 @@ fn eraser_tool(
         for (pos, _) in &moves {
             shell.editor.erase_to(doc(*pos));
         }
+        shell.editor.flush_paint();
         if response.drag_stopped() || !response.dragged_by(egui::PointerButton::Primary) {
             shell.editor.end_erase();
         }

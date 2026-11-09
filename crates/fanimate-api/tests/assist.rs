@@ -196,3 +196,50 @@ fn the_assist_calls_need_the_edit_permission() {
         assert!(answer.contains("permission_denied"), "{method}: {answer}");
     }
 }
+
+#[test]
+fn raster_layers_are_made_and_painted_over_json_rpc() {
+    let mut ed = editor();
+    let made = call(&mut ed, "add_raster_layer", json!({"name": "Paint"}));
+    let id = made["result"].as_u64().unwrap_or_else(|| panic!("{made}"));
+    let a = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[20, 20], [120, 40]], "color": "#e63946", "size": 16}),
+    );
+    assert_eq!(a["result"], 1, "{a}");
+    // a stroke over a tile edge changes two tiles; rubbing out changes the same ones
+    let wide = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[240, 100], [280, 100]], "size": 30}),
+    );
+    assert_eq!(wide["result"], 2, "{wide}");
+    let rub = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[240, 100], [280, 100]], "size": 60, "hardness": 1, "erase": true}),
+    );
+    assert_eq!(rub["result"], 2, "{rub}");
+    // bad arguments are refused with the stable codes and change nothing
+    let code = |a: &Value| a["error"]["data"]["code"].as_str().map(str::to_owned);
+    let before = ed.doc.clone();
+    for bad in [
+        json!({"layer": id, "points": []}),
+        json!({"layer": id, "points": [[1, 1]], "color": "red"}),
+        json!({"layer": 9999, "points": [[1, 1]]}),
+    ] {
+        let answer = call(&mut ed, "paint", bad);
+        assert!(code(&answer).is_some(), "{answer}");
+    }
+    assert!(ed.doc == before);
+    // a vector layer is not painted on
+    let vector = call(&mut ed, "add_layer", json!({"kind": "vector", "name": "v"}));
+    let refused = call(
+        &mut ed,
+        "paint",
+        json!({"layer": vector["result"], "points": [[1, 1]]}),
+    );
+    assert_eq!(code(&refused).as_deref(), Some("invalid_argument"), "{refused}");
+    assert_eq!(rpc::required("paint"), Some(fanimate_api::Permission::Edit));
+}

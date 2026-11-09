@@ -1158,6 +1158,69 @@ impl<'a> Api<'a> {
         })
     }
 
+    /// Add an empty raster layer called `name` (a layer to paint pixels on) at the top
+    /// level, and return its id. See [`paint`](Self::paint).
+    pub fn add_raster_layer(&mut self, name: &str) -> Result<u32, ApiError> {
+        let name = check_name(name, "a layer")?;
+        self.edit("Add raster layer", |ed| {
+            let mut layer = ed.doc.new_layer(name, LayerKind::Group { children: vec![] });
+            layer.raster = Some(fanimate_core::raster::RasterInfo::default());
+            layer.label = Some(fanimate_core::Label::for_id(layer.id));
+            let id = layer.id;
+            let at = ed.doc.layers.len();
+            ed.doc.insert(None, at, layer);
+            Ok(id.0)
+        })
+    }
+
+    /// Paint round dabs along `points` (document units, at least one) on raster layer
+    /// `layer`: `color` as `#RRGGBB` (black by default), `size` in pixels (12 by
+    /// default, 1 to 2000), `hardness` of the edge 0 to 1 (0.8), `flow` 0 to 1 (1), or take
+    /// paint away with `erase`. Returns how many tiles changed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(
+        &mut self,
+        layer: u32,
+        points: Vec<[f32; 2]>,
+        color: Option<String>,
+        size: Option<f32>,
+        hardness: Option<f32>,
+        flow: Option<f32>,
+        erase: bool,
+    ) -> Result<usize, ApiError> {
+        if self.editor.doc.find(LayerId(layer)).is_none() {
+            return Err(ApiError::no_layer(layer));
+        }
+        let rgb = match color {
+            Some(hex) => {
+                let c = fanimate_core::Color::from_hex(&hex).map_err(|_| {
+                    ApiError::new(
+                        ErrorCode::InvalidArgument,
+                        format!("\"{hex}\" is not a colour like #e63946"),
+                    )
+                })?;
+                let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                [q(c.r), q(c.g), q(c.b)]
+            }
+            None => [0, 0, 0],
+        };
+        let brush = fanimate_core::raster::Brush {
+            color: rgb,
+            size: size.unwrap_or(12.0),
+            hardness: hardness.unwrap_or(0.8),
+            flow: flow.unwrap_or(1.0),
+            erase,
+        };
+        let points: Vec<fanimate_core::Vec2> = points
+            .into_iter()
+            .map(|[x, y]| fanimate_core::Vec2::new(x, y))
+            .collect();
+        self.edit("Paint", |ed| {
+            ed.paint_raster(LayerId(layer), &points, brush)
+                .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
+        })
+    }
+
     /// Line clean-up: refit the lines of a vector or frame-by-frame layer's
     /// shapes (those in `shapes`, or all) with the fewest smooth curves that
     /// stay within `tolerance` document units (0.01 to 100, 1.5 by default).

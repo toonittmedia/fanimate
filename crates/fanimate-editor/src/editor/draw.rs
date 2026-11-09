@@ -32,6 +32,9 @@ pub struct DrawStyle {
     pub pressure: bool,
     /// Eraser diameter, in document units.
     pub eraser: f32,
+    /// How hard the edge of a pixel brush stroke is on a raster layer, from 0 (all soft) to 1.
+    /// A tool setting like the eraser size, not part of a saved style.
+    pub hardness: f32,
     /// Weight brush diameter, in document units.
     pub weight_brush: f32,
 }
@@ -47,6 +50,7 @@ impl Default for DrawStyle {
             taper: 20.0,
             pressure: true,
             eraser: 20.0,
+            hardness: 0.8,
             weight_brush: 40.0,
         }
     }
@@ -116,6 +120,9 @@ impl Editor {
     /// pixels per document unit. Returns false, with a status message, when
     /// the selection cannot be drawn on.
     pub fn begin_stroke(&mut self, at: Vec2, pressure: f32, zoom: f32) -> bool {
+        if let Some(layer) = self.raster_target() {
+            return self.begin_raster_stroke(layer, at, pressure, false);
+        }
         let Ok(target) = self.drawing_target() else {
             return false;
         };
@@ -175,6 +182,10 @@ impl Editor {
     }
 
     pub fn continue_stroke(&mut self, at: Vec2, pressure: f32) {
+        if self.raster_stroke.as_ref().is_some_and(|r| !r.erasing()) {
+            self.continue_raster_stroke(at, pressure);
+            return;
+        }
         let pressure = self.stroke_pressure(pressure);
         if let Some(stroke) = &mut self.stroke {
             stroke.stabiliser.push(BrushSample::new(at, pressure));
@@ -188,7 +199,7 @@ impl Editor {
     }
 
     pub fn is_drawing(&self) -> bool {
-        self.stroke.is_some()
+        self.stroke.is_some() || self.raster_stroke.as_ref().is_some_and(|r| !r.erasing())
     }
 
     /// The stroke being drawn, in document space, as it would be if the
@@ -199,10 +210,15 @@ impl Editor {
 
     pub fn cancel_stroke(&mut self) {
         self.stroke = None;
+        self.finish_raster_stroke();
     }
 
     /// Finish the stroke and add it to its layer, as one undo step.
     pub fn finish_stroke(&mut self) {
+        if self.raster_stroke.as_ref().is_some_and(|r| !r.erasing()) {
+            self.finish_raster_stroke();
+            return;
+        }
         let Some(stroke) = self.stroke.take() else {
             return;
         };
@@ -221,6 +237,9 @@ impl Editor {
     /// Start erasing at `at` (document space) on the selected vector layer.
     /// Returns false, with a status message, when there is no such layer.
     pub fn begin_erase(&mut self, at: Vec2, zoom: f32) -> bool {
+        if let Some(layer) = self.raster_target() {
+            return self.begin_raster_stroke(layer, at, 1.0, true);
+        }
         let layer = match self.drawing_target() {
             Ok(Some(layer)) => layer,
             Ok(None) => {
@@ -242,6 +261,10 @@ impl Editor {
     /// Move the eraser to `to`, erasing along the way. The whole gesture,
     /// from [`begin_erase`](Self::begin_erase) on, is one undo step.
     pub fn erase_to(&mut self, to: Vec2) {
+        if self.raster_stroke.as_ref().is_some_and(|r| r.erasing()) {
+            self.continue_raster_stroke(to, 1.0);
+            return;
+        }
         let Some(erase) = &self.erase else {
             return;
         };
@@ -285,10 +308,11 @@ impl Editor {
 
     pub fn end_erase(&mut self) {
         self.erase = None;
+        self.finish_raster_stroke();
     }
 
     pub fn is_erasing(&self) -> bool {
-        self.erase.is_some()
+        self.erase.is_some() || self.raster_stroke.as_ref().is_some_and(|r| r.erasing())
     }
 
     fn brush_options(&self, zoom: f32) -> BrushOptions {
