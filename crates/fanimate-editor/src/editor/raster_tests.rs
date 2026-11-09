@@ -336,3 +336,31 @@ fn the_bucket_settings_default_sensibly_and_older_settings_files_still_read() {
     let again: crate::DrawStyle = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
     assert_eq!(again, chosen);
 }
+
+#[test]
+fn lifting_the_eraser_does_not_end_a_brush_stroke_in_progress() {
+    // the canvas calls end_erase every frame while the Eraser is not the tool, in the middle of
+    // a brush stroke: the stroke must go on (this once cut every brush stroke after one frame)
+    let mut ed = editor();
+    let id = paint_layer(&mut ed);
+    ed.draw.width = 10.0;
+    assert!(ed.begin_stroke(Vec2::new(50.0, 50.0), 1.0, 1.0));
+    ed.continue_stroke(Vec2::new(60.0, 50.0), 1.0);
+    ed.flush_paint();
+    ed.end_erase();
+    assert!(ed.is_drawing(), "the brush stroke is still going");
+    ed.continue_stroke(Vec2::new(200.0, 50.0), 1.0);
+    ed.flush_paint();
+    ed.finish_stroke();
+    assert_eq!(
+        pixel(&ed, id, Vec2::new(150.0, 50.0))[3],
+        255,
+        "paint reached the far end"
+    );
+    // and an erasing stroke is still ended by it
+    ed.begin_erase(Vec2::new(150.0, 50.0), 1.0);
+    ed.erase_to(Vec2::new(160.0, 50.0));
+    assert!(ed.is_erasing());
+    ed.end_erase();
+    assert!(!ed.is_erasing());
+}

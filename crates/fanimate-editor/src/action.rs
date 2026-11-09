@@ -1379,7 +1379,7 @@ impl Tool {
                 "Drag to move the selected layer; drag the handles to scale and the round button to rotate (Shift: proportions or 15 degrees). The dot is the pivot. An animated layer gets a keyframe on this frame."
             }
             Self::Freehand => {
-                "Draw brush strokes on the selected vector layer. With pen pressure on, a pen's pressure sets the width; set the size, smoothing and taper in the Style panel."
+                "Draw brush strokes on the selected vector layer, or paint pixels on a raster layer. With pen pressure on, a pen's pressure sets the width; set the size, smoothing, taper and hardness in the Style panel."
             }
             Self::Rectangle => "Drag to draw a rectangle. Shift makes a square; Alt draws from the centre.",
             Self::Ellipse => "Drag to draw an ellipse. Shift makes a circle; Alt draws from the centre.",

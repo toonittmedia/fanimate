@@ -314,9 +314,14 @@ impl Editor {
         }
     }
 
+    /// Lift the eraser. The canvas calls this every frame while another tool is
+    /// active, so it must leave a brush stroke in progress alone: only a raster
+    /// stroke that is erasing ends here.
     pub fn end_erase(&mut self) {
         self.erase = None;
-        self.finish_raster_stroke();
+        if self.raster_stroke.as_ref().is_some_and(|r| r.erasing()) {
+            self.finish_raster_stroke();
+        }
     }
 
     pub fn is_erasing(&self) -> bool {
