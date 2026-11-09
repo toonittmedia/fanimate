@@ -144,7 +144,7 @@ impl Painting {
     /// Whether every pixel of a tile is fully transparent: such a tile need
     /// not be kept.
     pub fn is_empty(tile: &[u8]) -> bool {
-        tile.chunks_exact(4).all(|p| p[3] == 0)
+        tile.iter().skip(3).step_by(4).all(|a| *a == 0)
     }
 
     /// Lay one dab centred at `at` (layer space). `load` gives the pixels

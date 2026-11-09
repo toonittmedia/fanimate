@@ -181,33 +181,36 @@ impl ModelManifest {
     }
 }
 
+/// A manifest that meets the policy, for the tests of this crate.
+#[cfg(test)]
+pub(crate) fn sound_manifest() -> ModelManifest {
+    ModelManifest {
+        schema: SCHEMA,
+        id: "line-cleanup-1".into(),
+        name: "Line clean-up".into(),
+        version: "1.0.0".into(),
+        task: Task::LineCleanup,
+        runtime: "onnx".into(),
+        weights: "model.onnx".into(),
+        size: 1024,
+        sha256: "0".repeat(64),
+        licence: "Apache-2.0".into(),
+        licence_file: "LICENSE.txt".into(),
+        source: "https://example.org/line-cleanup".into(),
+        provenance: Provenance {
+            training_data: "Line drawings commissioned from six artists, each with a signed consent form"
+                .into(),
+            consent: Consent::Commissioned,
+            scraped_art: false,
+            notes: String::new(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::sound_manifest as sound;
     use super::*;
-
-    pub(crate) fn sound() -> ModelManifest {
-        ModelManifest {
-            schema: SCHEMA,
-            id: "line-cleanup-1".into(),
-            name: "Line clean-up".into(),
-            version: "1.0.0".into(),
-            task: Task::LineCleanup,
-            runtime: "onnx".into(),
-            weights: "model.onnx".into(),
-            size: 1024,
-            sha256: "0".repeat(64),
-            licence: "Apache-2.0".into(),
-            licence_file: "LICENSE.txt".into(),
-            source: "https://example.org/line-cleanup".into(),
-            provenance: Provenance {
-                training_data: "Line drawings commissioned from six artists, each with a signed consent form"
-                    .into(),
-                consent: Consent::Commissioned,
-                scraped_art: false,
-                notes: String::new(),
-            },
-        }
-    }
 
     #[test]
     fn a_sound_manifest_has_no_problems_and_round_trips() {
@@ -276,6 +279,3 @@ mod tests {
         assert!(is_valid_id("whisper-tiny.en_1"));
     }
 }
-
-#[cfg(test)]
-pub(crate) use tests::sound as sound_manifest;
