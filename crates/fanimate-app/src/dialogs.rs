@@ -561,10 +561,17 @@ pub enum PrefsPage {
     Interface,
     Canvas,
     Video,
+    Models,
 }
 
 impl PrefsPage {
-    const ALL: [PrefsPage; 4] = [Self::General, Self::Interface, Self::Canvas, Self::Video];
+    const ALL: [PrefsPage; 5] = [
+        Self::General,
+        Self::Interface,
+        Self::Canvas,
+        Self::Video,
+        Self::Models,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -572,6 +579,7 @@ impl PrefsPage {
             Self::Interface => "Interface",
             Self::Canvas => "Canvas",
             Self::Video => "Video formats",
+            Self::Models => "AI models",
         }
     }
 }
@@ -630,6 +638,7 @@ fn preferences(ctx: &egui::Context, shell: &mut Shell) {
                             PrefsPage::Video => {
                                 kit::section(ui, &p, "Video formats", |ui| video_formats(ui, shell));
                             }
+                            PrefsPage::Models => crate::models::page(ui, shell),
                         });
                 });
             });

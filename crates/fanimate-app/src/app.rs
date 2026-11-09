@@ -418,6 +418,7 @@ pub struct Shell {
     pub keys: crate::assistant::Keys,
     pub assistant: crate::assistant::Assistant,
     pub plugins: crate::plugins::Plugins,
+    pub models_ui: crate::models::ModelsUi,
     /// The user's poses and actions kept outside any project (see `panels/pose_library.rs`).
     pub pose_library: fanimate_core::poses::PoseLibrary,
     /// The library file exists but could not be read: it is never overwritten.
@@ -547,6 +548,7 @@ impl FanimateApp {
                 keys: Default::default(),
                 assistant: Default::default(),
                 plugins: Default::default(),
+                models_ui: Default::default(),
                 pose_library: pose_library.0,
                 pose_library_unreadable: pose_library.1.is_some(),
                 file_policy,

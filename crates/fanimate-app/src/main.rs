@@ -37,6 +37,7 @@ mod links;
 mod lipsync;
 mod markdown;
 mod menus;
+mod models;
 mod panels;
 mod places;
 mod plugins;
