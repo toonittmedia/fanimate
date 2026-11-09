@@ -212,6 +212,7 @@ impl Editor {
         for p in points {
             self.continue_raster_stroke(*p, 1.0);
         }
+        self.flush_paint();
         let written = self.raster_stroke.as_ref().map_or(0, |s| s.written.len());
         self.finish_raster_stroke();
         Ok(written)

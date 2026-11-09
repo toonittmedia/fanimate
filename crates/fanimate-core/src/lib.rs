@@ -27,6 +27,7 @@ pub mod health;
 mod hide_edge;
 pub mod inbetween;
 pub mod media;
+pub mod palette;
 pub mod path;
 pub mod physics;
 pub mod points;

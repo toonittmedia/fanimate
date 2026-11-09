@@ -243,3 +243,46 @@ fn raster_layers_are_made_and_painted_over_json_rpc() {
     assert_eq!(code(&refused).as_deref(), Some("invalid_argument"), "{refused}");
     assert_eq!(rpc::required("paint"), Some(fanimate_api::Permission::Edit));
 }
+
+#[test]
+fn the_palette_is_listed_and_a_colour_is_replaced_everywhere_in_one_step() {
+    let mut ed = editor();
+    let red = Shape::new(
+        "r",
+        Path::rect(Vec2::ZERO, Vec2::new(10.0, 10.0), 0.0),
+        Style::fill(Color::rgb(1.0, 0.0, 0.0)),
+    );
+    let id = add_vector(&mut ed, "art", vec![red.clone(), red]);
+    let _ = id;
+    let listed = call(&mut ed, "palette", json!({}));
+    let first = &listed["result"][0];
+    assert_eq!(
+        (first["color"].as_str(), first["count"].as_u64()),
+        (Some("#FF0000"), Some(2)),
+        "{listed}"
+    );
+    let done = call(
+        &mut ed,
+        "replace_colour",
+        json!({"from": "#ff0000", "to": "#0088ff"}),
+    );
+    assert_eq!(done["result"], 2, "{done}");
+    let after = call(&mut ed, "palette", json!({}));
+    assert_eq!(after["result"][0]["color"], "#0088FF");
+    // a colour that is not used changes nothing and leaves no undo step
+    let steps = ed.history.cursor();
+    let none = call(
+        &mut ed,
+        "replace_colour",
+        json!({"from": "#123456", "to": "#abcdef"}),
+    );
+    assert_eq!(none["result"], 0);
+    assert_eq!(ed.history.cursor(), steps);
+    let bad = call(&mut ed, "replace_colour", json!({"from": "red", "to": "#abcdef"}));
+    assert_eq!(bad["error"]["data"]["code"], "invalid_argument", "{bad}");
+    assert_eq!(
+        rpc::required("replace_colour"),
+        Some(fanimate_api::Permission::Edit)
+    );
+    assert_eq!(rpc::required("palette"), Some(fanimate_api::Permission::Read));
+}

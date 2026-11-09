@@ -317,6 +317,16 @@ pub const METHODS: &[Method] = &[
         "layer: number, index: number, distance: number",
         "Add an offset outline beside a shape: outside it, or inside when distance is negative; returns the new shape's index",
     ),
+    query(
+        "palette",
+        "",
+        "The colours the artwork uses, most used first, as hex codes with how many paints show each",
+    ),
+    edit(
+        "replace_colour",
+        "from: string, to: string",
+        "Replace one colour with another everywhere it is used; returns how many paints changed",
+    ),
     edit(
         "add_raster_layer",
         "name: string",
@@ -696,6 +706,11 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             param(params, "layer")?,
             param(params, "index")?,
             param(params, "distance")?,
+        )?),
+        "palette" => json_of(api.palette()),
+        "replace_colour" => json_of(api.replace_colour(
+            &param::<String>(params, "from")?,
+            &param::<String>(params, "to")?,
         )?),
         "add_raster_layer" => json_of(api.add_raster_layer(&param::<String>(params, "name")?)?),
         "paint" => json_of(api.paint(

@@ -406,6 +406,13 @@ pub struct TextStyle {
     /// and left out are the same thing).
     pub wrap: Option<bool>,
 }
+/// A colour of the project and how many paints show it (see [`Api::palette`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PaletteColour {
+    pub color: String,
+    pub count: usize,
+}
+
 /// What [`Api::clean_up_lines`] did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CleanedLines {
@@ -1156,6 +1163,35 @@ impl<'a> Api<'a> {
             ed.offset_shape(LayerId(layer), index, distance)
                 .map_err(|e| ApiError::new(ErrorCode::InvalidArgument, e))
         })
+    }
+
+    /// The colours the project's artwork uses (fills, strokes, colour keys and the
+    /// page), most used first, each as `#RRGGBB` (`#RRGGBBAA` when see-through) with
+    /// how many paints show it.
+    pub fn palette(&self) -> Vec<PaletteColour> {
+        self.editor
+            .palette()
+            .into_iter()
+            .map(|e| PaletteColour {
+                color: e.color.to_hex(),
+                count: e.count,
+            })
+            .collect()
+    }
+
+    /// Replace the colour `from` with `to` everywhere it is used (see [`palette`](Self::palette)),
+    /// as one undo step. Returns how many paints changed.
+    pub fn replace_colour(&mut self, from: &str, to: &str) -> Result<usize, ApiError> {
+        let parse = |hex: &str| {
+            fanimate_core::Color::from_hex(hex).map_err(|_| {
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    format!("\"{hex}\" is not a colour like #e63946"),
+                )
+            })
+        };
+        let (from, to) = (parse(from)?, parse(to)?);
+        self.edit("Replace colour", |ed| Ok(ed.replace_colour(from, to)))
     }
 
     /// Add an empty raster layer called `name` (a layer to paint pixels on) at the top

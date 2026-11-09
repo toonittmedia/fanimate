@@ -343,3 +343,33 @@ fn the_assist_commands_are_edits_and_wait_for_their_layer() {
     assert!(ed.can_run(Action::AutoRig));
     assert!(!ed.can_run(Action::SuggestInbetween));
 }
+
+// ---- palette ----
+
+#[test]
+fn replacing_a_colour_is_one_undo_step_and_nothing_when_nothing_uses_it() {
+    let mut ed = editor();
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let green = Color::rgb(0.0, 1.0, 0.0);
+    let shapes = vec![Shape::new("a", rough_circle(Vec2::ZERO, 20.0), Style::fill(red)); 3];
+    let id = vector(&mut ed, "art", shapes);
+    let steps = ed.history.cursor();
+    assert!(ed.can_replace_colour(red, green));
+    assert_eq!(ed.replace_colour(red, green), 3);
+    assert_eq!(ed.history.cursor(), steps + 1);
+    assert!(shapes_of(&ed, id).iter().all(|s| s.style.fill == Some(green)));
+    ed.run(Action::Undo);
+    assert!(shapes_of(&ed, id).iter().all(|s| s.style.fill == Some(red)));
+    // not used, the same colour, or playing: no step
+    assert!(!ed.can_replace_colour(Color::rgb(0.3, 0.3, 0.3), green));
+    assert_eq!(ed.replace_colour(Color::rgb(0.3, 0.3, 0.3), green), 0);
+    assert_eq!(ed.replace_colour(red, red), 0);
+    ed.playing = true;
+    assert_eq!(ed.replace_colour(red, green), 0);
+    ed.playing = false;
+    assert_eq!(ed.history.cursor(), steps);
+    // the live form changes without a step, for a picker being dragged
+    assert_eq!(ed.replace_colour_live(red, green), 3);
+    assert_eq!(ed.history.cursor(), steps);
+    assert!(ed.dirty);
+}

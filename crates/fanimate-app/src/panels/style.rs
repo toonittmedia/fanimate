@@ -21,7 +21,72 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.add_space(4.0);
     new_artwork(ui, shell);
     ui.separator();
+    palette(ui, shell);
+    ui.separator();
     selected_shapes(ui, shell);
+}
+
+/// The project's palette: every colour its artwork uses. Click a swatch to draw
+/// with it; change one with its picker to recolour everything that shows it, in
+/// one undo step per drag.
+fn palette(ui: &mut egui::Ui, shell: &mut Shell) {
+    let p = shell.palette;
+    ui.label(RichText::new("Palette").strong().color(p.text));
+    // the list is worked out when the document changes, not every frame
+    let revision = shell.editor.revision();
+    if shell
+        .ui
+        .palette_cache
+        .as_ref()
+        .is_none_or(|(r, _)| *r != revision)
+    {
+        shell.ui.palette_cache = Some((revision, shell.editor.palette()));
+    }
+    let entries = shell
+        .ui
+        .palette_cache
+        .as_ref()
+        .map(|(_, e)| e.clone())
+        .unwrap_or_default();
+    if entries.len() < 2 && shell.editor.doc.layers.is_empty() {
+        ui.label(RichText::new("Colours used in the artwork appear here.").color(p.text_muted));
+        return;
+    }
+    let can_edit = !shell.editor.playing;
+    let mut change = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for (i, e) in entries.iter().enumerate() {
+            let mut shown = to_color32(e.color);
+            let r = ui
+                .add_enabled_ui(can_edit, |ui| ui.color_edit_button_srgba(&mut shown))
+                .inner;
+            let r = r.on_hover_text(format!(
+                "{} - used {} time{}. Change it to recolour everything that uses it.",
+                e.color.to_hex(),
+                e.count,
+                if e.count == 1 { "" } else { "s" }
+            ));
+            if r.changed() {
+                change = Some((i, e.color, from_color32(shown), r));
+            }
+        }
+    });
+    if let Some((_, from, to, response)) = change {
+        begin_edit(shell, &response, "Replace colour");
+        shell.editor.replace_colour_live(from, to);
+        // the swatch now shows the new colour: refresh at once so the next frame's `from` is right
+        shell.ui.palette_cache = None;
+    }
+    kit_note(ui, &p);
+}
+
+fn kit_note(ui: &mut egui::Ui, p: &crate::theme::Palette) {
+    crate::kit::note(
+        ui,
+        p,
+        "Colours here are the ones the artwork uses (fills, outlines, colour keys and the page; text is set in its own panel).",
+    );
 }
 
 /// Settings for what is drawn next. These are not part of the document, so

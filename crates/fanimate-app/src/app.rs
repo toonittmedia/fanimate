@@ -304,6 +304,8 @@ pub struct UiState {
     pub show_update: bool,
     /// The Save As dialog, while open.
     pub save_as: Option<crate::saveas::SaveForm>,
+    /// The Style panel's palette: the document revision it was worked out for, and the colours.
+    pub palette_cache: Option<(u64, Vec<fanimate_core::palette::PaletteEntry>)>,
     /// The Render Preview dialog, while open.
     pub preview: Option<crate::preview::Preview>,
     /// The previews on the Home tab.

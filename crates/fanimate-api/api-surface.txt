@@ -134,6 +134,9 @@ pub tracking: Option<f32>,
 pub line_height: Option<f32>,
 pub width: Option<f32>,
 pub wrap: Option<bool>,
+pub struct PaletteColour {
+pub color: String,
+pub count: usize,
 pub struct CleanedLines {
 pub shapes: usize,
 pub skipped: usize,
@@ -181,6 +184,8 @@ pub fn set_document(&mut self, settings: DocumentSettings) -> Result<(), ApiErro
 pub fn set_layer_transform(&mut self, id: u32, change: TransformChange) -> Result<(), ApiError> {
 pub fn add_shape(&mut self, layer: u32, shape: ShapeSpec) -> Result<usize, ApiError> {
 pub fn offset_shape(&mut self, layer: u32, index: usize, distance: f32) -> Result<usize, ApiError> {
+pub fn palette(&self) -> Vec<PaletteColour> {
+pub fn replace_colour(&mut self, from: &str, to: &str) -> Result<usize, ApiError> {
 pub fn add_raster_layer(&mut self, name: &str) -> Result<u32, ApiError> {
 pub fn paint( &mut self, layer: u32, points: Vec<[f32; 2]>, color: Option<String>, size: Option<f32>, hardness: Option<f32>, flow: Option<f32>, erase: bool, ) -> Result<usize, ApiError> {
 pub fn clean_up_lines( &mut self, layer: u32, shapes: Option<Vec<usize>>, tolerance: Option<f32>, ) -> Result<CleanedLines, ApiError> {

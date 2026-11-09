@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use fanimate_core::anim::KeyList;
 use fanimate_core::bones::Skeleton;
 use fanimate_core::{
-    Affine2, ChannelId, Document, Frame, Interpolation, Keying, Label, Layer, LayerId, LayerKind, REST_FRAME,
-    Transform, samples,
+    Affine2, ChannelId, Color, Document, Frame, Interpolation, Keying, Label, Layer, LayerId, LayerKind,
+    REST_FRAME, Transform, samples,
 };
 use fanimate_fnm::{FnmError, HistoryRecord, Report};
 use serde::{Deserialize, Serialize};
@@ -457,6 +457,41 @@ impl Editor {
         self.history.push(label, &self.doc, &self.selection);
         self.dirty = true;
         self.revision += 1;
+    }
+
+    /// The colours the artwork uses, most used first (see `fanimate_core::palette`).
+    pub fn palette(&self) -> Vec<fanimate_core::palette::PaletteEntry> {
+        fanimate_core::palette::colours_used(&self.doc)
+    }
+
+    /// Replace one colour with another everywhere it is used, as one undo
+    /// step. Returns how many paints changed; nothing is recorded when none did.
+    pub fn replace_colour(&mut self, from: Color, to: Color) -> usize {
+        if !self.can_replace_colour(from, to) {
+            return 0;
+        }
+        self.checkpoint("Replace colour");
+        self.replace_colour_live(from, to)
+    }
+
+    /// Whether replacing would change anything.
+    pub fn can_replace_colour(&self, from: Color, to: Color) -> bool {
+        !self.playing
+            && !fanimate_core::palette::same_colour(from, to)
+            && self
+                .palette()
+                .iter()
+                .any(|e| fanimate_core::palette::same_colour(e.color, from))
+    }
+
+    /// Replace without recording a step: for a colour picker that is being
+    /// dragged, whose gesture was recorded once when it began.
+    pub fn replace_colour_live(&mut self, from: Color, to: Color) -> usize {
+        let n = fanimate_core::palette::replace_colour(&mut self.doc, from, to);
+        if n > 0 {
+            self.dirty = true;
+        }
+        n
     }
 
     /// Where the undo history is now, to hand to [`merge_steps_since`](Self::merge_steps_since).
