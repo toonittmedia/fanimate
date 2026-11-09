@@ -216,6 +216,7 @@ fn box_outline(ed: &mut Editor, id: LayerId) {
         erase: false,
         spacing: 0.25,
         flow_pressure: 0.0,
+        smudge: 0.0,
     };
     let corners = [
         (100.0, 100.0),
@@ -298,6 +299,7 @@ fn the_closing_bucket_stays_inside_an_outline_with_a_small_gap() {
         erase: false,
         spacing: 0.25,
         flow_pressure: 0.0,
+        smudge: 0.0,
     };
     for line in [
         vec![(100.0, 100.0), (190.0, 100.0)],

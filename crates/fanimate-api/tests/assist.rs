@@ -359,3 +359,36 @@ fn paint_takes_a_spacing_and_refuses_nothing_for_an_odd_one() {
     );
     assert_eq!(bad["error"]["data"]["code"], "invalid_argument", "{bad}");
 }
+
+#[test]
+fn a_smudge_over_json_rpc_moves_paint_and_odd_values_are_held_in_range() {
+    let mut ed = editor();
+    let made = call(&mut ed, "add_raster_layer", json!({"name": "Paint"}));
+    let id = made["result"].as_u64().unwrap();
+    call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[40, 60], [100, 60]], "color": "#ff0000", "size": 24, "hardness": 1}),
+    );
+    // dragging out of the bar over clear ground paints (the carried red), and changes tiles
+    let smudged = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[90, 60], [220, 60]], "size": 24, "hardness": 1, "smudge": 0.9}),
+    );
+    assert!(smudged["result"].as_u64().is_some(), "{smudged}");
+    for odd in [json!(-3), json!(7), json!(0)] {
+        let a = call(
+            &mut ed,
+            "paint",
+            json!({"layer": id, "points": [[40, 160], [120, 160]], "smudge": odd}),
+        );
+        assert!(a["result"].as_u64().is_some(), "{odd}: {a}");
+    }
+    let bad = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": [[1, 1]], "smudge": "lots"}),
+    );
+    assert_eq!(bad["error"]["data"]["code"], "invalid_argument", "{bad}");
+}

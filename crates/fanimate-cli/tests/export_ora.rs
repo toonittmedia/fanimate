@@ -20,6 +20,7 @@ fn painted_project(dir: &std::path::Path) -> String {
         None,
         false,
         None,
+        None,
     )
     .unwrap();
     let path = dir.join("painting.fnm");

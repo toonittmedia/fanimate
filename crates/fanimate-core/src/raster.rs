@@ -97,6 +97,10 @@ pub struct Brush {
     /// How much pen pressure also lowers the flow: 0 leaves the flow alone (pressure then only
     /// changes the size), 1 makes the lightest touch lay no paint at all. 0 to 1.
     pub flow_pressure: f32,
+    /// Smudge: 0 paints with the colour as usual; above 0 the brush picks up the paint under it and
+    /// drags it along the stroke, laying it with this strength (1 carries the colour all the way,
+    /// lower lets it thin out and take on what it passes over). 0 to 1. Ignored when erasing.
+    pub smudge: f32,
 }
 
 impl Default for Brush {
@@ -109,6 +113,7 @@ impl Default for Brush {
             erase: false,
             spacing: 0.25,
             flow_pressure: 0.0,
+            smudge: 0.0,
         }
     }
 }
@@ -124,6 +129,7 @@ impl Brush {
             flow: fix(self.flow, 0.0, 1.0, 1.0),
             spacing: fix(self.spacing, 0.05, 1.0, 0.25),
             flow_pressure: fix(self.flow_pressure, 0.0, 1.0, 0.0),
+            smudge: fix(self.smudge, 0.0, 1.0, 0.0),
             ..self
         }
     }
@@ -249,6 +255,9 @@ pub struct Stroke {
     last: Option<(Vec2, f32)>,
     /// How far along the line the next dab is due.
     carry: f32,
+    /// What a smudging brush carries: premultiplied red, green, blue and alpha (0 to 1), once it
+    /// has picked something up.
+    carried: Option<[f32; 4]>,
 }
 
 impl Stroke {
@@ -275,8 +284,14 @@ impl Stroke {
             flow: brush_sane.flow * (1.0 - brush_sane.flow_pressure * (1.0 - p)),
             ..brush_sane
         };
+        let smudging = brush_sane.smudge > 0.0 && !brush_sane.erase;
         let Some((from, from_pressure)) = self.last else {
-            painting.dab(to, &at_pressure(pressure), 0.25 + 0.75 * pressure, load);
+            if smudging {
+                // the first dab only picks the paint up
+                self.carried = Some(painting.sample(to, brush_sane.size / 2.0, load));
+            } else {
+                painting.dab(to, &at_pressure(pressure), 0.25 + 0.75 * pressure, load);
+            }
             self.last = Some((to, pressure));
             return;
         };
@@ -290,12 +305,94 @@ impl Stroke {
         while at <= length && dabs < 4000 {
             let t = if length > 0.0 { at / length } else { 1.0 };
             let p = from_pressure + (pressure - from_pressure) * t;
-            painting.dab(from.lerp(to, t), &at_pressure(p), 0.25 + 0.75 * p, load);
+            let place = from.lerp(to, t);
+            if smudging {
+                self.smudge_dab(painting, &at_pressure(p), place, 0.25 + 0.75 * p, load);
+            } else {
+                painting.dab(place, &at_pressure(p), 0.25 + 0.75 * p, load);
+            }
             at += spacing;
             dabs += 1;
         }
         self.carry = (self.carry + length) % spacing;
         self.last = Some((to, pressure));
+    }
+}
+
+impl Stroke {
+    /// One dab of a smudge: lay what is carried (strength: the brush's flow and smudge, and the
+    /// carried alpha), then pick up what is under the dab, mixed into the carried paint by how
+    /// much smudge there is.
+    fn smudge_dab(
+        &mut self,
+        painting: &mut Painting,
+        brush: &Brush,
+        at: Vec2,
+        scale: f32,
+        load: &mut dyn FnMut(Key) -> Vec<u8>,
+    ) {
+        let here = painting.sample(at, brush.size * scale / 2.0, load);
+        let Some(carried) = self.carried else {
+            self.carried = Some(here);
+            return;
+        };
+        let alpha = carried[3];
+        if alpha > 0.001 {
+            // straight colour from the premultiplied carried paint
+            let to_u8 = |v: f32| ((v / alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
+            let paint = Brush {
+                color: [to_u8(carried[0]), to_u8(carried[1]), to_u8(carried[2])],
+                flow: (brush.flow * brush.smudge * alpha).clamp(0.0, 1.0),
+                erase: false,
+                ..*brush
+            };
+            painting.dab(at, &paint, scale, load);
+        }
+        let keep = brush.smudge;
+        let mut next = [0.0; 4];
+        for (n, (c, h)) in next.iter_mut().zip(carried.iter().zip(&here)) {
+            *n = c * keep + h * (1.0 - keep);
+        }
+        self.carried = Some(next);
+    }
+}
+
+impl Painting {
+    /// The average paint (premultiplied red, green, blue, alpha, each 0 to 1) of five points in a
+    /// disc of `radius` around `at`: its middle and four points half way to its edge. Pixels of
+    /// tiles the painting does not hold are read through `load` without being kept.
+    pub fn sample(&self, at: Vec2, radius: f32, load: &mut dyn FnMut(Key) -> Vec<u8>) -> [f32; 4] {
+        let radius = if radius.is_finite() {
+            radius.clamp(0.0, 1000.0)
+        } else {
+            0.0
+        };
+        let offsets = [(0.0, 0.0), (0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)];
+        let mut sum = [0.0f32; 4];
+        for (dx, dy) in offsets {
+            let p = at + Vec2::new(dx, dy) * radius;
+            if !(p.x.is_finite() && p.y.is_finite()) {
+                continue;
+            }
+            let (key, x, y) = locate(p);
+            let held;
+            let px: &[u8] = match self.tiles.get(&key) {
+                Some(t) => t,
+                None => {
+                    held = load(key);
+                    &held
+                }
+            };
+            let i = ((y * TILE + x) * 4) as usize;
+            if let Some(v) = px.get(i..i + 4) {
+                let a = f32::from(v[3]) / 255.0;
+                sum[0] += f32::from(v[0]) / 255.0 * a;
+                sum[1] += f32::from(v[1]) / 255.0 * a;
+                sum[2] += f32::from(v[2]) / 255.0 * a;
+                sum[3] += a;
+            }
+        }
+        sum.map(|v| v / offsets.len() as f32)
     }
 }
 
@@ -985,6 +1082,93 @@ mod tests {
             .sane()
             .flow_pressure,
             1.0
+        );
+    }
+
+    #[test]
+    fn a_smudge_drags_the_paint_under_it_along_the_stroke_and_lays_nothing_of_its_own() {
+        // a red bar, then a smudge from the middle of it out to clear ground
+        let mut painting = Painting::default();
+        let red = Brush {
+            color: [255, 0, 0],
+            size: 20.0,
+            hardness: 1.0,
+            ..Brush::default()
+        };
+        let mut paint = Stroke::default();
+        for x in [20.0, 60.0] {
+            paint.line(&mut painting, &red, Vec2::new(x, 50.0), 1.0, &mut empty);
+        }
+        assert_eq!(pixel(&painting, 100.0, 50.0)[3], 0, "clear ground to begin with");
+        let smudge = Brush {
+            color: [0, 0, 255],
+            size: 20.0,
+            hardness: 1.0,
+            smudge: 0.9,
+            ..Brush::default()
+        };
+        let mut drag = Stroke::default();
+        for x in [50.0, 110.0] {
+            drag.line(&mut painting, &smudge, Vec2::new(x, 50.0), 1.0, &mut empty);
+        }
+        // red was pulled out onto the clear ground, fading; the brush's own blue never appears
+        let dragged = pixel(&painting, 80.0, 50.0);
+        assert!(
+            dragged[3] > 0 && dragged[0] > 200 && dragged[2] < 30,
+            "{dragged:?}"
+        );
+        assert!(
+            pixel(&painting, 80.0, 50.0)[3] >= pixel(&painting, 108.0, 50.0)[3],
+            "it thins out"
+        );
+        // smudge 0 is an ordinary brush: it lays its own colour
+        let mut plain = Stroke::default();
+        let blue = Brush {
+            smudge: 0.0,
+            ..smudge
+        };
+        for x in [20.0, 60.0] {
+            plain.line(&mut painting, &blue, Vec2::new(x, 150.0), 1.0, &mut empty);
+        }
+        assert_eq!(pixel(&painting, 40.0, 150.0), [0, 0, 255, 255]);
+        // an eraser ignores smudge, and a smudge over nothing lays nothing
+        let mut none = Painting::default();
+        let mut s = Stroke::default();
+        for x in [20.0, 90.0] {
+            s.line(&mut none, &smudge, Vec2::new(x, 50.0), 1.0, &mut empty);
+        }
+        assert_eq!(none.dirty().count(), 0);
+        let rub = Brush {
+            erase: true,
+            ..smudge
+        };
+        let mut e = Stroke::default();
+        for x in [20.0, 60.0] {
+            e.line(&mut painting, &rub, Vec2::new(x, 50.0), 1.0, &mut empty);
+        }
+        assert_eq!(pixel(&painting, 40.0, 50.0)[3], 0, "erased, not smudged");
+    }
+
+    #[test]
+    fn sampling_is_safe_on_hostile_points_and_short_tiles() {
+        let painting = Painting::default();
+        for (p, r) in [
+            (Vec2::new(f32::NAN, 0.0), 5.0),
+            (Vec2::new(1.0e30, 1.0e30), 5.0),
+            (Vec2::new(5.0, 5.0), f32::NAN),
+            (Vec2::new(5.0, 5.0), 1.0e9),
+        ] {
+            let v = painting.sample(p, r, &mut |_| vec![1, 2]);
+            assert!(v.iter().all(|c| c.is_finite()), "{p:?} {r}: {v:?}");
+        }
+        assert_eq!(
+            Brush {
+                smudge: f32::NAN,
+                ..Brush::default()
+            }
+            .sane()
+            .smudge,
+            0.0
         );
     }
 }
