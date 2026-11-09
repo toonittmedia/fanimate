@@ -42,6 +42,9 @@ const COMPOSITING_NOTE: &str = "masks, clips, blend modes and flattened groups d
 
 #[derive(Clone, PartialEq)]
 struct Look {
+    /// The farthest a point of the path is from the slot's origin: what a turn or a scale
+    /// of the matrix costs in distance, for the tolerance of [`bake_with`].
+    extent: f32,
     d: String,
     fill: Option<(String, f32)>,
     stroke: Option<(String, f32, f32)>,
@@ -102,8 +105,21 @@ fn matrix(t: Affine2) -> [f32; 6] {
     ]
 }
 
-/// Bake `range` (the whole animation when `None`).
+/// Bake `range` (the whole animation when `None`) exactly: a key wherever a frame differs.
 pub fn bake(doc: &Document, range: Option<(i32, i32)>) -> Result<Baked, String> {
+    bake_with(doc, range, 0.0)
+}
+
+/// Bake with a `tolerance` in document units: a key that the player would draw
+/// within that distance of the exact frame without it (every point of the slot's
+/// path, and opacity at 1 percent to the unit) is left out. 0 keeps every key; a
+/// walk cycle shrinks a lot at a couple of units and looks the same.
+pub fn bake_with(doc: &Document, range: Option<(i32, i32)>, tolerance: f32) -> Result<Baked, String> {
+    let tolerance = if tolerance.is_finite() {
+        tolerance.clamp(0.0, 1000.0)
+    } else {
+        0.0
+    };
     let (start, end) = range.unwrap_or((doc.start, doc.end));
     if end < start {
         return Err("The end frame comes before the start frame.".to_owned());
@@ -143,6 +159,7 @@ pub fn bake(doc: &Document, range: Option<(i32, i32)>) -> Result<Baked, String> 
         if doc.background.a > 0.0 {
             let rect = Path::rect(Vec2::ZERO, doc.size(), 0.0);
             let look = Look {
+                extent: doc.size().length(),
                 d: path_data(&rect, Affine2::IDENTITY),
                 fill: Some((hex(doc.background), round4(doc.background.a))),
                 stroke: None,
@@ -182,6 +199,7 @@ pub fn bake(doc: &Document, range: Option<(i32, i32)>) -> Result<Baked, String> 
                 report.add("translucent shapes blended in sRGB, so they can look different from the canvas");
             }
             let look = Look {
+                extent: item.shape.path.points().map(|p| p.length()).fold(0.0, f32::max),
                 d: path_data(&item.shape.path, Affine2::IDENTITY),
                 fill: style.fill.map(|c| (hex(c), round4(c.a))),
                 stroke: style
@@ -204,7 +222,7 @@ pub fn bake(doc: &Document, range: Option<(i32, i32)>) -> Result<Baked, String> 
     let mut keys = 0usize;
     let mut out = Vec::with_capacity(slots.len());
     for slot in &slots {
-        out.push(write_slot(slot, start, &mut keys));
+        out.push(write_slot(slot, start, &mut keys, tolerance));
         if keys > MAX_KEYS {
             return Err(format!(
                 "This animation needs more than {MAX_KEYS} keys; export a shorter range."
@@ -228,7 +246,7 @@ pub fn bake(doc: &Document, range: Option<(i32, i32)>) -> Result<Baked, String> 
 }
 
 /// The slot as JSON: constant parts once, parts that change as keys.
-fn write_slot(slot: &Slot, start: i32, keys: &mut usize) -> Value {
+fn write_slot(slot: &Slot, start: i32, keys: &mut usize, tolerance: f32) -> Value {
     let first = slot
         .frames
         .iter()
@@ -308,7 +326,11 @@ fn write_slot(slot: &Slot, start: i32, keys: &mut usize) -> Value {
         value["path_keys"] = json!(list);
     }
     let motion_same = |a: &Look, b: &Look| a.m == b.m && a.opacity == b.opacity;
-    let list: Vec<Value> = changes(&motion_same)
+    let mut at = changes(&motion_same);
+    if tolerance > 0.0 {
+        at = thin(&pairs, &at, tolerance);
+    }
+    let list: Vec<Value> = at
         .into_iter()
         .map(|i| {
             let (n, l) = pairs[i];
@@ -320,9 +342,79 @@ fn write_slot(slot: &Slot, start: i32, keys: &mut usize) -> Value {
     value
 }
 
+/// How far the player would draw `mid` from the exact frame if only `a` and `b`
+/// (`t` of the way from `a` to `b`) were keyed: the worst of the farthest point's
+/// move and the opacity change (1 percent counts as a unit).
+fn drift(a: &Look, b: &Look, mid: &Look, t: f32) -> f32 {
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
+    let e = mid.extent.max(a.extent).max(b.extent);
+    // a point at distance e from the origin moves by at most the translation error plus e
+    // times the size (Frobenius norm) of the error of the other four numbers
+    let m = |i: usize| lerp(a.m[i], b.m[i]) - mid.m[i];
+    let moved = m(4).hypot(m(5)) + e * (m(0) * m(0) + m(1) * m(1) + m(2) * m(2) + m(3) * m(3)).sqrt();
+    let faded = (lerp(a.opacity, b.opacity) - mid.opacity).abs() * 100.0;
+    moved.max(faded)
+}
+
+/// The keys to keep out of `keys` (indices into `pairs`): the ends of every unbroken run
+/// of frames, and every frame the player would otherwise draw more than `tolerance`
+/// from the exact one (Ramer-Douglas-Peucker over the frames of the run).
+fn thin(pairs: &[(usize, &Look)], keys: &[usize], tolerance: f32) -> Vec<usize> {
+    // a slot that never moves has one key already, and no run to thin
+    if keys.len() <= 1 {
+        return keys.to_vec();
+    }
+    let mut kept: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < pairs.len() {
+        // the run of consecutive frames from `i`
+        let mut j = i;
+        while j + 1 < pairs.len() && pairs[j + 1].0 == pairs[j].0 + 1 {
+            j += 1;
+        }
+        kept.push(i);
+        let mut stack = vec![(i, j)];
+        while let Some((a, b)) = stack.pop() {
+            if b <= a + 1 {
+                continue;
+            }
+            let (fa, fb) = (pairs[a].0 as f32, pairs[b].0 as f32);
+            let (mut worst, mut at) = (0.0f32, a);
+            for k in a + 1..b {
+                let t = (pairs[k].0 as f32 - fa) / (fb - fa);
+                let d = drift(pairs[a].1, pairs[b].1, pairs[k].1, t);
+                if d > worst {
+                    (worst, at) = (d, k);
+                }
+            }
+            if worst > tolerance {
+                kept.push(at);
+                stack.push((a, at));
+                stack.push((at, b));
+            }
+        }
+        if j > i {
+            kept.push(j);
+        }
+        i = j + 1;
+    }
+    kept.sort_unstable();
+    kept.dedup();
+    kept
+}
+
 /// The runtime as a `.fnmr` file: a ZIP archive holding `runtime.json`.
 pub fn fnmr(doc: &Document, range: Option<(i32, i32)>) -> Result<(Vec<u8>, Report, usize), String> {
-    let baked = bake(doc, range)?;
+    fnmr_with(doc, range, 0.0)
+}
+
+/// [`fnmr`] with the key tolerance of [`bake_with`].
+pub fn fnmr_with(
+    doc: &Document,
+    range: Option<(i32, i32)>,
+    tolerance: f32,
+) -> Result<(Vec<u8>, Report, usize), String> {
+    let baked = bake_with(doc, range, tolerance)?;
     let text = serde_json::to_vec(&baked.json).map_err(|e| e.to_string())?;
     let zip = fanimate_fnm::zip::write(&[(FILE, &text)])?;
     Ok((zip, baked.report, baked.keys))
@@ -550,6 +642,110 @@ mod tests {
         assert!((sq.transform.translation.x - 15.0).abs() < 1.0e-3);
         // outside the range nothing of it is drawn
         assert!(player.sample(9.0).iter().all(|d| d.name != "sq"));
+    }
+
+    #[test]
+    fn a_tolerance_leaves_out_keys_the_player_would_not_miss_and_never_strays_further_than_it() {
+        let doc = samples::walk_cycle();
+        let exact = bake(&doc, None).unwrap();
+        let loose = bake_with(&doc, None, 2.0).unwrap();
+        // a rig that swings its limbs through big angles needs most of its keys at a couple of
+        // units: rotation is not linear in the matrix. It never needs more
+        assert!(
+            loose.keys <= exact.keys,
+            "{} keys at 2 against {} exact",
+            loose.keys,
+            exact.keys
+        );
+        // a tolerance of 0 is the exact bake, and nonsense is the exact bake too
+        assert_eq!(bake_with(&doc, None, 0.0).unwrap().keys, exact.keys);
+        assert_eq!(bake_with(&doc, None, f32::NAN).unwrap().keys, exact.keys);
+        // the player draws every frame within the tolerance of the exact one
+        let make = |t: f32| {
+            let (bytes, _, _) = fnmr_with(&doc, None, t).unwrap();
+            Player::open(&bytes).unwrap()
+        };
+        let (exact_player, loose_player) = (make(0.0), make(2.0));
+        let mut worst = 0.0f32;
+        for frame in doc.start..=doc.end {
+            let (a, b) = (
+                exact_player.sample(frame as f32),
+                loose_player.sample(frame as f32),
+            );
+            assert_eq!(a.len(), b.len(), "frame {frame}");
+            for (x, y) in a.iter().zip(&b) {
+                assert_eq!(x.d, y.d);
+                // the farthest corner of a 200 unit box stands in for the whole path
+                for corner in [
+                    Vec2::ZERO,
+                    Vec2::new(200.0, 0.0),
+                    Vec2::new(0.0, 200.0),
+                    Vec2::new(200.0, 200.0),
+                ] {
+                    let (p, q) = (
+                        x.transform.transform_point2(corner),
+                        y.transform.transform_point2(corner),
+                    );
+                    worst = worst.max(p.distance(q));
+                }
+            }
+        }
+        // the corners sit at about the slot's own extent, where the bound is tightest
+        assert!(worst < 2.0, "the loosest frame is {worst} units off");
+    }
+
+    #[test]
+    fn a_straight_move_needs_two_keys_and_an_eased_one_far_fewer_than_one_a_frame() {
+        let mut doc = Document::new("slide", 800.0, 100.0, 24.0);
+        doc.start = 1;
+        doc.end = 49;
+        let shape = Shape::new(
+            "box",
+            Path::rect(Vec2::ZERO, Vec2::new(20.0, 20.0), 0.0),
+            Style::fill(Color::BLACK),
+        );
+        let layer = doc.new_layer("art", LayerKind::Vector { shapes: vec![shape] });
+        let id = layer.id;
+        doc.layers.push(layer);
+        let keys_for = |interp: Interpolation, tolerance: f32, doc: &mut Document| {
+            let l = doc.find_mut(id).unwrap();
+            l.transform.position = fanimate_core::Channel::new(Vec2::ZERO)
+                .with_key(1, Vec2::ZERO, interp)
+                .with_key(49, Vec2::new(480.0, 0.0), interp);
+            bake_with(doc, None, tolerance).unwrap().keys
+        };
+        // the background has a key of its own, and every key above that belongs to the box
+        let exact = keys_for(Interpolation::Linear, 0.0, &mut doc);
+        let straight = keys_for(Interpolation::Linear, 0.25, &mut doc);
+        assert!(
+            exact >= 49 && straight <= 4,
+            "{straight} keys for a straight move, {exact} exact"
+        );
+        let eased = keys_for(Interpolation::Smooth, 4.0, &mut doc);
+        assert!(
+            eased < exact / 2 && eased > straight,
+            "{eased} eased keys against {exact} exact"
+        );
+        // and the player stays within the tolerance at every frame
+        let l = doc.find_mut(id).unwrap();
+        l.transform.position = fanimate_core::Channel::new(Vec2::ZERO)
+            .with_key(1, Vec2::ZERO, Interpolation::Smooth)
+            .with_key(49, Vec2::new(480.0, 0.0), Interpolation::Smooth);
+        let (bytes, _, _) = fnmr_with(&doc, None, 4.0).unwrap();
+        let (exact_bytes, _, _) = fnmr(&doc, None).unwrap();
+        let (loose, exact) = (Player::open(&bytes).unwrap(), Player::open(&exact_bytes).unwrap());
+        for frame in 1..=49 {
+            let x = |p: &Player| {
+                p.sample(frame as f32)
+                    .iter()
+                    .find(|d| d.name == "box")
+                    .unwrap()
+                    .transform
+                    .translation
+                    .x
+            };
+            assert!((x(&loose) - x(&exact)).abs() <= 4.0 + 0.01, "frame {frame}");
+        }
     }
 
     #[test]

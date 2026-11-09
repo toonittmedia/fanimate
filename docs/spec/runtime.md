@@ -55,6 +55,10 @@ Fractional frames: `present`, `path_keys` and `paint_keys` use the whole part of
 
 A frame is drawn by: for each slot back to front, if the whole frame is in a `present` range, take the path and paint in force, the interpolated matrix and opacity, and draw the path with that matrix, fill and stroke at that opacity (multiplied into each paint's alpha). The web player's `toSvg(frame)` is exactly that, written as SVG.
 
+## Making a smaller file
+
+The exporter writes a key wherever a frame differs from its neighbours, which plays exactly like the canvas. `--tolerance N` (document units) may leave out keys the player would draw within N units of the exact frame without them: it changes how many keys there are, not what a key is, so a file made with a tolerance is an ordinary version 1 file. A straight move is two keys at any tolerance; a rig that swings limbs through big angles needs most of its keys, because a turn is not linear in the matrix.
+
 ## Limits
 
 At most 20,000 frames and 3,000,000 keys in a file. A reader should refuse a file past its own limits rather than allocate without bound, and must not trust any number: it may be missing, not a number or huge. The reference readers draw nothing for a slot they cannot read and never fail on one.

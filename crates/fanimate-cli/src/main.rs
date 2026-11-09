@@ -25,11 +25,13 @@ usage:
                       (an .svg is vector and ignores --width and --height; it lists what SVG cannot carry)
   fanimate-cli export <project.fnm> -o <out.mp4|.mov|.avi|.gif|.png|.exr|...> [--format F]
                       [--width W] [--height H] [--start N] [--end N] [--ffmpeg PATH]
-                      (-o out.json is a Lottie and -o out.lottie a dotLottie: the animation as vectors baked to keys,
+                      (--estimate on a Lottie or runtime export says how big it would be and writes nothing.
+                       -o out.json is a Lottie and -o out.lottie a dotLottie: the animation as vectors baked to keys,
                        with --start and --end; it lists what Lottie cannot carry. -o out.svg is an animated SVG,
                        the same baking as SMIL steps that browsers play without a script. -o out.fnmr is the
                        runtime format for games and the web: slots with baked transform keys, see
-                       docs/spec/runtime.md. -o out.otio is an OpenTimelineIO timeline with the sounds
+                       docs/spec/runtime.md; --tolerance N leaves out keys the player would not miss (N document
+                       units of drift). -o out.otio is an OpenTimelineIO timeline with the sounds
                        written beside it; --video names the rendered movie it points at)
   fanimate-cli sheet <project.fnm> -o <sheet.png> [--clips walk=1-24,idle=25-48] [--width W] [--height H]
                       [--padding N] [--max-width N] [--no-trim]
@@ -490,7 +492,18 @@ fn export_runtime(a: &Args, path: &str, out: &Path) -> CmdResult {
         a.get("--end")?.unwrap_or(doc.end),
     ));
     let started = Instant::now();
-    let (bytes, notes, keys) = fanimate_export::runtime::fnmr(&doc, range)?;
+    let tolerance: f32 = a.get("--tolerance")?.unwrap_or(0.0);
+    let (bytes, notes, keys) = fanimate_export::runtime::fnmr_with(&doc, range, tolerance)?;
+    if a.has("--estimate") {
+        println!(
+            "would write {} KB, {keys} keys (nothing written)",
+            bytes.len().div_ceil(1024)
+        );
+        for line in notes.lines() {
+            println!("  {line}");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
     println!(
         "wrote {} ({} KB, {keys} keys) in {:.0} ms",
@@ -588,6 +601,17 @@ fn export_lottie(a: &Args, path: &str, out: &Path, dot: bool) -> CmdResult {
     } else {
         let l = fanimate_export::lottie::lottie(&doc, range)?;
         let bytes = serde_json::to_vec(&l.json).map_err(|e| e.to_string())?;
+        if a.has("--estimate") {
+            println!(
+                "would write {} KB, {} keys (nothing written)",
+                bytes.len().div_ceil(1024),
+                l.keys
+            );
+            for line in l.report.lines() {
+                println!("  {line}");
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
         (bytes, l.report, Some(l.keys))
     };
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -671,7 +695,15 @@ fn export(args: &[String]) -> CmdResult {
     let a = Args::parse(
         args,
         &[
-            "-o", "--width", "--height", "--start", "--end", "--format", "--ffmpeg", "--video",
+            "-o",
+            "--width",
+            "--height",
+            "--start",
+            "--end",
+            "--format",
+            "--ffmpeg",
+            "--video",
+            "--tolerance",
         ],
     )?;
     let [path] = a.positional.as_slice() else {

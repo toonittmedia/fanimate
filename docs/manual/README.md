@@ -107,6 +107,22 @@ Press **T** (or choose the **T** in the Draw tools) and click the canvas to type
 
 Not built yet: text following a shape live (a copy of the path is used), templates, and animator rows in the timeline.
 
+## 6b. Helpers that need no AI
+
+**Edit › Assist** (also in the right-click menu of a layer, and in the command palette) holds three helpers. They use no model and no network, so they work with every AI switch off. Each is one undo step, so Undo is how you reject a result, and each marks the layer it changed or made (Layer properties show it) so the file says what was assisted.
+
+- **Clean Up Lines** (Ctrl+Alt+L) refits the lines of the selected shapes, or of the whole layer, with the fewest smooth curves that stay within a tolerance. The tolerance is in **Properties › Outline › Tolerance** (smaller keeps more of the wobble). Corners you drew stay corners, and a brush stroke keeps its thick and thin. Shapes that have point keys, hidden edges or smooth binding are left as they are, and the status bar says how many.
+- **Suggest Inbetween** (Ctrl+Alt+I) works on a frame-by-frame layer. With the playhead on a drawing it adds a drawing halfway to the next one; with the playhead on a later frame it adds one there. Shapes are paired by position and size, and points move along arcs, so a swinging arm keeps its length. A shape with no partner is held as it was and counted. Edit the new drawing like any other.
+- **Auto-Rig Character** (Ctrl+Alt+R) builds bones from layer names: torso, body or chest; head, face or hair; arm, forearm and hand; leg, thigh, shin and foot; tail. A side is named with L, R, A, B, left or right. The layers go into a new bone layer and each is bound to the bone of its part without moving the artwork. A character needs a torso layer; a layer that names no body part stays where it was. Everything is an ordinary rig afterwards: move the bones, add more.
+
+**Edit › Combine Shapes › Offset Path** (Ctrl+Alt+O) adds an outline a set distance outside a shape, or inside when the distance is negative. Set the distance in **Properties › Outline**.
+
+## 6c. Poses you keep, canvas rotation and plugins
+
+- **My poses.** Right-click an action in the Actions panel and choose **Save to My Poses**. The pose appears under **My poses** at the bottom of the panel in every project: click it to add it to the selected rig. Bones are matched by name (`arm L`, `Arm_L` and `arm.l` are one bone) and each bone's turn from its own rest angle is carried over, so a wave made on one character works on another. The library is the file `poses.json` in Fanimate's data folder.
+- **Rotate Canvas.** View › Rotate Canvas, or Ctrl+Alt+Left and Ctrl+Alt+Right, turns the view 15 degrees; Shift + middle-drag turns it freely. Only how you look at the animation turns: the artwork and everything saved are not changed, and drawing and selecting work as usual. Ctrl+Shift+0, or a click on the angle in the status bar, turns it upright. While it is turned the rulers are off and guides cannot be moved.
+- **Plugins.** Window › Plugins lists the programs in the plugins folder. Choosing one asks you first, in words, what it asks to be allowed to do. A plugin is a program: Fanimate limits what it does to your project, not to your computer, so run only plugins you trust. Everything a plugin does is one undo step, and Window › Plugins › Stop Plugin ends it. See [Plugins](../plugins.md) for making one.
+
 ## 7. Exporting
 
 - **File › Export Video** (Ctrl+Shift+R), at any size and frame range. With nothing else installed: MP4 (H.264 with sound, made by Windows' or macOS's own encoder), MP4 (AV1), uncompressed AVI, animated GIF, animated PNG, and PNG, TIFF or OpenEXR sequences. With FFmpeg installed: also H.265, WebM, MKV, ProRes 4444 (with transparency), ProRes 422 HQ, DNxHR HQ and animated WebP. **Edit › Preferences › Video formats** shows what this computer can make; see [More video formats with FFmpeg](../install.md#more-video-formats-with-ffmpeg).
@@ -114,6 +130,9 @@ Not built yet: text following a shape live (a copy of the path is used), templat
 - **File › Export for Web and Games** makes things that are not video, in the background, and tells you in the status bar what each one could not carry:
   - **Export Frame as SVG…** writes the frame at the playhead as a vector picture of what the canvas shows (the camera, bones, text and key colours included). Pictures are left out, a brush stroke's width changes are drawn as an even stroke, and a see-through shape blends in a different colour space from the canvas, so it can look slightly different.
   - **Export as Lottie…** bakes the whole animation into a dotLottie (`.lottie`) or Lottie JSON file that web and phone players read. Every frame is baked, so it looks like the canvas frame by frame, but bones, easing curves and Smart Bones are gone: only their result is kept. Frames that do not change cost nothing, so a still pose is small. Pictures are left out.
+  - **Export as Animated SVG…** bakes the animation into one SVG that browsers play without a script or a player. A frame that does not change costs nothing. Inkscape and Illustrator show only the first frame.
+  - **Export Runtime File…** writes a `.fnmr` for games and web pages: each shape with its path and a few baked transform keys, so a character plays exactly as it looks here with a very small player ([the format](../spec/runtime.md)). Bones are not in it, so a game cannot repose the character. From the command line, `--tolerance 2` leaves out keys the player would not miss, and `--estimate` says how big the file would be without writing it.
+  - **Export Timeline (OpenTimelineIO)…** writes the timing and sounds for an editing program: a video clip you link to your rendered movie, and each sound placed and trimmed on its own track, with the sound files written beside it. Drawings do not travel.
   - **Export Sprite Sheet…** packs every frame into one PNG with the empty margins trimmed, a held pose stored once, and a JSON atlas beside it (TexturePacker's "JSON hash" layout, which Phaser, PixiJS, Godot and most engines read, plus a `clips` list). From a script or the command line you can name clips: `fanimate-cli sheet scene.fnm -o walk.png --clips walk=1-24,idle=25-48`.
 
 ## 8. Keyboard shortcuts

@@ -93,3 +93,42 @@ fn a_timeline_names_the_movie_it_is_given_and_lists_what_it_does_not_carry() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn an_estimate_says_how_big_and_writes_nothing_and_a_tolerance_makes_the_runtime_smaller() {
+    let dir = temp("estimate");
+    let file = project(&dir);
+    let out_file = dir.join("hello.fnmr").to_string_lossy().into_owned();
+    let out = cli(&["export", &file, "-o", &out_file, "--estimate"]);
+    assert!(out.status.success(), "{}", said(&out));
+    assert!(
+        said(&out).contains("would write") && said(&out).contains("nothing written"),
+        "{}",
+        said(&out)
+    );
+    assert!(
+        !std::path::Path::new(&out_file).exists(),
+        "an estimate writes no file"
+    );
+    let lottie = dir.join("hello.json").to_string_lossy().into_owned();
+    let out = cli(&["export", &file, "-o", &lottie, "--estimate"]);
+    assert!(
+        said(&out).contains("keys") && !std::path::Path::new(&lottie).exists(),
+        "{}",
+        said(&out)
+    );
+    // a tolerance never makes the file larger
+    let exact = cli(&["export", &file, "-o", &out_file]);
+    assert!(exact.status.success(), "{}", said(&exact));
+    let exact_size = std::fs::metadata(&out_file).unwrap().len();
+    let loose = cli(&["export", &file, "-o", &out_file, "--tolerance", "5"]);
+    assert!(loose.status.success(), "{}", said(&loose));
+    assert!(std::fs::metadata(&out_file).unwrap().len() <= exact_size);
+    // a tolerance that is not a number is refused
+    assert!(
+        !cli(&["export", &file, "-o", &out_file, "--tolerance", "lots"])
+            .status
+            .success()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
