@@ -117,6 +117,10 @@ Not built yet: text following a shape live (a copy of the path is used), templat
 
 **Edit › Combine Shapes › Offset Path** (Ctrl+Alt+O) adds an outline a set distance outside a shape, or inside when the distance is negative. Set the distance in **Properties › Outline**.
 
+## 6bb. AI models
+
+The helpers above need no model. Some later tools (turning a scanned drawing into lines, speech to text for captions) are meant to use small models that run on your computer, off until you turn AI features on. **Fanimate ships none yet.** **Edit > Preferences > AI models** lists the models you have installed, installs one from a `.fnmodel` file and removes one. A model is accepted only if its licence is a permissive one, its training data is documented (commissioned, donated, public domain or openly licensed, never art scraped from the web), it carries Fanimate's signature and its weights are exactly what was signed; anything else is refused with the reason. See [the policy and the list of models](../legal/models.md).
+
 ## 6c. Poses you keep, canvas rotation and plugins
 
 - **My poses.** Right-click an action in the Actions panel and choose **Save to My Poses**. The pose appears under **My poses** at the bottom of the panel in every project: click it to add it to the selected rig. Bones are matched by name (`arm L`, `Arm_L` and `arm.l` are one bone) and each bone's turn from its own rest angle is carried over, so a wave made on one character works on another. The library is the file `poses.json` in Fanimate's data folder.

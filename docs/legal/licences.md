@@ -14,11 +14,11 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | Lucide icons | ISC | `crates/fanimate-app/icons/lucide` |
 | Rhubarb Lip Sync 1.14.0 (separate program) | MIT | `scripts/fetch-rhubarb.sh` |
 
-## Rust crates (530)
+## Rust crates (537)
 
 | Licence used | Crates |
 |---|---|
-| MIT | 478 |
+| MIT | 485 |
 | Apache-2.0 | 19 |
 | MPL-2.0 | 12 |
 | BSD-3-Clause | 6 |
@@ -92,6 +92,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | bitflags | 1.3.2 | MIT/Apache-2.0 | MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 | MIT |
 | bitstream-io | 4.10.0 | MIT/Apache-2.0 | MIT |
+| block-buffer | 0.10.4 | MIT OR Apache-2.0 | MIT |
 | block2 | 0.5.1 | MIT | MIT |
 | block2 | 0.6.2 | MIT | MIT |
 | blocking | 1.7.0 | Apache-2.0 OR MIT | MIT |
@@ -126,17 +127,20 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | core_maths | 0.1.1 | MIT | MIT |
 | coreaudio-rs | 0.14.2 | MIT/Apache-2.0 | MIT |
 | cpal | 0.18.2 | Apache-2.0 | Apache-2.0 |
+| cpufeatures | 0.2.17 | MIT OR Apache-2.0 | MIT |
 | crc32fast | 1.5.2 | MIT OR Apache-2.0 | MIT |
 | crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 | MIT |
 | crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 | MIT |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | MIT |
 | crunchy | 0.2.4 | MIT | MIT |
+| crypto-common | 0.1.7 | MIT OR Apache-2.0 | MIT |
 | cursor-icon | 1.2.0 | MIT OR Apache-2.0 OR Zlib | MIT |
 | dasp_sample | 0.11.0 | MIT OR Apache-2.0 | MIT |
 | data-url | 0.3.2 | MIT OR Apache-2.0 | MIT |
 | defmt | 1.1.1 | MIT OR Apache-2.0 | MIT |
 | defmt-macros | 1.1.1 | MIT OR Apache-2.0 | MIT |
 | defmt-parser | 1.0.0 | MIT OR Apache-2.0 | MIT |
+| digest | 0.10.7 | MIT OR Apache-2.0 | MIT |
 | dispatch | 0.2.0 | MIT | MIT |
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT | MIT |
 | dlib | 0.5.3 | MIT | MIT |
@@ -194,6 +198,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | futures-macro | 0.3.34 | MIT OR Apache-2.0 | MIT |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 | MIT |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 | MIT |
+| generic-array | 0.14.7 | MIT | MIT |
 | gethostname | 1.1.0 | Apache-2.0 | Apache-2.0 |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 | MIT |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | MIT |
@@ -410,6 +415,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 | MIT |
 | serde_json | 1.0.152 | MIT OR Apache-2.0 | MIT |
 | serde_repr | 0.1.21 | MIT OR Apache-2.0 | MIT |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 | MIT |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | MIT |
 | simd-adler32 | 0.3.10 | MIT | MIT |
 | simd_cesu8 | 1.2.0 | Apache-2.0 OR MIT | MIT |
@@ -467,6 +473,7 @@ Fanimate itself is MIT or Apache 2.0. Where a crate offers a choice, Fanimate us
 | ttf-parser | 0.25.1 | MIT OR Apache-2.0 | MIT |
 | type-map | 0.5.1 | MIT/Apache-2.0 | MIT |
 | typeid | 1.0.3 | MIT OR Apache-2.0 | MIT |
+| typenum | 1.20.1 | MIT OR Apache-2.0 | MIT |
 | uds_windows | 1.2.1 | MIT | MIT |
 | unicode-bidi | 0.3.18 | MIT OR Apache-2.0 | MIT |
 | unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 | MIT |
