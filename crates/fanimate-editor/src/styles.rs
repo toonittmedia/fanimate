@@ -55,6 +55,9 @@ impl DrawStyle {
             taper: self.taper,
             pressure: self.pressure,
             hardness: Some(self.hardness),
+            flow: Some(self.brush_flow),
+            spacing: Some(self.brush_spacing),
+            flow_pressure: Some(self.brush_flow_pressure),
         }
     }
 
@@ -62,8 +65,18 @@ impl DrawStyle {
     /// saved before styles had a hardness says nothing about it, so it is not compared.
     pub fn is_look_of(&self, preset: &StylePreset) -> bool {
         let mut same = self.to_preset(preset.name.clone());
+        // a style saved before a brush setting existed says nothing about it
         if preset.hardness.is_none() {
             same.hardness = None;
+        }
+        if preset.flow.is_none() {
+            same.flow = None;
+        }
+        if preset.spacing.is_none() {
+            same.spacing = None;
+        }
+        if preset.flow_pressure.is_none() {
+            same.flow_pressure = None;
         }
         same == *preset
     }
@@ -78,6 +91,15 @@ impl DrawStyle {
         self.smoothing = preset.smoothing.clamp(0.0, 1.0);
         self.taper = preset.taper.clamp(0.0, 500.0);
         self.pressure = preset.pressure;
+        if let Some(v) = preset.flow {
+            self.brush_flow = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = preset.spacing {
+            self.brush_spacing = v.clamp(0.05, 1.0);
+        }
+        if let Some(v) = preset.flow_pressure {
+            self.brush_flow_pressure = v.clamp(0.0, 1.0);
+        }
         if let Some(h) = preset.hardness {
             self.hardness = h.clamp(0.0, 1.0);
         }
@@ -515,5 +537,44 @@ mod tests {
             !now.is_look_of(&preset),
             "with a hardness in the style, a different one is a different look"
         );
+    }
+
+    #[test]
+    fn a_style_is_a_raster_brush_preset_and_an_older_one_leaves_those_settings_alone() {
+        let airbrush = DrawStyle {
+            hardness: 0.1,
+            brush_flow: 0.3,
+            brush_spacing: 0.08,
+            brush_flow_pressure: 0.9,
+            ..inked()
+        };
+        let preset = airbrush.to_preset("Airbrush");
+        assert_eq!(
+            (preset.flow, preset.spacing, preset.flow_pressure),
+            (Some(0.3), Some(0.08), Some(0.9))
+        );
+        let mut now = DrawStyle::default();
+        now.apply(&preset);
+        assert_eq!(
+            (now.brush_flow, now.brush_spacing, now.brush_flow_pressure),
+            (0.3, 0.08, 0.9)
+        );
+        assert!(now.is_look_of(&preset));
+        // wild values are held within range
+        let mut wild = preset.clone();
+        (wild.flow, wild.spacing, wild.flow_pressure) = (Some(9.0), Some(0.0), Some(-1.0));
+        now.apply(&wild);
+        assert_eq!(
+            (now.brush_flow, now.brush_spacing, now.brush_flow_pressure),
+            (1.0, 0.05, 0.0)
+        );
+        // an older style has none of them: applying leaves what is set, and it still counts as the look
+        let mut old = preset.clone();
+        (old.flow, old.spacing, old.flow_pressure) = (None, None, None);
+        now.brush_flow = 0.6;
+        now.apply(&old);
+        assert_eq!(now.brush_flow, 0.6);
+        assert!(now.is_look_of(&old));
+        assert!(!now.is_look_of(&preset));
     }
 }

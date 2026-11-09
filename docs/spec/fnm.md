@@ -109,7 +109,7 @@ Canvas, timing, and the order of top-level layers.
 | `background` | [colour](#colours) | Canvas colour |
 | `next_layer_id` | integer | Next unused layer id. Greater than every id in the project. |
 | `guides` | array | Optional (version 5). Guides placed from the rulers: `vertical` (true for a vertical line at `position` on the x axis, false for a horizontal one on the y axis), `position` (document units) and optionally `locked` (true when it cannot be dragged). At most 1000. |
-| `styles` | array | Optional (version 6), left out when empty. The brush and shape styles saved with the project, so another computer has them. Each is `name` (1 to 60 characters, unique), `line` (a [colour](#colours)), `width` (above 0), `fill` (a colour or `null`: no fill), `outline` (boolean), `smoothing` (0 to 1), `taper` (0 or more), `pressure` (boolean: a pen's pressure sets a brush stroke's width) and optionally `hardness` (0 to 1: how hard the edge of a stroke on a raster layer is; left out by styles saved before it existed, which then leave the setting as it is). At most 64. |
+| `styles` | array | Optional (version 6), left out when empty. The brush and shape styles saved with the project, so another computer has them. Each is `name` (1 to 60 characters, unique), `line` (a [colour](#colours)), `width` (above 0), `fill` (a colour or `null`: no fill), `outline` (boolean), `smoothing` (0 to 1), `taper` (0 or more), `pressure` (boolean: a pen's pressure sets a brush stroke's width) and optionally `hardness` (0 to 1: how hard the edge of a stroke on a raster layer is; left out by styles saved before it existed, which then leave the setting as it is), and optionally `flow` (0 to 1), `spacing` (0.05 to 1) and `flow_pressure` (0 to 1): the raster brush's flow, dab spacing as a fraction of its size, and how much pen pressure lowers the flow, left out the same way. At most 64. |
 | `camera` | object | Optional (version 5). The [camera](#the-camera). Left out when it looks at the whole canvas and has no keys. |
 | `layers` | array of strings | Top-level layer files relative to the project folder, **bottom to top** (the last is drawn on top). |
 
@@ -629,7 +629,7 @@ Readers should validate on load. Fanimate's validator reports, and on request re
 | Path with points that are not numbers | Error | Each such point moves to the origin, so the project can be saved |
 | `hidden_edge_flags` whose length is not the number of path commands | Warning | Remove it: every edge is drawn |
 | `hidden_edge_flags` that hides a `MoveTo` | Warning | Show it |
-| `styles` entry that is unusable (a number that is not finite, a width of 0 or less, smoothing or hardness outside 0 to 1), has no name or repeats a name, or more than 64 styles | Warning | Remove it, and the extra ones; names are trimmed |
+| `styles` entry that is unusable (a number that is not finite, a width of 0 or less, smoothing, hardness, flow or flow_pressure outside 0 to 1, spacing outside 0.05 to 1), has no name or repeats a name, or more than 64 styles | Warning | Remove it, and the extra ones; names are trimmed |
 | Shape bound to a bone that does not exist, or outside any bone layer | Warning | Unbind the shape |
 | `skin` whose length does not match the path's on-curve points | Error | Remove the skin |
 | `skin` weight naming a missing bone, or not a finite non-negative number | Error | Remove that weight |

@@ -38,6 +38,15 @@ pub struct StylePreset {
     /// before this existed have none and leave the setting as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardness: Option<f32>,
+    /// How strongly each dab of a raster brush lays paint, 0 to 1. Optional like `hardness`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<f32>,
+    /// The distance between a raster brush's dabs as a fraction of its size, 0.05 to 1. Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spacing: Option<f32>,
+    /// How much pen pressure also lowers a raster brush's flow, 0 to 1. Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_pressure: Option<f32>,
 }
 
 impl StylePreset {
@@ -56,6 +65,12 @@ impl StylePreset {
             && self
                 .hardness
                 .is_none_or(|h| h.is_finite() && (0.0..=1.0).contains(&h))
+            && [self.flow, self.flow_pressure]
+                .iter()
+                .all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v)))
+            && self
+                .spacing
+                .is_none_or(|v| v.is_finite() && (0.05..=1.0).contains(&v))
     }
 
     /// The name tidied to fit: no leading or trailing spaces, at most
@@ -85,6 +100,9 @@ mod tests {
             taper: 20.0,
             pressure: true,
             hardness: None,
+            flow: None,
+            spacing: None,
+            flow_pressure: None,
         }
     }
 
@@ -151,6 +169,18 @@ mod tests {
             },
             StylePreset {
                 hardness: Some(f32::NAN),
+                ..preset()
+            },
+            StylePreset {
+                flow: Some(-0.1),
+                ..preset()
+            },
+            StylePreset {
+                spacing: Some(0.0),
+                ..preset()
+            },
+            StylePreset {
+                flow_pressure: Some(f32::INFINITY),
                 ..preset()
             },
         ] {
