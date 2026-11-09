@@ -80,7 +80,7 @@ fn value(rng: &mut Rng, hint: &str) -> Value {
         return json!(rng.below(2) == 0);
     }
     if hint.starts_with('[') {
-        return json!((0..rng.below(4)).map(|i| i).collect::<Vec<_>>());
+        return json!((0..rng.below(4)).collect::<Vec<_>>());
     }
     rng.pick(&nasty).clone()
 }
