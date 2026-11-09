@@ -1248,6 +1248,7 @@ impl<'a> Api<'a> {
             flow: flow.unwrap_or(1.0),
             erase,
             spacing: spacing.unwrap_or(0.25),
+            flow_pressure: 0.0,
         };
         let points: Vec<fanimate_core::Vec2> = points
             .into_iter()

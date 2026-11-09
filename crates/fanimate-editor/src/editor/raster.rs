@@ -167,6 +167,7 @@ impl Editor {
             flow: if erase { 1.0 } else { d.line.a * d.brush_flow },
             erase,
             spacing: d.brush_spacing,
+            flow_pressure: d.brush_flow_pressure,
         };
         self.start_raster_stroke(layer, brush, scale, to_layer);
         self.continue_raster_stroke(at, pressure);

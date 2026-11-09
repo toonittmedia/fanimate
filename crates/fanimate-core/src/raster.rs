@@ -94,6 +94,9 @@ pub struct Brush {
     /// The distance between dabs along a stroke, as a fraction of the size: 0.05 to 1. Close
     /// dabs build up a smooth line (and, with a low flow, darker paint); far ones show as beads.
     pub spacing: f32,
+    /// How much pen pressure also lowers the flow: 0 leaves the flow alone (pressure then only
+    /// changes the size), 1 makes the lightest touch lay no paint at all. 0 to 1.
+    pub flow_pressure: f32,
 }
 
 impl Default for Brush {
@@ -105,6 +108,7 @@ impl Default for Brush {
             flow: 1.0,
             erase: false,
             spacing: 0.25,
+            flow_pressure: 0.0,
         }
     }
 }
@@ -119,6 +123,7 @@ impl Brush {
             hardness: fix(self.hardness, 0.0, 1.0, 0.8),
             flow: fix(self.flow, 0.0, 1.0, 1.0),
             spacing: fix(self.spacing, 0.05, 1.0, 0.25),
+            flow_pressure: fix(self.flow_pressure, 0.0, 1.0, 0.0),
             ..self
         }
     }
@@ -264,8 +269,14 @@ impl Stroke {
         };
         let brush_sane = brush.sane();
         let spacing = (brush_sane.size * brush_sane.spacing).max(1.0);
+        // the brush as a dab at this pressure lays it: a light touch lowers the flow by the amount
+        // the brush asks for
+        let at_pressure = |p: f32| Brush {
+            flow: brush_sane.flow * (1.0 - brush_sane.flow_pressure * (1.0 - p)),
+            ..brush_sane
+        };
         let Some((from, from_pressure)) = self.last else {
-            painting.dab(to, brush, 0.25 + 0.75 * pressure, load);
+            painting.dab(to, &at_pressure(pressure), 0.25 + 0.75 * pressure, load);
             self.last = Some((to, pressure));
             return;
         };
@@ -279,7 +290,7 @@ impl Stroke {
         while at <= length && dabs < 4000 {
             let t = if length > 0.0 { at / length } else { 1.0 };
             let p = from_pressure + (pressure - from_pressure) * t;
-            painting.dab(from.lerp(to, t), brush, 0.25 + 0.75 * p, load);
+            painting.dab(from.lerp(to, t), &at_pressure(p), 0.25 + 0.75 * p, load);
             at += spacing;
             dabs += 1;
         }
@@ -938,5 +949,42 @@ mod tests {
             assert!((0.05..=1.0).contains(&b.spacing), "{bad} gave {}", b.spacing);
         }
         assert_eq!(run(f32::NAN), run(0.25), "an unusable spacing is the default");
+    }
+
+    #[test]
+    fn a_light_touch_lays_less_paint_when_pressure_lowers_the_flow() {
+        let run = |flow_pressure: f32, pressure: f32| {
+            let brush = Brush {
+                size: 20.0,
+                hardness: 1.0,
+                flow_pressure,
+                ..Brush::default()
+            };
+            let mut painting = Painting::default();
+            let mut stroke = Stroke::default();
+            for x in [20.0, 120.0] {
+                stroke.line(&mut painting, &brush, Vec2::new(x, 50.0), pressure, &mut empty);
+            }
+            pixel(&painting, 70.0, 50.0)[3]
+        };
+        // with no pressure-to-flow the paint is solid however light the touch
+        assert_eq!(run(0.0, 0.3), 255);
+        // with it, a light touch is fainter than a firm one, and full pressure is solid
+        let (light, firm) = (run(1.0, 0.3), run(1.0, 1.0));
+        assert!(light < firm && firm == 255, "{light} against {firm}");
+        assert!(light > 0, "the lightest touch here still marks");
+        // an unusable amount is no effect, never a blank stroke
+        for bad in [f32::NAN, -2.0] {
+            assert_eq!(run(bad, 0.3), 255, "{bad}");
+        }
+        assert_eq!(
+            Brush {
+                flow_pressure: 9.0,
+                ..Brush::default()
+            }
+            .sane()
+            .flow_pressure,
+            1.0
+        );
     }
 }

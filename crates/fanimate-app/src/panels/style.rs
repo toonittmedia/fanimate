@@ -185,6 +185,17 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             }
             ui.end_row();
 
+            ui.label(RichText::new("Pressure to flow").color(muted));
+            let mut fp = d.brush_flow_pressure * 100.0;
+            if ui
+                .add(egui::Slider::new(&mut fp, 0.0..=100.0).suffix("%").max_decimals(0))
+                .on_hover_text("How much a pen's pressure also lowers the flow of a raster brush, so a light touch lays lighter paint. 0 leaves pressure changing only the size. A mouse has no pressure.")
+                .changed()
+            {
+                d.brush_flow_pressure = (fp / 100.0).clamp(0.0, 1.0);
+            }
+            ui.end_row();
+
             ui.label(RichText::new("Spacing").color(muted));
             let mut spacing = d.brush_spacing * 100.0;
             if ui
