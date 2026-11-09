@@ -46,6 +46,8 @@ Masks, clips and blend modes are drawn on the canvas, in renders and in the brow
 
 In the graph, scroll the wheel to move up and down, Shift+scroll to move along the frames, Ctrl+scroll to zoom the frames about the pointer and Ctrl+Shift+scroll to zoom the values. The buttons at the top right (and the zoom shortcuts while the pointer is over the graph) zoom in and out and fit the curves, overshoots and bounces included. Press on empty space and drag to scrub the playhead.
 
+**Bake expression** (the button under the property buttons) writes a formula as keys. Type a formula such as `value + 10 * sin(frame / 3)`, choose the frames (and X or Y for a position) and press Bake or Enter: the formula is worked out on every frame of the range and the answers replace the keys there, in one undo step. `value` is what the curve had on that frame, in the units the graph shows. Other names are `frame`, `time`, `progress`, `first` and `last`; functions include `sin`, `clamp`, `lerp`, `smoothstep`, `if`, `mod`, and the seeded `noise`, `random` and `blink` (the same on every frame order and every computer). If any frame fails, nothing is written and the status bar says which.
+
 ## 5. Rigging
 
 - Bone layers hold a skeleton. **Add Bone** draws chains; **Select Bone** edits the rest pose; **Manipulate Bones** poses with inverse kinematics (Alt for one bone) and always keys the frame.

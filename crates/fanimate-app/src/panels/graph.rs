@@ -9,7 +9,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sens
 use fanimate_core::easing::Bezier;
 use fanimate_core::graph::{CurveKey, component_count, display_scale};
 use fanimate_core::{ChannelId, Frame, Interpolation, LayerId};
-use fanimate_editor::{Action, KeyRef, KeySelect};
+use fanimate_editor::{Action, KeyRef, KeySelect, StatusKind};
 
 use crate::app::Shell;
 use crate::icons::{self, Icon};
@@ -182,7 +182,84 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         });
     });
     ui.ctx().data_mut(|d| d.insert_temp(property_id, active));
+    bake_row(ui, shell, layer, active);
     plot(ui, shell, layer, active);
+}
+
+/// "Bake Expression": a formula worked out on every frame of a range and
+/// written as keys of the curve on show (`Editor::bake_expression`, one undo
+/// step, nothing written when any frame fails). `value` is what the curve had.
+fn bake_row(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
+    let p = shell.palette;
+    let open_id = Id::new(("graph-bake-open", layer));
+    let text_id = Id::new(("graph-bake-text", layer, ch));
+    let range_id = Id::new(("graph-bake-range", layer));
+    let part_id = Id::new(("graph-bake-part", layer, ch));
+    let open: bool = ui.ctx().data(|d| d.get_temp(open_id)).unwrap_or(false);
+    let blocked = shell.editor.editing_blocked();
+    let (doc_start, doc_end) = (shell.editor.doc.start, shell.editor.doc.end);
+    ui.horizontal(|ui| {
+        let tip = "Work out a formula on every frame of a range and write the answers as keys, for a wobble, a blink or a pulse. One undo step.";
+        if ui.selectable_label(open, "Bake expression").on_hover_text(tip).clicked() {
+            ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
+        }
+    });
+    if !open {
+        return;
+    }
+    let mut text: String = ui.ctx().data(|d| d.get_temp(text_id)).unwrap_or_default();
+    let (mut first, mut last): (Frame, Frame) = ui
+        .ctx()
+        .data(|d| d.get_temp(range_id))
+        .unwrap_or((doc_start, doc_end));
+    let comps = component_count(ch);
+    let mut part: usize = ui.ctx().data(|d| d.get_temp(part_id)).unwrap_or(0).min(comps - 1);
+    let mut bake = false;
+    ui.add_enabled_ui(!blocked, |ui| {
+        ui.horizontal(|ui| {
+            let reply = ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .hint_text("value + 10 * sin(frame / 3)")
+                    .desired_width((ui.available_width() - 270.0).max(120.0)),
+            );
+            if reply.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                bake = true;
+            }
+            if comps > 1 {
+                for (i, name) in ["X", "Y"].iter().enumerate().take(comps) {
+                    if ui.selectable_label(part == i, *name).clicked() {
+                        part = i;
+                    }
+                }
+            }
+            ui.label(RichText::new("frames").color(p.text_muted));
+            ui.add(egui::DragValue::new(&mut first));
+            ui.label(RichText::new("to").color(p.text_muted));
+            ui.add(egui::DragValue::new(&mut last));
+            if ui
+                .button("Bake")
+                .on_hover_text("Write the answers as keys (Enter does the same). Functions: sin, clamp, lerp, smoothstep, if, mod, noise, random, blink. Names: frame, time, value, progress, first, last.")
+                .clicked()
+            {
+                bake = true;
+            }
+        });
+    });
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(text_id, text.clone());
+        d.insert_temp(range_id, (first, last));
+        d.insert_temp(part_id, part);
+    });
+    if bake {
+        match shell.editor.bake_expression(layer, ch, part, &text, first, last) {
+            Ok(n) => shell.editor.set_status(
+                StatusKind::Success,
+                format!("Baked {n} keys from frame {first} to {last}"),
+            ),
+            Err(e) => shell.editor.set_status(StatusKind::Error, e),
+        }
+    }
+    ui.add_space(2.0);
 }
 
 fn plot(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId, ch: ChannelId) {
