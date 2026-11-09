@@ -174,6 +174,71 @@ impl Plugins {
     }
 }
 
+/// A plugin, or one of its commands, as the command palette offers it.
+pub struct PaletteItem {
+    /// What the palette shows: "Plugin: Name" or "Plugin: Name: Command title".
+    pub label: String,
+    /// Where the plugin is in `Plugins::found`.
+    pub plugin: usize,
+    /// The command to run it with (None: the plugin has none).
+    pub command: Option<String>,
+    /// Whether it can start now: nothing else is running, it has an entry and a project is open.
+    pub enabled: bool,
+}
+
+/// Whether every word of `query` is somewhere in `label`, ignoring case. An empty query matches all.
+fn matches_words(label: &str, query: &str) -> bool {
+    let label = label.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|w| label.contains(&w.to_lowercase()))
+}
+
+/// The plugins and commands whose names match what was typed in the command palette, in
+/// the order of the Plugins menu.
+pub fn palette_items(shell: &mut Shell, query: &str) -> Vec<PaletteItem> {
+    if !shell.plugins.loaded {
+        shell.plugins.refresh();
+    }
+    let usable = !shell.plugins.is_running() && !shell.docs.home_front();
+    let mut items = Vec::new();
+    for (i, plugin) in shell.plugins.found.iter().enumerate() {
+        let name = &plugin.manifest.name;
+        let enabled = usable && plugin.manifest.entry.is_some();
+        if plugin.commands.is_empty() {
+            let label = format!("Plugin: {name}");
+            if matches_words(&label, query) {
+                items.push(PaletteItem {
+                    label,
+                    plugin: i,
+                    command: None,
+                    enabled,
+                });
+            }
+        }
+        for command in &plugin.commands {
+            let label = format!("Plugin: {name}: {}", command.title);
+            if matches_words(&label, query) {
+                items.push(PaletteItem {
+                    label,
+                    plugin: i,
+                    command: Some(command.id.clone()),
+                    enabled,
+                });
+            }
+        }
+    }
+    items
+}
+
+/// Run what the palette chose: the same request as the Plugins menu makes (the permission
+/// prompt first, unless the user already said "always").
+pub fn run_palette_item(shell: &mut Shell, plugin: usize, command: Option<String>) {
+    if let Some(p) = shell.plugins.found.get(plugin).cloned() {
+        shell.plugins.request(p, command);
+    }
+}
+
 /// Window > Plugins.
 pub fn menu(ui: &mut egui::Ui, shell: &mut Shell) {
     if !shell.plugins.loaded {
@@ -515,6 +580,18 @@ mod tests {
         let mut fresh = Plugins::default();
         fresh.request(one, None);
         assert!(fresh.start_next.is_none() && fresh.asking.is_some());
+    }
+
+    #[test]
+    fn palette_words_match_anywhere_in_the_label_ignoring_case() {
+        let label = "Plugin: Command Test: Add a layer called Circle";
+        assert!(matches_words(label, ""));
+        assert!(matches_words(label, "circle"));
+        assert!(matches_words(label, "plugin CIRCLE"));
+        assert!(matches_words(label, "  test   layer  "));
+        assert!(!matches_words(label, "square"));
+        assert!(!matches_words(label, "circle square"));
+        assert!(!matches_words("", "x"));
     }
 
     #[test]

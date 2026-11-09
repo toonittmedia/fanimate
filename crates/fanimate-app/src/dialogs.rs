@@ -472,13 +472,19 @@ fn confirm_discard(ctx: &egui::Context, shell: &mut Shell) {
 }
 
 fn palette(ctx: &egui::Context, shell: &mut Shell) {
+    let Some(query) = shell.ui.palette.as_ref().map(|s| s.query.clone()) else {
+        return;
+    };
+    // plugins and their commands are listed after the actions
+    let plugin_items = crate::plugins::palette_items(shell, &query);
     let Some(state) = shell.ui.palette.as_mut() else {
         return;
     };
     let mut matches = fanimate_editor::search(&Action::all(), &state.query, &shell.recent_actions);
     // what can run now comes first, keeping the search order otherwise
     matches.sort_by_key(|a| !shell.editor.can_run(*a));
-    state.selected = state.selected.min(matches.len().saturating_sub(1));
+    let total = matches.len() + plugin_items.len();
+    state.selected = state.selected.min(total.saturating_sub(1));
 
     let (up, down, enter, escape) = ctx.input(|i| {
         (
@@ -489,13 +495,14 @@ fn palette(ctx: &egui::Context, shell: &mut Shell) {
         )
     });
     if down {
-        state.selected = (state.selected + 1).min(matches.len().saturating_sub(1));
+        state.selected = (state.selected + 1).min(total.saturating_sub(1));
     }
     if up {
         state.selected = state.selected.saturating_sub(1);
     }
 
     let mut run: Option<Action> = None;
+    let mut run_plugin: Option<(usize, Option<String>)> = None;
     let modal = egui::Modal::new(Id::new("command-palette")).show(ctx, |ui| {
         ui.set_width(440.0);
         let state = shell.ui.palette.as_mut().expect("checked above");
@@ -533,16 +540,43 @@ fn palette(ctx: &egui::Context, shell: &mut Shell) {
                     run = Some(*action);
                 }
             }
+            for (j, item) in plugin_items.iter().enumerate() {
+                let i = matches.len() + j;
+                let text = RichText::new(&item.label).color(if item.enabled {
+                    shell.palette.text
+                } else {
+                    shell.palette.text_muted
+                });
+                let r = ui.add(
+                    egui::Button::selectable(i == selected, text)
+                        .min_size(egui::vec2(ui.available_width(), 0.0)),
+                );
+                if i == selected {
+                    r.scroll_to_me(None);
+                }
+                if r.clicked() && item.enabled {
+                    run_plugin = Some((item.plugin, item.command.clone()));
+                }
+            }
         });
     });
-    if enter
-        && let Some(a) = matches.get(shell.ui.palette.as_ref().map_or(0, |s| s.selected))
-        && shell.editor.can_run(*a)
-    {
-        run = Some(*a);
+    let chosen = shell.ui.palette.as_ref().map_or(0, |s| s.selected);
+    if enter {
+        if let Some(a) = matches.get(chosen) {
+            if shell.editor.can_run(*a) {
+                run = Some(*a);
+            }
+        } else if let Some(item) = plugin_items.get(chosen - matches.len())
+            && item.enabled
+        {
+            run_plugin = Some((item.plugin, item.command.clone()));
+        }
     }
-    if escape || modal.should_close() || run.is_some() {
+    if escape || modal.should_close() || run.is_some() || run_plugin.is_some() {
         shell.ui.palette = None;
+    }
+    if let Some((plugin, command)) = run_plugin {
+        crate::plugins::run_palette_item(shell, plugin, command);
     }
     if let Some(a) = run {
         shell.pending.push(a);

@@ -28,14 +28,28 @@ const TOOL_MARGIN: f32 = 6.0;
 /// without being cut off, and the canvas still gets most of a 1366 px screen.
 pub const RIGHT_MIN_WIDTH: f32 = 300.0;
 
-/// The Assistant column: wide enough for a sentence a line, narrow enough
-/// that a 1366 px screen keeps most of its canvas.
+/// The Assistant column on a roomy window: wide enough for a sentence a line. On a small window
+/// it starts at the side panels' own minimum instead (see [`assistant_width`]).
 pub const ASSISTANT_WIDTH: f32 = 340.0;
 
 /// Below this width (the space the panels share, in points) the Assistant replaces the right column
 /// instead of sitting beside it.
 const NARROW_WINDOW: f32 = 1500.0;
-pub const ASSISTANT_MIN_WIDTH: f32 = 280.0;
+/// The Assistant is never narrower than the side panels' minimum, and on a small window it
+/// starts at it, so a 1366 px screen keeps its canvas.
+pub const ASSISTANT_MIN_WIDTH: f32 = RIGHT_MIN_WIDTH;
+
+// the Assistant is never narrower than a side panel, and never starts below its own minimum
+const _: () = assert!(ASSISTANT_MIN_WIDTH == RIGHT_MIN_WIDTH && ASSISTANT_WIDTH >= ASSISTANT_MIN_WIDTH);
+
+/// The width the Assistant column starts with in a window of `window_width` points.
+pub fn assistant_width(window_width: f32) -> f32 {
+    if window_width >= NARROW_WINDOW {
+        ASSISTANT_WIDTH
+    } else {
+        ASSISTANT_MIN_WIDTH
+    }
+}
 
 /// Where a docked panel lives (the tools column is not docked).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,7 +293,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell, layout: &mut Layout, style: &e
     if layout.show_assistant {
         egui::Panel::right(Id::new(("layout-assistant", generation)))
             .resizable(true)
-            .default_size(ASSISTANT_WIDTH)
+            .default_size(assistant_width(window_width))
             .size_range(ASSISTANT_MIN_WIDTH..=480.0)
             .frame(frame())
             .show(ui, |ui| crate::panels::assistant::show(ui, shell));
@@ -545,5 +559,14 @@ mod tests {
         assert_eq!(back.generation, 1);
         assert!(back.is_open(Tab::Bones));
         assert!(!back.is_open(Tab::History));
+    }
+
+    #[test]
+    fn the_assistant_is_as_narrow_as_a_side_panel_on_a_small_window() {
+        for small in [900.0, 1366.0, 1499.0] {
+            assert_eq!(assistant_width(small), RIGHT_MIN_WIDTH, "{small}");
+        }
+        assert_eq!(assistant_width(1500.0), ASSISTANT_WIDTH);
+        assert_eq!(assistant_width(1920.0), ASSISTANT_WIDTH);
     }
 }

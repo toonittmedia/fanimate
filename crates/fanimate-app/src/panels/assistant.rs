@@ -282,22 +282,27 @@ fn provider_rows(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.horizontal(|ui| {
         ui.label("Model");
         let kind = shell.ai.provider;
-        ui.add(egui::TextEdit::singleline(shell.ai.model_mut()).desired_width(ui.available_width() - 28.0));
-        if !kind.suggestions().is_empty() {
-            egui::ComboBox::from_id_salt("assistant-model")
-                .selected_text("")
-                .width(20.0)
-                .show_ui(ui, |ui| {
-                    for suggestion in kind.suggestions() {
-                        if ui
-                            .selectable_label(shell.ai.model() == *suggestion, *suggestion)
-                            .clicked()
-                        {
-                            *shell.ai.model_mut() = (*suggestion).to_owned();
+        // right to left: the list button takes its own width, and the box gets exactly what is
+        // left. (A box sized as "the rest minus a guess" overflowed by one item spacing each
+        // frame, and the column grew to its widest size by itself.)
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if !kind.suggestions().is_empty() {
+                egui::ComboBox::from_id_salt("assistant-model")
+                    .selected_text("")
+                    .width(20.0)
+                    .show_ui(ui, |ui| {
+                        for suggestion in kind.suggestions() {
+                            if ui
+                                .selectable_label(shell.ai.model() == *suggestion, *suggestion)
+                                .clicked()
+                            {
+                                *shell.ai.model_mut() = (*suggestion).to_owned();
+                            }
                         }
-                    }
-                });
-        }
+                    });
+            }
+            ui.add(egui::TextEdit::singleline(shell.ai.model_mut()).desired_width(ui.available_width()));
+        });
     });
     key_rows(ui, shell);
 }
@@ -326,23 +331,26 @@ fn key_rows(ui: &mut egui::Ui, shell: &mut Shell) {
         Source::None => {
             ui.horizontal(|ui| {
                 ui.label("Key");
-                ui.add(
-                    egui::TextEdit::singleline(&mut shell.assistant.key_draft)
-                        .password(true)
-                        .hint_text("Paste your key")
-                        .desired_width(ui.available_width() - 60.0),
-                );
-                let draft = shell.assistant.key_draft.trim().to_owned();
-                if ui
-                    .add_enabled(!draft.is_empty(), kit::primary(&p, "Save"))
-                    .clicked()
-                {
-                    shell.assistant.key_message = Some(match shell.keys.save(kind, &draft) {
-                        Ok(()) => "Key saved.".to_owned(),
-                        Err(e) => format!("Could not save the key: {e}"),
-                    });
-                    shell.assistant.key_draft.clear();
-                }
+                // right to left, as the Model row: Save keeps its width, the box takes the rest
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let draft = shell.assistant.key_draft.trim().to_owned();
+                    if ui
+                        .add_enabled(!draft.is_empty(), kit::primary(&p, "Save"))
+                        .clicked()
+                    {
+                        shell.assistant.key_message = Some(match shell.keys.save(kind, &draft) {
+                            Ok(()) => "Key saved.".to_owned(),
+                            Err(e) => format!("Could not save the key: {e}"),
+                        });
+                        shell.assistant.key_draft.clear();
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut shell.assistant.key_draft)
+                            .password(true)
+                            .hint_text("Paste your key")
+                            .desired_width(ui.available_width()),
+                    );
+                });
             });
             if let Some(page) = kind.key_page() {
                 ui.horizontal(|ui| {
