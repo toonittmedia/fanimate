@@ -1432,6 +1432,7 @@ mod tests {
                 smoothing: 0.25,
                 taper: 12.0,
                 pressure: false,
+                hardness: None,
             },
             StylePreset {
                 name: "Paint".into(),
@@ -1442,6 +1443,7 @@ mod tests {
                 smoothing: 0.75,
                 taper: 0.0,
                 pressure: true,
+                hardness: Some(0.3),
             },
         ];
         for (name, folder) in [("file.fnm", false), ("folder.fnm", true)] {

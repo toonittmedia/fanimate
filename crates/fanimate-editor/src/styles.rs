@@ -54,12 +54,17 @@ impl DrawStyle {
             smoothing: self.smoothing,
             taper: self.taper,
             pressure: self.pressure,
+            hardness: Some(self.hardness),
         }
     }
 
-    /// Whether this look is the style's, whatever the style is called.
+    /// Whether this look is the style's, whatever the style is called. A style
+    /// saved before styles had a hardness says nothing about it, so it is not compared.
     pub fn is_look_of(&self, preset: &StylePreset) -> bool {
-        let same = self.to_preset(preset.name.clone());
+        let mut same = self.to_preset(preset.name.clone());
+        if preset.hardness.is_none() {
+            same.hardness = None;
+        }
         same == *preset
     }
 
@@ -73,6 +78,9 @@ impl DrawStyle {
         self.smoothing = preset.smoothing.clamp(0.0, 1.0);
         self.taper = preset.taper.clamp(0.0, 500.0);
         self.pressure = preset.pressure;
+        if let Some(h) = preset.hardness {
+            self.hardness = h.clamp(0.0, 1.0);
+        }
     }
 }
 
@@ -472,6 +480,40 @@ mod tests {
             "{} vs {}",
             mean(&light),
             mean(&even)
+        );
+    }
+
+    #[test]
+    fn a_style_remembers_the_hardness_and_an_older_one_leaves_it_alone() {
+        let soft = DrawStyle {
+            hardness: 0.2,
+            ..inked()
+        };
+        let preset = soft.to_preset("Airbrush");
+        assert_eq!(preset.hardness, Some(0.2));
+        let mut now = DrawStyle {
+            hardness: 0.9,
+            ..DrawStyle::default()
+        };
+        now.apply(&preset);
+        assert_eq!(now.hardness, 0.2);
+        assert!(now.is_look_of(&preset));
+        // out-of-range values are held within what the panel allows
+        let mut wild = preset.clone();
+        wild.hardness = Some(7.0);
+        now.apply(&wild);
+        assert_eq!(now.hardness, 1.0);
+        // a style from before hardness was kept has none: applying leaves the hardness, and
+        // the look still counts as the style's whatever the hardness is
+        let mut old = preset.clone();
+        old.hardness = None;
+        now.hardness = 0.55;
+        now.apply(&old);
+        assert_eq!(now.hardness, 0.55);
+        assert!(now.is_look_of(&old));
+        assert!(
+            !now.is_look_of(&preset),
+            "with a hardness in the style, a different one is a different look"
         );
     }
 }

@@ -1509,6 +1509,7 @@ mod tests {
             smoothing: 0.5,
             taper: 10.0,
             pressure: true,
+            hardness: None,
         };
         let mut doc = Document::new("s", 100.0, 100.0, 24.0);
         doc.styles = vec![style("Ink", 4.0), style("Paint", 8.0)];

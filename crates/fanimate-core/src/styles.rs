@@ -34,6 +34,10 @@ pub struct StylePreset {
     pub taper: f32,
     /// Whether a pen's pressure sets the width.
     pub pressure: bool,
+    /// How hard the edge of a stroke on a raster layer is, from 0 (all soft) to 1. Styles saved
+    /// before this existed have none and leave the setting as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardness: Option<f32>,
 }
 
 impl StylePreset {
@@ -49,6 +53,9 @@ impl StylePreset {
             && (0.0..=1.0).contains(&self.smoothing)
             && self.taper.is_finite()
             && self.taper >= 0.0
+            && self
+                .hardness
+                .is_none_or(|h| h.is_finite() && (0.0..=1.0).contains(&h))
     }
 
     /// The name tidied to fit: no leading or trailing spaces, at most
@@ -77,6 +84,7 @@ mod tests {
             smoothing: 0.5,
             taper: 20.0,
             pressure: true,
+            hardness: None,
         }
     }
 
@@ -88,6 +96,29 @@ mod tests {
             let text = serde_json::to_string(&p).unwrap();
             assert_eq!(serde_json::from_str::<StylePreset>(&text).unwrap(), p);
         }
+    }
+
+    #[test]
+    fn hardness_is_optional_in_the_file_and_older_styles_read_without_it() {
+        // a style as an older Fanimate wrote it: the same file with no hardness at all
+        let mut value = serde_json::to_value(StylePreset {
+            hardness: Some(0.4),
+            ..preset()
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("hardness");
+        let old = value.to_string();
+        let p: StylePreset = serde_json::from_str(&old).unwrap();
+        assert_eq!(p.hardness, None);
+        assert!(p.is_sound());
+        // a style without one writes none, a style with one keeps it
+        assert!(!serde_json::to_string(&p).unwrap().contains("hardness"));
+        let soft = StylePreset {
+            hardness: Some(0.25),
+            ..p
+        };
+        let again: StylePreset = serde_json::from_str(&serde_json::to_string(&soft).unwrap()).unwrap();
+        assert_eq!(again.hardness, Some(0.25));
     }
 
     #[test]
@@ -112,6 +143,14 @@ mod tests {
             },
             StylePreset {
                 fill: Some(Color::rgba(f32::INFINITY, 0.0, 0.0, 1.0)),
+                ..preset()
+            },
+            StylePreset {
+                hardness: Some(1.5),
+                ..preset()
+            },
+            StylePreset {
+                hardness: Some(f32::NAN),
                 ..preset()
             },
         ] {
