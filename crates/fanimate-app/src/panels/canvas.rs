@@ -41,6 +41,15 @@ pub(super) fn do_snap(shell: &mut Shell, p: Vec2) -> Vec2 {
 
 const FIT_MARGIN: f32 = 32.0;
 
+/// `v` turned by `angle` radians (clockwise on screen, y down).
+pub fn turned(v: Vec2, angle: f32) -> Vec2 {
+    if angle == 0.0 {
+        return v;
+    }
+    let (s, c) = angle.sin_cos();
+    Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
+}
+
 pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     // Clear the snap hint from the previous frame; tool gestures set it again
     // during this frame if a drag is active.
@@ -81,13 +90,15 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         shell.view.fit_pending = false;
     }
 
+    // the view may be turned about its centre: the artwork is not, only how it is shown
+    let turn = shell.view.rotation;
     let to_screen = |center: Vec2, zoom: f32, p: Vec2| -> Pos2 {
-        let s = (p - center) * zoom;
+        let s = turned(p - center, turn) * zoom;
         rect.center() + egui::vec2(s.x, s.y)
     };
     let to_doc = |center: Vec2, zoom: f32, p: Pos2| -> Vec2 {
         let d = p - rect.center();
-        center + Vec2::new(d.x, d.y) / zoom
+        center + turned(Vec2::new(d.x, d.y) / zoom, -turn)
     };
 
     navigate(&ctx, &response, shell, rect, &to_doc);
@@ -99,6 +110,7 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
         origin: rect.center(),
         center: shell.view.center,
         zoom: shell.view.zoom,
+        turn: shell.view.rotation,
     };
     let tool = shell.editor.tool;
     let on_canvas = matches!(tool, Tool::TransformLayer | Tool::SelectPoints);
@@ -277,6 +289,9 @@ pub fn show(ui: &mut egui::Ui, shell: &mut Shell) {
     menus::context_menu(&response, |ui| {
         menus::item(ui, shell, Action::FitView);
         menus::item(ui, shell, Action::ActualSize);
+        if shell.view.rotation != 0.0 {
+            menus::item(ui, shell, Action::ResetViewRotation);
+        }
         menus::item(ui, shell, Action::ZoomIn);
         menus::item(ui, shell, Action::ZoomOut);
         ui.separator();
@@ -329,10 +344,22 @@ fn camera_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(
 
 /// Onion skins and the light table, from the view settings. Not while
 /// playing: they would only flicker.
+/// The view's turn about its centre as a transform of the document, for the picture.
+fn view_turn(view: &crate::app::CanvasView) -> fanimate_core::Affine2 {
+    if view.rotation == 0.0 {
+        return fanimate_core::Affine2::IDENTITY;
+    }
+    let c = view.center;
+    fanimate_core::Affine2::from_translation(c)
+        * fanimate_core::Affine2::from_angle(view.rotation)
+        * fanimate_core::Affine2::from_translation(-c)
+}
+
 fn canvas_overlays(shell: &Shell) -> crate::canvas_gpu::Overlays {
     let ed = &shell.editor;
     let mut out = crate::canvas_gpu::Overlays {
         camera: shell.look_through_camera,
+        turn: view_turn(&shell.view),
         ..Default::default()
     };
     // looking through the camera, only the artwork is shown
@@ -420,11 +447,22 @@ fn navigate(
 ) {
     let view = &mut shell.view;
     // pan: middle-drag with any tool, or the Pan tool
-    let panning = response.dragged_by(egui::PointerButton::Middle)
-        || (shell.editor.tool == Tool::Pan && response.dragged_by(egui::PointerButton::Primary));
+    let turning = response.dragged_by(egui::PointerButton::Middle) && ctx.input(|i| i.modifiers.shift);
+    let panning = !turning
+        && (response.dragged_by(egui::PointerButton::Middle)
+            || (shell.editor.tool == Tool::Pan && response.dragged_by(egui::PointerButton::Primary)));
+    if turning && let Some(now) = response.interact_pointer_pos() {
+        // Shift + middle-drag turns the view about the middle of the canvas, by the angle
+        // the pointer swept
+        let before = now - response.drag_delta();
+        let (a, b) = (before - rect.center(), now - rect.center());
+        if a.length() > 4.0 && b.length() > 4.0 {
+            view.turn_by(b.y.atan2(b.x) - a.y.atan2(a.x));
+        }
+    }
     if panning {
         let d = response.drag_delta();
-        view.center -= Vec2::new(d.x, d.y) / view.zoom;
+        view.center -= turned(Vec2::new(d.x, d.y) / view.zoom, -view.rotation);
     }
     if !response.hovered() {
         return;
@@ -436,7 +474,7 @@ fn navigate(
     if zoom_delta != 1.0 {
         zoom_about(view, pointer, zoom_delta, to_doc);
     } else if scroll != egui::Vec2::ZERO {
-        view.center -= Vec2::new(scroll.x, scroll.y) / view.zoom;
+        view.center -= turned(Vec2::new(scroll.x, scroll.y) / view.zoom, -view.rotation);
     }
     // Zoom tool: click in, Alt-click out
     if shell.editor.tool == Tool::Zoom && response.clicked() {
@@ -1132,6 +1170,7 @@ fn point_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(V
         origin: rect.center(),
         center: c,
         zoom: z,
+        turn: shell.view.rotation,
     };
     for outline in shell.editor.selected_shape_outlines() {
         handles::paint_outline(&painter, &screen, &outline, Stroke::new(1.5, color));

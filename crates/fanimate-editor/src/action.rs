@@ -230,6 +230,12 @@ pub enum Action {
     ZoomOut,
     FitView,
     ActualSize,
+    /// Turn the canvas view a quarter-step (15 degrees) anticlockwise. The artwork is not changed.
+    RotateViewLeft,
+    /// Turn the canvas view 15 degrees clockwise.
+    RotateViewRight,
+    /// Put the canvas view upright again.
+    ResetViewRotation,
     /// Key one property of the selected layer on the current frame, holding
     /// its value there (the key buttons in Properties and the timeline's
     /// property rows).
@@ -563,6 +569,9 @@ impl Action {
             ZoomOut => "Zoom Out",
             FitView => "Fit Canvas",
             ActualSize => "Actual Size (100%)",
+            RotateViewLeft => "Rotate Canvas Left",
+            RotateViewRight => "Rotate Canvas Right",
+            ResetViewRotation => "Reset Canvas Rotation",
             Tool(t) => t.label(),
             AddPointOrBone => "Add Point / Add Bone",
             PickPivot => "Set pivot by clicking",
@@ -659,7 +668,7 @@ impl Action {
             | ResetCamera
             | SetKeyInterpolation(_) => "Animation",
             ToggleOnionSkin | ToggleLightTable | LookThroughCamera | ZoomIn | ZoomOut | FitView
-            | ActualSize | Workspace(_) => "View",
+            | ActualSize | RotateViewLeft | RotateViewRight | ResetViewRotation | Workspace(_) => "View",
             Tool(_) | AddPointOrBone => "Tools",
         }
     }
@@ -769,6 +778,9 @@ impl Action {
             ZoomOut,
             FitView,
             ActualSize,
+            RotateViewLeft,
+            RotateViewRight,
+            ResetViewRotation,
         ];
         v.extend(fanimate_core::Interpolation::ALL.map(SetInterpolation));
         v.extend(fanimate_core::TextPreset::ALL.map(AddTextAnimator));

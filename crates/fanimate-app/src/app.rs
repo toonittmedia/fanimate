@@ -137,11 +137,31 @@ pub struct CanvasView {
     pub zoom: f32,
     /// Fit the canvas to the panel on the next frame.
     pub fit_pending: bool,
+    /// How far the view is turned, in radians (positive is clockwise on screen). It turns
+    /// the picture about `center`; the document and what is saved are not changed.
+    pub rotation: f32,
 }
 
 impl CanvasView {
     pub fn fit(&mut self) {
         self.fit_pending = true;
+    }
+
+    /// Turn the view by `step` radians, keeping the angle within a turn and
+    /// snapping to upright when it comes within a fraction of a degree of it.
+    pub fn turn_by(&mut self, step: f32) {
+        let turn = std::f32::consts::TAU;
+        let mut r = (self.rotation + step).rem_euclid(turn);
+        if r < 0.002 || turn - r < 0.002 {
+            r = 0.0;
+        }
+        self.rotation = r;
+    }
+
+    /// The same angle as a number of degrees from -180 to 180.
+    pub fn degrees(&self) -> f32 {
+        let d = self.rotation.to_degrees();
+        if d > 180.0 { d - 360.0 } else { d }
     }
 }
 
@@ -543,6 +563,7 @@ impl FanimateApp {
                     center: Default::default(),
                     zoom: 1.0,
                     fit_pending: true,
+                    rotation: 0.0,
                 },
                 ui: UiState {
                     your_files: crate::yourfiles::YourFiles::new(settings.your_folders.clone()),
@@ -1095,6 +1116,9 @@ pub fn run_unchecked(ctx: &egui::Context, shell: &mut Shell, action: Action) {
             Action::ZoomIn => zoom_by(shell, 1.25),
             Action::ZoomOut => zoom_by(shell, 0.8),
             Action::FitView => shell.view.fit(),
+            Action::RotateViewLeft => shell.view.turn_by(-VIEW_TURN_STEP),
+            Action::RotateViewRight => shell.view.turn_by(VIEW_TURN_STEP),
+            Action::ResetViewRotation => shell.view.rotation = 0.0,
             Action::ActualSize => {
                 shell.view.zoom = 1.0 / ctx.pixels_per_point();
                 shell.view.center = shell.editor.doc.size() / 2.0;
@@ -1173,6 +1197,9 @@ fn install_update(shell: &mut Shell) {
     shell.update_manual = true;
     shell.updater.start_install(shell.install.clone(), release, file);
 }
+
+/// One step of Rotate Canvas Left and Right: 15 degrees.
+const VIEW_TURN_STEP: f32 = std::f32::consts::PI / 12.0;
 
 fn zoom_by(shell: &mut Shell, factor: f32) {
     shell.view.zoom = (shell.view.zoom * factor).clamp(0.02, 64.0);
@@ -1494,5 +1521,39 @@ impl Shell {
         self.keymap = Keymap::new(kind);
         self.editor
             .set_status(StatusKind::Info, format!("Keyboard shortcuts: {}", kind.label()));
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    fn view() -> CanvasView {
+        CanvasView {
+            center: Default::default(),
+            zoom: 1.0,
+            fit_pending: false,
+            rotation: 0.0,
+        }
+    }
+
+    #[test]
+    fn turning_stays_within_a_turn_comes_back_to_upright_exactly_and_reads_in_degrees() {
+        let mut v = view();
+        let step = VIEW_TURN_STEP;
+        for _ in 0..24 {
+            v.turn_by(step);
+        }
+        // twenty-four 15-degree steps are one full turn: upright again, with no float drift left over
+        assert_eq!(v.rotation, 0.0);
+        v.turn_by(step);
+        assert!((v.degrees() - 15.0).abs() < 1.0e-3);
+        v.turn_by(-2.0 * step);
+        assert!((v.degrees() + 15.0).abs() < 1.0e-3, "{}", v.degrees());
+        assert!(v.rotation >= 0.0 && v.rotation < std::f32::consts::TAU);
+        // a turn of a tenth of a degree snaps back to upright rather than leaving a tilt nobody chose
+        let mut w = view();
+        w.turn_by(0.001);
+        assert_eq!(w.rotation, 0.0);
     }
 }

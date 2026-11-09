@@ -36,17 +36,19 @@ pub struct Screen {
     pub origin: Pos2,
     pub center: Vec2,
     pub zoom: f32,
+    /// How far the view is turned about `center`, in radians.
+    pub turn: f32,
 }
 
 impl Screen {
     pub fn point(&self, p: Vec2) -> Pos2 {
-        let d = (p - self.center) * self.zoom;
+        let d = crate::panels::canvas::turned(p - self.center, self.turn) * self.zoom;
         self.origin + vec2(d.x, d.y)
     }
 
     pub fn doc(&self, p: Pos2) -> Vec2 {
         let d = p - self.origin;
-        self.center + Vec2::new(d.x, d.y) / self.zoom
+        self.center + crate::panels::canvas::turned(Vec2::new(d.x, d.y) / self.zoom, -self.turn)
     }
 }
 
@@ -439,7 +441,36 @@ mod tests {
             origin: pos2(500.0, 300.0),
             center: Vec2::new(100.0, 50.0),
             zoom: 2.0,
+            turn: 0.0,
         }
+    }
+
+    #[test]
+    fn a_turned_view_maps_points_there_and_back_and_a_quarter_turn_swaps_the_axes() {
+        use std::f32::consts::FRAC_PI_2;
+        let mut screen = screen();
+        for turn in [0.0, 0.3, FRAC_PI_2, 3.0, -2.0] {
+            screen.turn = turn;
+            for p in [
+                Vec2::new(0.0, 0.0),
+                Vec2::new(100.0, 50.0),
+                Vec2::new(-37.0, 412.5),
+            ] {
+                let back = screen.doc(screen.point(p));
+                assert!(
+                    back.distance(p) < 1.0e-3,
+                    "turn {turn}: {p:?} came back as {back:?}"
+                );
+            }
+            // the centre of the view stays on the origin of the screen mapping
+            assert!(screen.point(screen.center).distance(screen.origin) < 1.0e-4);
+        }
+        // a quarter turn clockwise: a point to the right of the centre goes below it
+        screen.turn = FRAC_PI_2;
+        let right_of_centre = screen.center + Vec2::new(10.0, 0.0);
+        let on_screen = screen.point(right_of_centre);
+        assert!((on_screen.x - screen.origin.x).abs() < 1.0e-3);
+        assert!((on_screen.y - (screen.origin.y + 10.0 * screen.zoom)).abs() < 1.0e-3);
     }
 
     /// A frame of a 100 x 60 box at (0, 0), not turned.

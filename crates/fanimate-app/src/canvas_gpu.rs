@@ -38,6 +38,8 @@ pub struct Overlays {
     pub light_table: Option<Vec<LayerId>>,
     /// Show the canvas as the document's camera sees it.
     pub camera: bool,
+    /// The view's turn about its centre, applied to everything drawn (identity when upright).
+    pub turn: Affine2,
 }
 
 pub struct CanvasGpu {
@@ -89,6 +91,7 @@ impl CanvasGpu {
         let mut items = Vec::new();
         self.evaluator.camera = overlays.camera;
         self.evaluator.evaluate_into(doc, frame, &mut items);
+        let turn = overlays.turn;
         if let Some(shape) = extra {
             items.push(DrawItem {
                 layer: LayerId(0),
@@ -101,6 +104,12 @@ impl CanvasGpu {
                 scope: fanimate_core::ROOT_SCOPE,
                 ink: fanimate_core::Ink::Over,
             });
+        }
+        // a turned view turns the picture, never the document
+        if turn != Affine2::IDENTITY {
+            for item in &mut items {
+                item.transform = turn * item.transform;
+            }
         }
         if let Some(keep) = &overlays.light_table {
             for item in &mut items {
@@ -116,7 +125,7 @@ impl CanvasGpu {
         } else {
             Affine2::IDENTITY
         };
-        self.tess.canvas_through(doc, &mut self.mesh, camera);
+        self.tess.canvas_through(doc, &mut self.mesh, turn * camera);
         // onion skins under the current frame, each in its tint
         let mut onion = Evaluator::default();
         for &(at, tint, opacity) in &overlays.onion {
@@ -133,6 +142,7 @@ impl CanvasGpu {
             fanimate_core::eval::flatten_scopes(&mut skin, &onion.scopes);
             for item in &mut skin {
                 item.opacity *= opacity;
+                item.transform = turn * item.transform;
             }
             self.tess.tint = Some(tint);
             self.tess.draw_items(&skin, &mut self.mesh);

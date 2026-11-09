@@ -397,6 +397,18 @@ pub fn view(ui: &mut egui::Ui, shell: &mut Shell) {
             Action::ActualSize,
         ],
     );
+    ui.menu_button("Rotate Canvas", |ui| {
+        ui.set_min_width(MENU_MIN_WIDTH);
+        items(
+            ui,
+            shell,
+            &[
+                Action::RotateViewLeft,
+                Action::RotateViewRight,
+                Action::ResetViewRotation,
+            ],
+        );
+    });
     ui.separator();
     let onion = shell.onion.on;
     item_checked(ui, shell, Action::ToggleOnionSkin, onion);

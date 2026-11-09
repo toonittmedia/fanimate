@@ -76,6 +76,10 @@ pub fn rulers(
     if !shell.show_rulers {
         return;
     }
+    if shell.view.rotation != 0.0 {
+        turned_rulers(ui, shell, canvas_rect, to_doc, to_screen);
+        return;
+    }
     let p = shell.palette;
     let painter = ui.painter_at(canvas_rect);
     let zoom = shell.view.zoom;
@@ -128,6 +132,79 @@ pub fn rulers(
         to_doc,
         to_screen,
     );
+}
+
+/// While the view is turned the rulers have no straight edge to measure along, so the
+/// strips are left blank with the angle in the corner (a click there turns the view
+/// upright again), and the guides are drawn as lines across the turned picture. They
+/// cannot be dragged or made until the view is upright.
+fn turned_rulers(
+    ui: &mut egui::Ui,
+    shell: &mut Shell,
+    canvas_rect: Rect,
+    to_doc: &impl Fn(f32, Pos2) -> fanimate_core::Vec2,
+    to_screen: &impl Fn(fanimate_core::Vec2) -> Pos2,
+) {
+    let p = shell.palette;
+    let painter = ui.painter_at(canvas_rect);
+    let h_ruler = Rect::from_min_max(
+        canvas_rect.min,
+        Pos2::new(canvas_rect.max.x, canvas_rect.min.y + RULER_SIZE),
+    );
+    let v_ruler = Rect::from_min_max(
+        canvas_rect.min,
+        Pos2::new(canvas_rect.min.x + RULER_SIZE, canvas_rect.max.y),
+    );
+    let corner = Rect::from_min_max(canvas_rect.min, canvas_rect.min + Vec2::splat(RULER_SIZE));
+    painter.rect_filled(h_ruler, 0.0, p.panel);
+    painter.rect_filled(v_ruler, 0.0, p.panel);
+    painter.rect_filled(corner, 0.0, p.raised);
+    painter.hline(h_ruler.x_range(), h_ruler.bottom(), Stroke::new(1.0, p.border));
+    painter.vline(v_ruler.right(), v_ruler.y_range(), Stroke::new(1.0, p.border));
+    let reset = ui.interact(corner, ui.id().with("ruler-corner-turned"), Sense::click());
+    painter.text(
+        corner.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{:.0}°", shell.view.degrees()),
+        egui::FontId::proportional(9.0),
+        p.accent_strong,
+    );
+    if reset
+        .on_hover_text(
+            "The canvas is turned. Click to turn it upright (rulers and guides are off until then)",
+        )
+        .clicked()
+    {
+        shell.pending.push(fanimate_editor::Action::ResetViewRotation);
+    }
+    // guides: lines through the turned picture, long enough to cross any window
+    let reach = (canvas_rect.width() + canvas_rect.height()) / shell.view.zoom.max(1.0e-3) * 2.0;
+    let guide_color = Color32::from_rgb(0x40, 0xA0, 0xFF).gamma_multiply(0.8);
+    // the lines stay inside the canvas, off the ruler strips
+    let painter = painter.with_clip_rect(Rect::from_min_max(
+        canvas_rect.min + Vec2::splat(RULER_SIZE),
+        canvas_rect.max,
+    ));
+    let middle = to_doc(shell.view.zoom, canvas_rect.center());
+    for guide in &shell.editor.doc.guides {
+        let (a, b) = if guide.vertical {
+            (
+                fanimate_core::Vec2::new(guide.position, middle.y - reach),
+                fanimate_core::Vec2::new(guide.position, middle.y + reach),
+            )
+        } else {
+            (
+                fanimate_core::Vec2::new(middle.x - reach, guide.position),
+                fanimate_core::Vec2::new(middle.x + reach, guide.position),
+            )
+        };
+        let color = if guide.locked {
+            guide_color.gamma_multiply(0.45)
+        } else {
+            guide_color
+        };
+        painter.line_segment([to_screen(a), to_screen(b)], Stroke::new(1.0, color));
+    }
 }
 
 fn draw_ruler_ticks(
@@ -384,6 +461,65 @@ fn draw_guides(
 
 /// Draw the canvas grid (minor and major lines) under the artwork.
 /// Call this before the GPU texture is drawn.
+/// The grid in a turned view: each line is a segment between two turned points. The
+/// range of lines is what the corners of the window cover once turned back.
+fn turned_grid(
+    painter: &egui::Painter,
+    shell: &Shell,
+    canvas_rect: Rect,
+    to_screen: &impl Fn(fanimate_core::Vec2) -> Pos2,
+    (minor, major, minor_color, major_color): (f32, f32, Color32, Color32),
+) {
+    let (zoom, rotation, center) = (shell.view.zoom, shell.view.rotation, shell.view.center);
+    if minor * zoom < 4.0 {
+        return;
+    }
+    let to_doc = |p: Pos2| {
+        let d = p - canvas_rect.center();
+        center + crate::panels::canvas::turned(fanimate_core::Vec2::new(d.x, d.y) / zoom, -rotation)
+    };
+    let corners = [
+        canvas_rect.left_top(),
+        canvas_rect.right_top(),
+        canvas_rect.right_bottom(),
+        canvas_rect.left_bottom(),
+    ]
+    .map(to_doc);
+    let lo = corners.iter().fold(corners[0], |a, b| a.min(*b));
+    let hi = corners.iter().fold(corners[0], |a, b| a.max(*b));
+    let lines = |from: f32, to: f32| ((from / minor).floor() as i64, (to / minor).ceil() as i64);
+    let (x0, x1) = lines(lo.x, hi.x);
+    let (y0, y1) = lines(lo.y, hi.y);
+    // a window of many thousand lines would only be a haze (and slow): leave it out
+    if (x1 - x0).max(y1 - y0) > 600 {
+        return;
+    }
+    let style = |at: f32| {
+        let is_major = (at / major).fract().abs() < 0.01 || ((at + major * 0.5) / major).fract().abs() > 0.99;
+        Stroke::new(1.0, if is_major { major_color } else { minor_color })
+    };
+    for i in x0..=x1 {
+        let x = i as f32 * minor;
+        painter.line_segment(
+            [
+                to_screen(fanimate_core::Vec2::new(x, lo.y)),
+                to_screen(fanimate_core::Vec2::new(x, hi.y)),
+            ],
+            style(x),
+        );
+    }
+    for i in y0..=y1 {
+        let y = i as f32 * minor;
+        painter.line_segment(
+            [
+                to_screen(fanimate_core::Vec2::new(lo.x, y)),
+                to_screen(fanimate_core::Vec2::new(hi.x, y)),
+            ],
+            style(y),
+        );
+    }
+}
+
 pub fn grid(
     painter: &egui::Painter,
     shell: &Shell,
@@ -404,6 +540,17 @@ pub fn grid(
     // translucent, so they show on the white page as well as the pasteboard
     let minor_color = Color32::from_rgba_unmultiplied(120, 120, 140, 40);
     let major_color = Color32::from_rgba_unmultiplied(120, 120, 140, 95);
+
+    if shell.view.rotation != 0.0 {
+        turned_grid(
+            painter,
+            shell,
+            canvas_rect,
+            to_screen,
+            (minor, major, minor_color, major_color),
+        );
+        return;
+    }
 
     // visible document range
     let left_doc = (canvas_rect.left() - canvas_rect.center().x) / zoom + center.x;

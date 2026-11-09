@@ -788,7 +788,8 @@ impl Editor {
             | ExportSpriteSheet | ExportAnimatedSvg | ExportRuntime | ExportOtio | ExportVideo
             | RenderQueue | RenderPreviewFrame | LipSync | CheckForUpdates | InstallUpdate | Workspace(_)
             | Quit | ToggleOnionSkin | ToggleLightTable | LookThroughCamera | Preferences
-            | CommandPalette | AskAssistant | LayerProperties | ZoomIn | ZoomOut | FitView | ActualSize => {
+            | CommandPalette | AskAssistant | LayerProperties | ZoomIn | ZoomOut | FitView | ActualSize
+            | RotateViewLeft | RotateViewRight | ResetViewRotation => {
                 return Outcome::App(action);
             }
         }

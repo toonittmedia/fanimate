@@ -260,6 +260,19 @@ pub fn status_bar(ui: &mut egui::Ui, shell: &mut Shell) {
                     if !home {
                         let zoom = shell.view.zoom * ui.ctx().pixels_per_point();
                         ui.label(percent_text(zoom, 4, p.text_muted));
+                        if shell.view.rotation != 0.0 {
+                            let turn = format!("{:.0}°", shell.view.degrees());
+                            if ui
+                                .add(
+                                    egui::Label::new(egui::RichText::new(turn).color(p.accent_strong))
+                                        .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text("The canvas is turned. Click to turn it upright.")
+                                .clicked()
+                            {
+                                shell.pending.push(fanimate_editor::Action::ResetViewRotation);
+                            }
+                        }
                         ui.separator();
                     }
                     if let Some((name, fraction)) = shell.renders.active.clone() {
