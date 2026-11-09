@@ -364,3 +364,37 @@ fn lifting_the_eraser_does_not_end_a_brush_stroke_in_progress() {
     ed.end_erase();
     assert!(!ed.is_erasing());
 }
+
+#[test]
+fn the_eyedropper_takes_a_painted_pixels_colour_and_changes_no_document() {
+    let mut ed = editor();
+    let id = paint_layer(&mut ed);
+    ed.draw.line = Color::rgb(0.9, 0.2, 0.1);
+    stroke(&mut ed, &[Vec2::new(50.0, 50.0), Vec2::new(150.0, 50.0)]);
+    ed.draw.line = Color::BLACK;
+    ed.draw.fill = Some(Color::WHITE);
+    let steps = ed.history.cursor();
+    let doc = ed.doc.clone();
+    assert!(ed.pick_raster_colour(id, Vec2::new(100.0, 50.0)));
+    assert_eq!(ed.draw.line.to_hex(), "#E6331A");
+    assert_eq!(ed.draw.fill.map(|c| c.to_hex()).as_deref(), Some("#E6331A"));
+    assert!(
+        ed.doc == doc && ed.history.cursor() == steps,
+        "picking is not an edit"
+    );
+    // fill off stays off
+    ed.draw.fill = None;
+    ed.draw.line = Color::BLACK;
+    assert!(ed.pick_raster_colour(id, Vec2::new(100.0, 50.0)));
+    assert!(ed.draw.fill.is_none());
+    // clear ground, off the layer's tiles, and a layer that is not a raster layer pick nothing
+    ed.draw.line = Color::BLACK;
+    assert!(!ed.pick_raster_colour(id, Vec2::new(100.0, 400.0)));
+    assert!(!ed.pick_raster_colour(id, Vec2::new(f32::NAN, 1.0)));
+    assert!(!ed.pick_raster_colour(id, Vec2::new(-5000.0, -5000.0)));
+    assert_eq!(ed.draw.line, Color::BLACK);
+    let v = ed.doc.new_layer("v", LayerKind::vector(vec![]));
+    let vid = v.id;
+    ed.doc.layers.push(v);
+    assert!(!ed.pick_raster_colour(vid, Vec2::new(100.0, 50.0)));
+}

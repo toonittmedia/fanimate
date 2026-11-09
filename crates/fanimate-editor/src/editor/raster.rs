@@ -306,6 +306,47 @@ impl Editor {
         Ok(changed)
     }
 
+    /// Eyedropper on a raster layer: take the colour of the painted pixel under `at` (document
+    /// space) as the line colour, and as the fill colour when fill is on. Changes no document, so
+    /// there is no undo step. Returns false (with a status message) when nothing is painted there.
+    pub fn pick_raster_colour(&mut self, layer: LayerId, at: Vec2) -> bool {
+        let Some(group) = self.raster_group_of(layer) else {
+            return false;
+        };
+        let to_layer = self.world(group).inverse();
+        if !to_layer.is_finite() {
+            return false;
+        }
+        let p = to_layer.transform_point2(at);
+        if !(p.x.is_finite() && p.y.is_finite()) {
+            return false;
+        }
+        let (key, x, y) = raster::locate(p);
+        let pixels = self.tile_pixels(group, key);
+        let i = ((y * TILE + x) * 4) as usize;
+        let Some(px) = pixels.get(i..i + 4) else {
+            return false;
+        };
+        if px[3] == 0 {
+            self.set_status(StatusKind::Info, "Nothing is painted there");
+            return false;
+        }
+        let colour = Color::rgb(
+            f32::from(px[0]) / 255.0,
+            f32::from(px[1]) / 255.0,
+            f32::from(px[2]) / 255.0,
+        );
+        self.draw.line = colour;
+        if self.draw.fill.is_some() {
+            self.draw.fill = Some(colour);
+        }
+        self.set_status(
+            StatusKind::Info,
+            format!("Picked #{:02X}{:02X}{:02X}", px[0], px[1], px[2]),
+        );
+        true
+    }
+
     /// Move the brush to `at` (document space), laying paint along the way.
     pub(super) fn continue_raster_stroke(&mut self, at: Vec2, pressure: f32) {
         let Some(mut s) = self.raster_stroke.take() else {

@@ -1394,7 +1394,9 @@ impl Tool {
             Self::PaintBucket => {
                 "Click a shape to fill it with the fill colour, or a brush stroke to recolour it with the line colour. On a raster layer it floods the area you click up to the lines around it."
             }
-            Self::Eyedropper => "Click a shape to use its colours for new artwork.",
+            Self::Eyedropper => {
+                "Click a shape to use its colours for new artwork, or a painted pixel on a raster layer to use its colour."
+            }
             Self::Text => {
                 "Click to type new words, or click text to edit it. Escape or a click elsewhere finishes."
             }

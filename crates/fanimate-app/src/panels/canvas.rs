@@ -1234,6 +1234,16 @@ fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Ve
         }
         return;
     }
+    // the Eyedropper on a raster layer takes the colour of the pixel
+    if tool == Tool::Eyedropper
+        && let Some(group) = shell
+            .editor
+            .primary()
+            .and_then(|l| shell.editor.raster_group_of(l))
+    {
+        shell.editor.pick_raster_colour(group, p);
+        return;
+    }
     let hit = if tool == Tool::PaintBucket {
         shell.editor.paint_at(p, slop) || shell.editor.shape_at(p, slop).is_some()
     } else {
