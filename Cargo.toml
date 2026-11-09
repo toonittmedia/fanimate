@@ -8,6 +8,7 @@ members = [
     "crates/fanimate-api",
     "crates/fanimate-agent",
     "crates/fanimate-plugin",
+    "crates/fanimate-ml",
     "crates/fanimate-render",
     "crates/fanimate-export",
     "crates/fanimate-import",
@@ -24,6 +25,7 @@ default-members = [
     "crates/fanimate-api",
     "crates/fanimate-agent",
     "crates/fanimate-plugin",
+    "crates/fanimate-ml",
     "crates/fanimate-render",
     "crates/fanimate-export",
     "crates/fanimate-import",
@@ -50,6 +52,7 @@ fanimate-editor = { path = "crates/fanimate-editor" }
 fanimate-api = { path = "crates/fanimate-api" }
 fanimate-agent = { path = "crates/fanimate-agent" }
 fanimate-plugin = { path = "crates/fanimate-plugin" }
+fanimate-ml = { path = "crates/fanimate-ml" }
 fanimate-export = { path = "crates/fanimate-export" }
 fanimate-import = { path = "crates/fanimate-import" }
 fanimate-oscodec = { path = "crates/fanimate-oscodec" }

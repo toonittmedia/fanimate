@@ -1,0 +1,26 @@
+{
+  "policy": "D2-6: permissive redistribution licences only; documented provenance; commissioned or donated data for any model Fanimate trains; no scraped art",
+  "allowed_licences": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+    "CC0-1.0",
+    "CC-BY-4.0"
+  ],
+  "needs_a_lawyer": [
+    "NC",
+    "RAIL",
+    "Responsible",
+    "Research",
+    "Non-Commercial",
+    "NonCommercial",
+    "OpenRAIL",
+    "Llama",
+    "Gemma"
+  ],
+  "consents": ["commissioned", "donated", "public-domain", "permissive-open"]
+}

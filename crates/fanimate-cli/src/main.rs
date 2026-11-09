@@ -2,6 +2,7 @@
 //! with no window, for render servers, CI and batch work.
 
 mod mcp;
+mod models;
 mod plugin;
 mod script;
 
@@ -61,6 +62,14 @@ usage:
   fanimate-cli plugin pack <folder> [-o <name.fnplugin>]
   fanimate-cli plugin install <name.fnplugin> [--folder DIR]
                       (unpacks into the plugins folder; nothing in the package is run)
+  fanimate-cli models list [--folder DIR]
+  fanimate-cli models verify <file.fnmodel> --trust <64 hex digits of the public key>
+  fanimate-cli models install <file.fnmodel> --trust <key> [--folder DIR]
+  fanimate-cli models remove <id> [--folder DIR]
+  fanimate-cli models pack --manifest <model.json> --weights <file> --licence <file> -o <out.fnmodel> --seed-env <NAME>
+                      (optional AI models: a package is checked against the licence and data policy, its
+                       signature and its hash, and refused if any fails; nothing here runs a model or uses
+                       the network. See docs/legal/models.md)
   fanimate-cli bench [--bones N] [--frames N] [--seconds S] [--text CHARS] [--actions] [--gpu [--width W] [--height H]]
 
 Frame numbers (--frame, --start, --end) are the project's own: its first frame is 1 and
@@ -86,6 +95,7 @@ fn main() -> ExitCode {
         Some("serve") => serve_cmd(&args[1..]),
         Some("mcp") => mcp_cmd(&args[1..]),
         Some("plugin") => plugin_cmd(&args[1..]),
+        Some("models") => models::command(&args[1..]),
         Some("-V" | "--version") => {
             println!("fanimate-cli {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;

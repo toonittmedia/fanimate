@@ -130,6 +130,7 @@ function checks() {
   if (py) {
     step('Brand tokens', `${py} brand/scripts/build_brand.py --check`);
     step('Licences', `${py} scripts/licences.py --check`);
+    step('Models', `${py} scripts/models.py --check`);
   } else {
     console.warn('\nWarning: Python not found; skipping the brand token and licence checks (CI runs them).');
   }

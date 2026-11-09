@@ -1,0 +1,20 @@
+[package]
+name = "fanimate-ml"
+description = "Models for Fanimate's optional AI tools: the licence and provenance policy, signed and checksummed model packages, a store that refuses what fails, and the runtime trait. No UI, GPU or project code, and no model is bundled."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+fanimate-fnm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ed25519-compact = { version = "2.1", default-features = false }
+sha2 = "0.10"
+
+[lints]
+workspace = true
