@@ -1392,7 +1392,7 @@ impl Tool {
             }
             Self::Triangle => "Drag to draw an equilateral triangle. Shift snaps the angle.",
             Self::PaintBucket => {
-                "Click a shape to fill it with the fill colour, or a brush stroke to recolour it with the line colour."
+                "Click a shape to fill it with the fill colour, or a brush stroke to recolour it with the line colour. On a raster layer it floods the area you click up to the lines around it."
             }
             Self::Eyedropper => "Click a shape to use its colours for new artwork.",
             Self::Text => {

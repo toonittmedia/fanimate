@@ -338,6 +338,11 @@ pub const METHODS: &[Method] = &[
         "Paint round dabs along the points on a raster layer, or rub them out with erase; returns how many tiles changed",
     ),
     edit(
+        "fill",
+        "layer: number, x: number, y: number, color: string, tolerance: number (optional, 0 to 1, default 0.1)",
+        "Paint Bucket on a raster layer: fill the area joined to the point up to the lines around it and the page edge; returns how many pixels changed",
+    ),
+    edit(
         "clean_up_lines",
         "layer: number, shapes: [number] (optional), tolerance: number (optional)",
         "Refit rough lines with the fewest smooth curves within the tolerance; returns the shapes refitted and skipped and the points before and after",
@@ -721,6 +726,13 @@ pub fn call(api: &mut Api<'_>, method: &str, params: &Value) -> Result<Value, Ap
             optional(params, "hardness")?,
             optional(params, "flow")?,
             optional::<bool>(params, "erase")?.unwrap_or(false),
+        )?),
+        "fill" => json_of(api.fill(
+            param(params, "layer")?,
+            param(params, "x")?,
+            param(params, "y")?,
+            param(params, "color")?,
+            optional(params, "tolerance")?,
         )?),
         "clean_up_lines" => json_of(api.clean_up_lines(
             param(params, "layer")?,

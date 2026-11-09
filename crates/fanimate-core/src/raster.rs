@@ -282,6 +282,179 @@ impl Stroke {
     }
 }
 
+/// The most pixels one fill looks at: a 4096 by 4096 area.
+pub const MAX_FILL_PIXELS: i64 = 4096 * 4096;
+
+/// The rectangle a fill may spread in, in layer pixels: left and top
+/// (included), right and bottom (not included).
+pub type FillBounds = (i64, i64, i64, i64);
+
+impl Painting {
+    /// Paint Bucket: fill the pixels joined to `seed` that look like the
+    /// pixel there (every channel within `tolerance`, 0 to 1, of it; fully
+    /// clear pixels all look alike) with the opaque `color`, spreading no
+    /// farther than `bounds`. Then `grow` more pixels are covered **behind**
+    /// the paint already there, so the soft edge of a drawn line keeps its
+    /// look instead of leaving a pale halo between line and fill. Returns how
+    /// many pixels changed; nothing is touched when that is none, when the
+    /// seed is outside the bounds, or when the bounds are larger than
+    /// [`MAX_FILL_PIXELS`] (they are cut to fit first).
+    pub fn flood_fill(
+        &mut self,
+        seed: (i64, i64),
+        bounds: FillBounds,
+        color: [u8; 3],
+        tolerance: f32,
+        grow: u32,
+        load: &mut dyn FnMut(Key) -> Vec<u8>,
+    ) -> usize {
+        let lim = i64::from(MAX_TILE_COORD) * i64::from(TILE);
+        let (x0, y0) = (bounds.0.max(-lim), bounds.1.max(-lim));
+        let (x1, y1) = (bounds.2.min(lim), bounds.3.min(lim));
+        if x1 <= x0 || y1 <= y0 || seed.0 < x0 || seed.0 >= x1 || seed.1 < y0 || seed.1 >= y1 {
+            return 0;
+        }
+        let (w, h) = (x1 - x0, y1 - y0);
+        if w.saturating_mul(h) > MAX_FILL_PIXELS {
+            return 0;
+        }
+        let (w, h) = (w as usize, h as usize);
+
+        // read the area into one buffer, from the tiles held or the project's
+        let mut buf = vec![0u8; w * h * 4];
+        let t = i64::from(TILE);
+        for ty in y0.div_euclid(t)..=(y1 - 1).div_euclid(t) {
+            for tx in x0.div_euclid(t)..=(x1 - 1).div_euclid(t) {
+                let key = (tx as i32, ty as i32);
+                let tile = match self.tiles.get(&key) {
+                    Some(held) => held.clone(),
+                    None => {
+                        let mut px = load(key);
+                        px.resize(TILE_BYTES, 0);
+                        px
+                    }
+                };
+                for y in y0.max(ty * t)..y1.min(ty * t + t) {
+                    for x in x0.max(tx * t)..x1.min(tx * t + t) {
+                        let from = (((y - ty * t) * t + (x - tx * t)) * 4) as usize;
+                        let to = (((y - y0) * w as i64 + (x - x0)) * 4) as usize;
+                        buf[to..to + 4].copy_from_slice(&tile[from..from + 4]);
+                    }
+                }
+            }
+        }
+
+        let at = |x: usize, y: usize| (y * w + x) * 4;
+        let s = at((seed.0 - x0) as usize, (seed.1 - y0) as usize);
+        let seed_px = [buf[s], buf[s + 1], buf[s + 2], buf[s + 3]];
+        let tol = if tolerance.is_finite() {
+            (tolerance.clamp(0.0, 1.0) * 255.0).round() as i32
+        } else {
+            0
+        };
+        let alike = |p: &[u8]| {
+            if seed_px[3] == 0 && p[3] == 0 {
+                return true;
+            }
+            (0..4).all(|c| (i32::from(p[c]) - i32::from(seed_px[c])).abs() <= tol)
+        };
+
+        // scanline fill: spans of alike pixels, and the rows above and below them
+        let mut mask = vec![false; w * h];
+        let mut stack = vec![((seed.0 - x0) as usize, (seed.1 - y0) as usize)];
+        while let Some((sx, sy)) = stack.pop() {
+            if mask[sy * w + sx] || !alike(&buf[at(sx, sy)..at(sx, sy) + 4]) {
+                continue;
+            }
+            let (mut l, mut r) = (sx, sx);
+            while l > 0 && !mask[sy * w + l - 1] && alike(&buf[at(l - 1, sy)..at(l - 1, sy) + 4]) {
+                l -= 1;
+            }
+            while r + 1 < w && !mask[sy * w + r + 1] && alike(&buf[at(r + 1, sy)..at(r + 1, sy) + 4]) {
+                r += 1;
+            }
+            for x in l..=r {
+                mask[sy * w + x] = true;
+            }
+            for ny in [sy.checked_sub(1), (sy + 1 < h).then_some(sy + 1)]
+                .into_iter()
+                .flatten()
+            {
+                let mut open = false;
+                for x in l..=r {
+                    let free = !mask[ny * w + x] && alike(&buf[at(x, ny)..at(x, ny) + 4]);
+                    if free && !open {
+                        stack.push((x, ny));
+                    }
+                    open = free;
+                }
+            }
+        }
+
+        // the rim: pixels within `grow` steps of the fill that are not part of it
+        let mut rim = vec![false; w * h];
+        let mut frontier: Vec<usize> = (0..w * h).filter(|i| mask[*i]).collect();
+        let mut reached = mask.clone();
+        for _ in 0..grow.min(8) {
+            let mut next = Vec::new();
+            for i in frontier {
+                let (x, y) = (i % w, i / w);
+                let around = [
+                    x.checked_sub(1).map(|x| (x, y)),
+                    (x + 1 < w).then_some((x + 1, y)),
+                    y.checked_sub(1).map(|y| (x, y)),
+                    (y + 1 < h).then_some((x, y + 1)),
+                ];
+                for (nx, ny) in around.into_iter().flatten() {
+                    let j = ny * w + nx;
+                    if !reached[j] {
+                        reached[j] = true;
+                        rim[j] = true;
+                        next.push(j);
+                    }
+                }
+            }
+            frontier = next;
+        }
+
+        // lay the paint: over the matched pixels, behind the rim's
+        let mut changed = 0;
+        for i in 0..w * h {
+            if !(mask[i] || rim[i]) {
+                continue;
+            }
+            let o = i * 4;
+            let old = [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]];
+            let new = if mask[i] {
+                [color[0], color[1], color[2], 255]
+            } else {
+                let a = f32::from(old[3]) / 255.0;
+                let mix = |c: usize| (f32::from(old[c]) * a + f32::from(color[c]) * (1.0 - a)).round() as u8;
+                [mix(0), mix(1), mix(2), 255]
+            };
+            if new == old {
+                continue;
+            }
+            let (x, y) = (x0 + (i % w) as i64, y0 + (i / w) as i64);
+            let key = (x.div_euclid(t) as i32, y.div_euclid(t) as i32);
+            if !self.tiles.contains_key(&key) {
+                if self.tiles.len() >= MAX_TILES {
+                    continue;
+                }
+                let mut px = load(key);
+                px.resize(TILE_BYTES, 0);
+                self.tiles.insert(key, px);
+            }
+            let px = self.tiles.get_mut(&key).expect("inserted above");
+            let at = (((y - i64::from(key.1) * t) * t + (x - i64::from(key.0) * t)) * 4) as usize;
+            px[at..at + 4].copy_from_slice(&new);
+            self.dirty.insert(key);
+            changed += 1;
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +643,138 @@ mod tests {
         let mut short = Painting::default();
         short.dab(Vec2::new(5.0, 5.0), &brush, 1.0, &mut |_| vec![1, 2, 3]);
         assert_eq!(short.tile((0, 0)).unwrap().len(), TILE_BYTES);
+    }
+
+    /// A painting with a hollow square of black one pixel thick, from (10, 10) to (30, 30).
+    fn square() -> Painting {
+        let mut p = Painting::default();
+        let black = [0, 0, 0, 255];
+        let load = |_: Key| vec![0u8; TILE_BYTES];
+        for i in 10..=30 {
+            for (x, y) in [(i, 10), (i, 30), (10, i), (30, i)] {
+                let (key, px, py) = locate(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+                p.tiles.entry(key).or_insert_with(|| load(key)).splice(
+                    ((py * TILE + px) * 4) as usize..((py * TILE + px) * 4 + 4) as usize,
+                    black,
+                );
+            }
+        }
+        p
+    }
+
+    const PAGE: FillBounds = (0, 0, 100, 100);
+
+    #[test]
+    fn a_fill_stops_at_a_closed_line_and_leaves_the_outside_alone() {
+        let mut p = square();
+        let n = p.flood_fill((20, 20), PAGE, [255, 0, 0], 0.0, 0, &mut empty);
+        // the inside of the square is 19 by 19 pixels
+        assert_eq!(n, 19 * 19);
+        assert_eq!(pixel(&p, 20.5, 20.5), [255, 0, 0, 255]);
+        assert_eq!(pixel(&p, 10.5, 10.5), [0, 0, 0, 255], "the line is untouched");
+        assert_eq!(pixel(&p, 5.5, 5.5)[3], 0, "the outside is untouched");
+        // filling the outside covers the page minus the square's whole footprint
+        let mut q = square();
+        let outside = q.flood_fill((2, 2), PAGE, [0, 255, 0], 0.0, 0, &mut empty);
+        assert_eq!(outside, 100 * 100 - 21 * 21);
+    }
+
+    #[test]
+    fn filling_the_same_colour_again_changes_nothing_and_leaves_the_tiles_clean() {
+        let mut p = square();
+        p.flood_fill((20, 20), PAGE, [255, 0, 0], 0.0, 0, &mut empty);
+        p.forget_dirty();
+        assert_eq!(p.flood_fill((20, 20), PAGE, [255, 0, 0], 0.0, 0, &mut empty), 0);
+        assert_eq!(p.dirty().count(), 0);
+    }
+
+    #[test]
+    fn a_line_with_a_gap_lets_the_fill_out_and_a_tolerance_spreads_over_near_colours() {
+        let mut p = square();
+        // open a gap in the top edge
+        let (key, px, py) = locate(Vec2::new(20.5, 10.5));
+        let i = ((py * TILE + px) * 4) as usize;
+        p.tiles.get_mut(&key).unwrap()[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+        let n = p.flood_fill((20, 20), PAGE, [255, 0, 0], 0.0, 0, &mut empty);
+        assert_eq!(n, 100 * 100 - 79, "the whole page but the line");
+        // near colours: a pale grey page filled with a tolerance covers the slightly darker pixel
+        let mut q = Painting::default();
+        let mut load = |_: Key| {
+            let mut t = vec![200u8; TILE_BYTES];
+            for a in t.iter_mut().skip(3).step_by(4) {
+                *a = 255;
+            }
+            t
+        };
+        q.tiles.insert((0, 0), load((0, 0)));
+        q.tiles.get_mut(&(0, 0)).unwrap()[(5 * TILE * 4) as usize..(5 * TILE * 4 + 3) as usize]
+            .copy_from_slice(&[190, 190, 190]);
+        let strict = q.flood_fill((50, 50), PAGE, [0, 0, 255], 0.0, 0, &mut load);
+        assert_eq!(strict, 100 * 100 - 1);
+        let mut r = Painting::default();
+        r.tiles.insert((0, 0), load((0, 0)));
+        r.tiles.get_mut(&(0, 0)).unwrap()[(5 * TILE * 4) as usize..(5 * TILE * 4 + 3) as usize]
+            .copy_from_slice(&[190, 190, 190]);
+        assert_eq!(
+            r.flood_fill((50, 50), PAGE, [0, 0, 255], 0.1, 0, &mut load),
+            100 * 100
+        );
+    }
+
+    #[test]
+    fn grow_covers_the_soft_edge_behind_the_line_without_hiding_it() {
+        let mut p = Painting::default();
+        // a half see-through grey line down x = 20, a clear page either side
+        let (key, _, _) = locate(Vec2::new(20.5, 5.5));
+        let mut tile = vec![0u8; TILE_BYTES];
+        for y in 0..100usize {
+            let i = (y * TILE as usize + 20) * 4;
+            tile[i..i + 4].copy_from_slice(&[100, 100, 100, 128]);
+        }
+        p.tiles.insert(key, tile);
+        let n = p.flood_fill((5, 50), (0, 0, 30, 100), [255, 255, 255], 0.0, 1, &mut empty);
+        // 20 columns by 100 rows are the page up to the line; the line's own column is the rim
+        assert_eq!(n, 20 * 100 + 100);
+        let line = pixel(&p, 20.5, 50.5);
+        assert_eq!(line[3], 255);
+        // grey at half strength over white: lighter than the grey, darker than white
+        assert!(line[0] > 100 && line[0] < 255, "{line:?}");
+        // the far side of the line was never reached
+        assert_eq!(pixel(&p, 25.5, 50.5)[3], 0);
+    }
+
+    #[test]
+    fn hostile_fills_do_nothing() {
+        let mut p = Painting::default();
+        // seed outside the bounds, empty or backwards bounds, bounds too large, NaN tolerance
+        assert_eq!(p.flood_fill((200, 200), PAGE, [1, 1, 1], 0.1, 1, &mut empty), 0);
+        assert_eq!(
+            p.flood_fill((5, 5), (10, 10, 10, 10), [1, 1, 1], 0.1, 1, &mut empty),
+            0
+        );
+        assert_eq!(
+            p.flood_fill((5, 5), (50, 50, 0, 0), [1, 1, 1], 0.1, 1, &mut empty),
+            0
+        );
+        assert_eq!(
+            p.flood_fill((5, 5), (0, 0, 100_000, 100_000), [1, 1, 1], 0.1, 1, &mut empty),
+            0
+        );
+        assert_eq!(
+            p.flood_fill(
+                (5, 5),
+                (i64::MIN, i64::MIN, i64::MAX, i64::MAX),
+                [1, 1, 1],
+                0.1,
+                1,
+                &mut empty
+            ),
+            0
+        );
+        assert!(p.flood_fill((5, 5), PAGE, [1, 1, 1], f32::NAN, u32::MAX, &mut empty) > 0);
+        assert!(p.dirty().count() <= MAX_TILES);
+        // a loader that returns a short tile is padded, never read past its end
+        let mut q = Painting::default();
+        assert!(q.flood_fill((5, 5), PAGE, [9, 9, 9], 0.0, 0, &mut |_| vec![1, 2]) > 0);
     }
 }

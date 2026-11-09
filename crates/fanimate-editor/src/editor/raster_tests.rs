@@ -206,3 +206,79 @@ fn hostile_pointer_positions_never_panic_or_grow_without_bound() {
     ed.finish_stroke();
     assert!(tiles(&ed, id).len() <= raster::MAX_TILES);
 }
+
+fn box_outline(ed: &mut Editor, id: LayerId) {
+    let brush = Brush {
+        color: [0, 0, 0],
+        size: 8.0,
+        hardness: 1.0,
+        flow: 1.0,
+        erase: false,
+    };
+    let corners = [
+        (100.0, 100.0),
+        (300.0, 100.0),
+        (300.0, 300.0),
+        (100.0, 300.0),
+        (100.0, 100.0),
+    ];
+    let points: Vec<Vec2> = corners.iter().map(|(x, y)| Vec2::new(*x, *y)).collect();
+    ed.paint_raster(id, &points, brush).unwrap();
+}
+
+#[test]
+fn the_bucket_fills_inside_a_drawn_outline_as_one_undo_step_and_stays_off_the_line() {
+    let mut ed = editor();
+    let id = paint_layer(&mut ed);
+    box_outline(&mut ed, id);
+    let before = ed.history.cursor();
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let changed = ed.fill_raster(id, Vec2::new(200.0, 200.0), red, 0.1).unwrap();
+    assert!(changed > 150 * 150, "{changed}");
+    assert_eq!(ed.history.cursor(), before + 1);
+    assert_eq!(pixel(&ed, id, Vec2::new(200.5, 200.5)), [255, 0, 0, 255]);
+    assert_eq!(
+        pixel(&ed, id, Vec2::new(100.5, 200.5))[..3],
+        [0, 0, 0],
+        "the line stays black"
+    );
+    assert_eq!(
+        pixel(&ed, id, Vec2::new(50.5, 50.5))[3],
+        0,
+        "outside is untouched"
+    );
+    // the same fill again changes nothing and leaves no undo step
+    assert_eq!(ed.fill_raster(id, Vec2::new(200.0, 200.0), red, 0.1), Ok(0));
+    assert_eq!(ed.history.cursor(), before + 1);
+    ed.run(Action::Undo);
+    assert_eq!(pixel(&ed, id, Vec2::new(200.5, 200.5))[3], 0);
+    ed.run(Action::Redo);
+    assert_eq!(pixel(&ed, id, Vec2::new(200.5, 200.5)), [255, 0, 0, 255]);
+}
+
+#[test]
+fn the_bucket_never_spreads_past_the_page_and_refuses_what_it_cannot_fill() {
+    let mut ed = editor();
+    let id = paint_layer(&mut ed);
+    box_outline(&mut ed, id);
+    let blue = Color::rgb(0.0, 0.0, 1.0);
+    // outside the box the fill reaches the page's edges, and not a pixel beyond
+    assert!(ed.fill_raster(id, Vec2::new(10.0, 10.0), blue, 0.0).unwrap() > 500_000);
+    assert_eq!(pixel(&ed, id, Vec2::new(999.5, 799.5)), [0, 0, 255, 255]);
+    assert_eq!(pixel(&ed, id, Vec2::new(1000.5, 50.5))[3], 0);
+    assert_eq!(pixel(&ed, id, Vec2::new(50.5, 800.5))[3], 0);
+    // off the page: nothing to fill
+    assert_eq!(ed.fill_raster(id, Vec2::new(-50.0, 10.0), blue, 0.0), Ok(0));
+    assert_eq!(
+        ed.fill_raster(id, Vec2::new(f32::NAN, 10.0), blue, 0.0),
+        Err("That point is not on the page.".to_owned())
+    );
+    // a locked layer, a layer that is not a raster layer, and a playing animation
+    ed.doc.find_mut(id).unwrap().locked = true;
+    assert!(ed.fill_raster(id, Vec2::new(200.0, 200.0), blue, 0.0).is_err());
+    ed.doc.find_mut(id).unwrap().locked = false;
+    let vector = ed.doc.new_layer("v", LayerKind::vector(vec![]));
+    let vid = vector.id;
+    ed.doc.layers.push(vector);
+    assert!(ed.fill_raster(vid, Vec2::new(200.0, 200.0), blue, 0.0).is_err());
+}

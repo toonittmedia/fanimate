@@ -286,3 +286,46 @@ fn the_palette_is_listed_and_a_colour_is_replaced_everywhere_in_one_step() {
     );
     assert_eq!(rpc::required("palette"), Some(fanimate_api::Permission::Read));
 }
+
+#[test]
+fn the_bucket_fills_inside_a_painted_outline_over_json_rpc() {
+    let mut ed = editor();
+    let made = call(&mut ed, "add_raster_layer", json!({"name": "Paint"}));
+    let id = made["result"].as_u64().unwrap();
+    let outline = [[100, 100], [300, 100], [300, 300], [100, 300], [100, 100]];
+    let drawn = call(
+        &mut ed,
+        "paint",
+        json!({"layer": id, "points": outline, "size": 8, "hardness": 1}),
+    );
+    assert!(drawn["result"].as_u64().unwrap() >= 1, "{drawn}");
+    let filled = call(
+        &mut ed,
+        "fill",
+        json!({"layer": id, "x": 200, "y": 200, "color": "#e63946"}),
+    );
+    assert!(filled["result"].as_u64().unwrap() > 150 * 150, "{filled}");
+    // again: nothing to change, and no undo step
+    let steps = ed.history.cursor();
+    let again = call(
+        &mut ed,
+        "fill",
+        json!({"layer": id, "x": 200, "y": 200, "color": "#e63946"}),
+    );
+    assert_eq!(again["result"], 0);
+    assert_eq!(ed.history.cursor(), steps);
+    // bad arguments are refused with the stable codes and change nothing
+    let code = |a: &Value| a["error"]["data"]["code"].as_str().map(str::to_owned);
+    let before = ed.doc.clone();
+    for bad in [
+        json!({"layer": id, "x": 1, "y": 1, "color": "red"}),
+        json!({"layer": id, "x": 1, "y": 1, "color": "#000000", "tolerance": 2}),
+        json!({"layer": 9999, "x": 1, "y": 1, "color": "#000000"}),
+        json!({"layer": id, "x": 1, "color": "#000000"}),
+    ] {
+        let answer = call(&mut ed, "fill", bad);
+        assert!(code(&answer).is_some(), "{answer}");
+    }
+    assert!(ed.doc == before);
+    assert_eq!(rpc::required("fill"), Some(fanimate_api::Permission::Edit));
+}

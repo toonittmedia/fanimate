@@ -218,6 +218,79 @@ impl Editor {
         Ok(written)
     }
 
+    /// Paint Bucket on a raster layer: fill the pixels joined to the point `at`
+    /// (document space) that look like the one there (within `tolerance`, 0 to 1)
+    /// with `color`, spreading only over the page, as one undo step. The edge
+    /// of a soft line is covered behind it (see `Painting::flood_fill`). Returns
+    /// how many pixels changed; nothing changes, and no undo step is made, when
+    /// none would (the point is off the page, or already that colour).
+    pub fn fill_raster(
+        &mut self,
+        layer: LayerId,
+        at: Vec2,
+        color: Color,
+        tolerance: f32,
+    ) -> Result<usize, String> {
+        if self.editing_blocked() {
+            return Err("Pause the animation to fill.".to_owned());
+        }
+        let Some(group) = self.raster_group_of(layer) else {
+            return Err("That is not a raster layer: add one with add_raster_layer".to_owned());
+        };
+        if self.is_locked(group) {
+            return Err("The layer is locked".to_owned());
+        }
+        let to_layer = self.world(group).inverse();
+        if !to_layer.is_finite() {
+            return Err("That layer is scaled to zero, so it can't be filled.".to_owned());
+        }
+        // the page as the rectangle (in layer pixels) around its four corners
+        let (w, h) = (self.doc.width, self.doc.height);
+        let corners = [Vec2::ZERO, Vec2::new(w, 0.0), Vec2::new(0.0, h), Vec2::new(w, h)]
+            .map(|c| to_layer.transform_point2(c));
+        let lo = corners.iter().fold(Vec2::splat(f32::INFINITY), |m, c| m.min(*c));
+        let hi = corners
+            .iter()
+            .fold(Vec2::splat(f32::NEG_INFINITY), |m, c| m.max(*c));
+        let seed = to_layer.transform_point2(at);
+        if ![lo.x, lo.y, hi.x, hi.y, seed.x, seed.y]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return Err("That point is not on the page.".to_owned());
+        }
+        let bounds = (
+            lo.x.floor() as i64,
+            lo.y.floor() as i64,
+            hi.x.ceil() as i64,
+            hi.y.ceil() as i64,
+        );
+        let mut painting = Painting::default();
+        let changed = {
+            let view = &*self;
+            let mut load = |key: Key| view.tile_pixels(group, key);
+            painting.flood_fill(
+                (seed.x.floor() as i64, seed.y.floor() as i64),
+                bounds,
+                rgb8(color),
+                tolerance,
+                1,
+                &mut load,
+            )
+        };
+        if changed == 0 {
+            return Ok(0);
+        }
+        self.checkpoint("Fill");
+        let dirty: Vec<Key> = painting.dirty().collect();
+        for key in dirty {
+            if let Some(pixels) = painting.tile(key) {
+                self.write_tile(group, key, pixels);
+            }
+        }
+        Ok(changed)
+    }
+
     /// Move the brush to `at` (document space), laying paint along the way.
     pub(super) fn continue_raster_stroke(&mut self, at: Vec2, pressure: f32) {
         let Some(mut s) = self.raster_stroke.take() else {

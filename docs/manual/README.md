@@ -21,7 +21,8 @@ This is the outline of the manual, with the essentials of each chapter. Chapters
 
 - Freehand brush with pressure and a stabiliser, rectangle, ellipse, pen and Add Point tools, eraser, paint bucket and eyedropper.
 - Select Points and Transform Points edit drawings point by point. Combine Shapes joins, subtracts and intersects.
-- The Style panel sets colours, line width and taper for new drawings.
+- The Style panel sets colours, line width and taper for new drawings, and lists the colours your artwork uses (Palette): change a swatch and every use of that colour changes at once.
+- **Painting with pixels:** Layer > New Raster Layer makes a layer you paint on with the Brush and the Eraser (Style sets the size and the edge's hardness). The **Paint Bucket** on a raster layer floods the area you click, up to the lines around it and the edge of the page, with the fill colour (the line colour when fill is off). It also covers the soft edge of a line behind the line, so no pale halo is left. A gap in the outline lets the fill out: close it first, or undo (one click is one undo step).
 
 ### Masks, clips and blend modes
 

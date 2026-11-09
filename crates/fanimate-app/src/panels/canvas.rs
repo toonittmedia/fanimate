@@ -1197,6 +1197,10 @@ fn point_overlay(ui: &egui::Ui, shell: &Shell, rect: Rect, to_screen: &impl Fn(V
     }
 }
 
+/// How far a pixel's colour may differ (0 to 1) from the one clicked and still be filled by the
+/// Paint Bucket on a raster layer: enough to cover a soft edge's near shades, not the line.
+const RASTER_FILL_TOLERANCE: f32 = 0.1;
+
 /// Paint Bucket and Eyedropper act on the shape clicked.
 fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Vec2, f32, Pos2) -> Vec2) {
     let tool = shell.editor.tool;
@@ -1210,6 +1214,27 @@ fn click_tools(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn(Ve
     };
     let p = to_doc(shell.view.center, shell.view.zoom, pos);
     let slop = HIT_SLOP_PX / shell.view.zoom;
+    // on a raster layer the bucket floods pixels: the fill colour, or the line colour with no fill
+    if tool == Tool::PaintBucket
+        && let Some(group) = shell
+            .editor
+            .primary()
+            .and_then(|l| shell.editor.raster_group_of(l))
+    {
+        let d = shell.editor.draw;
+        match shell
+            .editor
+            .fill_raster(group, p, d.fill.unwrap_or(d.line), RASTER_FILL_TOLERANCE)
+        {
+            Ok(0) => shell.editor.set_status(
+                fanimate_editor::StatusKind::Info,
+                "Nothing to fill there: it is off the page or already that colour",
+            ),
+            Ok(_) => {}
+            Err(e) => shell.editor.set_status(fanimate_editor::StatusKind::Info, e),
+        }
+        return;
+    }
     let hit = if tool == Tool::PaintBucket {
         shell.editor.paint_at(p, slop) || shell.editor.shape_at(p, slop).is_some()
     } else {
