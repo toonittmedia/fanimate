@@ -317,11 +317,26 @@ impl Editor {
             .iter()
             .any(|id| self.doc.find(*id).is_some_and(|l| !l.locked));
         self.checkpoint(if lock { "Lock layer" } else { "Unlock layer" });
+        let count = roots.len();
         for id in roots {
             if let Some(l) = self.doc.find_mut(id) {
                 l.locked = lock;
             }
         }
+        // locking changes nothing on the canvas, so say it happened
+        let what = if count == 1 {
+            "layer".to_owned()
+        } else {
+            format!("{count} layers")
+        };
+        self.set_status(
+            StatusKind::Info,
+            if lock {
+                format!("Locked {what}: the canvas and tools leave it alone. Press again to unlock")
+            } else {
+                format!("Unlocked {what}")
+            },
+        );
         if lock {
             // what the tools were editing is no longer theirs to edit
             self.points.clear();
@@ -556,6 +571,18 @@ mod tests {
         assert!(ed.doc.guides.is_empty());
         ed.run(Action::Undo);
         assert_eq!(ed.doc.guides.len(), 1);
+    }
+
+    #[test]
+    fn locking_says_so_because_nothing_changes_on_the_canvas() {
+        let (mut ed, id) = with_shapes();
+        ed.select(id, SelectMode::Replace);
+        ed.run(Action::ToggleLock);
+        let said = ed.status.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
+        assert!(said.starts_with("Locked layer"), "{said}");
+        ed.run(Action::ToggleLock);
+        let said = ed.status.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
+        assert_eq!(said, "Unlocked layer");
     }
 
     #[test]

@@ -152,6 +152,11 @@ pub struct Evaluator {
     editing: Option<crate::scene::LayerId>,
     /// Leave rough sketches out, as renders do.
     pub skip_rough: bool,
+    /// Layers the canvas wants to see inside their switch layers: a switch that has one of these
+    /// (or one inside one of its children) among its children shows that child instead of the one
+    /// its keys name. The animator selecting a layer in a switch sees that layer. Renders and
+    /// exports leave it empty, so they always show what the keys say.
+    pub peek: Vec<crate::scene::LayerId>,
     /// Look at the canvas through the document's camera, as renders do.
     /// The canvas the animator works on shows the whole page instead.
     pub camera: bool,
@@ -419,7 +424,12 @@ impl Evaluator {
                 self.visit(children, frame, world, opacity, rig, out);
             }
             LayerKind::Switch { children, switch } => {
-                if let Some(i) = crate::scene::switch_choice(children, switch, frame) {
+                let peeked = if self.peek.is_empty() {
+                    None
+                } else {
+                    children.iter().position(|c| self.peek.contains(&c.id))
+                };
+                if let Some(i) = peeked.or_else(|| crate::scene::switch_choice(children, switch, frame)) {
                     self.visit(&children[i..=i], frame, world, opacity, rig, out);
                 }
             }
@@ -1092,6 +1102,42 @@ mod tests {
         assert_eq!(shown(0.0), [bid, bid]);
         assert_eq!(shown(5.0), [aid]);
         assert_eq!(shown(50.0), [aid]);
+    }
+
+    #[test]
+    fn a_peeked_layer_inside_a_switch_shows_instead_of_the_keyed_one_and_nothing_else_changes() {
+        let mut doc = Document::new("t", 100.0, 100.0, 24.0);
+        let a = doc.new_layer("A", LayerKind::vector(vec![square()]));
+        let b = doc.new_layer("B", LayerKind::vector(vec![square(), square()]));
+        let (aid, bid) = (a.id, b.id);
+        let sw = doc.new_layer(
+            "mouth",
+            LayerKind::Switch {
+                children: vec![a, b],
+                switch: vec![],
+            },
+        );
+        let swid = sw.id;
+        doc.layers.push(sw);
+        let shown = |peek: &[crate::scene::LayerId]| {
+            let mut ev = Evaluator {
+                peek: peek.to_vec(),
+                ..Evaluator::default()
+            };
+            let mut items = Vec::new();
+            ev.evaluate_into(&doc, 0.0, &mut items);
+            items.iter().map(|i| i.layer).collect::<Vec<_>>()
+        };
+        // nothing peeked: the keyed (here the top) child
+        assert_eq!(shown(&[]), [bid, bid]);
+        // the lower child peeked: it shows, whatever the keys say
+        assert_eq!(shown(&[aid]), [aid]);
+        // the switch itself peeked (it is the selected layer): its keys decide as usual
+        assert_eq!(shown(&[swid]), [bid, bid]);
+        // a layer that is not in any switch changes nothing
+        assert_eq!(shown(&[crate::scene::LayerId(9999)]), [bid, bid]);
+        // renders never peek
+        assert!(Evaluator::for_render().peek.is_empty());
     }
 
     #[test]

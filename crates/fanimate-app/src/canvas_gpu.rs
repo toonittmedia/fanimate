@@ -36,6 +36,8 @@ pub struct Overlays {
     /// With the light table on, the layers kept at full strength; others
     /// are faded.
     pub light_table: Option<Vec<LayerId>>,
+    /// Layers to see inside their switch layers (see `Evaluator::peek`).
+    pub peek: Vec<LayerId>,
     /// Show the canvas as the document's camera sees it.
     pub camera: bool,
     /// The view's turn about its centre, applied to everything drawn (identity when upright).
@@ -90,6 +92,7 @@ impl CanvasGpu {
         let started = std::time::Instant::now();
         let mut items = Vec::new();
         self.evaluator.camera = overlays.camera;
+        self.evaluator.peek.clone_from(&overlays.peek);
         self.evaluator.evaluate_into(doc, frame, &mut items);
         let turn = overlays.turn;
         if let Some(shape) = extra {

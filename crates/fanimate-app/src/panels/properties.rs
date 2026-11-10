@@ -202,7 +202,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
             ui.spacing_mut().interact_size.x = NUMBER_WIDTH;
             ui.style_mut().override_font_id = Some(crate::theme::mono(12.5));
             let r = ui.add(
-                egui::Slider::new(&mut opacity, 0.0..=100.0)
+                crate::kit::value_slider(&mut opacity, 0.0..=100.0)
                     .suffix("%")
                     .fixed_decimals(1),
             );
@@ -440,7 +440,7 @@ fn layer(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
         prop_row_full(ui, "Volume", |ui| {
             ui.spacing_mut().interact_size.x = NUMBER_WIDTH;
             ui.style_mut().override_font_id = Some(crate::theme::mono(12.5));
-            let r = ui.add(egui::Slider::new(&mut volume, 0.0..=200.0).suffix("%"));
+            let r = ui.add(crate::kit::value_slider(&mut volume, 0.0..=200.0).suffix("%"));
             if r.changed() {
                 changed = Some(r);
             }

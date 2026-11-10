@@ -175,7 +175,10 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
         egui::pos2(rect.right() - 24.0, rect.top()),
         egui::vec2(20.0, ROW_HEIGHT),
     );
-    if locked || response.hovered() {
+    // `response.hovered()` is false while the pointer is over a widget on top of the row, such as
+    // this padlock itself: the padlock vanished the moment the pointer reached it, so the click
+    // never landed on it. Anywhere over the row counts.
+    if locked || response.hovered() || ui.rect_contains_pointer(rect) {
         let lock = ui.interact(lock_rect, Id::new(("lock", id)), Sense::click());
         icons::paint(
             &painter,
@@ -229,7 +232,25 @@ fn row(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId, depth: usize) {
         egui::pos2(arrow_rect.right() + 10.0, rect.center().y),
         egui::vec2(16.0, 16.0),
     );
-    icons::paint(&painter, icon_rect, kind_icon, p.text_muted);
+    // the layer a switch layer is showing on this frame has a green icon
+    let active_in_switch = shell
+        .editor
+        .doc
+        .locate(id)
+        .and_then(|(parent, index)| Some((shell.editor.doc.find(parent?)?, index)))
+        .is_some_and(|(parent, index)| match &parent.kind {
+            LayerKind::Switch { children, switch } => {
+                fanimate_core::scene::switch_choice(children, switch, shell.editor.current_frame() as f32)
+                    == Some(index)
+            }
+            _ => false,
+        });
+    icons::paint(
+        &painter,
+        icon_rect,
+        kind_icon,
+        if active_in_switch { p.success } else { p.text_muted },
+    );
 
     // name, or the rename field
     let name_rect = Rect::from_min_max(egui::pos2(arrow_rect.right() + 24.0, rect.top()), rect.max);

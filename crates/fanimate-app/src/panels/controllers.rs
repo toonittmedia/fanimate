@@ -104,7 +104,11 @@ pub fn section(ui: &mut egui::Ui, shell: &mut Shell, layer: LayerId) {
         ui.add_enabled_ui(open, |ui| match kind {
             ControllerKind::Slider => {
                 let mut v = x;
-                let r = ui.add(egui::Slider::new(&mut v, 0.0..=1.0).step_by(0.01).max_decimals(2));
+                let r = ui.add(
+                    crate::kit::value_slider(&mut v, 0.0..=1.0)
+                        .step_by(0.01)
+                        .max_decimals(2),
+                );
                 if r.changed() {
                     begin_edit(shell, &r, "Set controller");
                     // only fails while playing or editing an action, which disable this

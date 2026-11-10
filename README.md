@@ -8,7 +8,7 @@
 <p align="center"><strong>Free to animate.</strong><br>
 Open-source 2D character animation. Rig it. Draw it. Move it.</p>
 
-<p align="center"><a href="https://github.com/toonittmedia/fanimate/actions/workflows/release.yml"><img src="https://github.com/toonittmedia/fanimate/actions/workflows/release.yml/badge.svg" alt="Release build"></a></p>
+<p align="center"><a href="https://github.com/toonittmedia/fanimate/releases"><img src="https://img.shields.io/github/v/release/toonittmedia/fanimate?include_prereleases&label=latest%20release" alt="Latest release"></a></p>
 
 ---
 

@@ -63,7 +63,7 @@ To use an action on a different rig, right-click it in the Actions panel and cho
 
 - Frame-by-frame layers hold one drawing per exposure, with rough, colour, line and overlay parts. **New Drawing** (F7) copies the drawing on show.
 - Onion skin (Alt+O) and the light table (Alt+L) help drawing between frames. The X-sheet panel shows exposures down the page.
-- Switch layers show one child at a time: mouths, hands, eyes. With a switch layer selected, **Lip Sync** (in the Layer menu or the layer's right-click menu) listens to a WAV dialogue track and keys its mouths.
+- Switch layers show one child at a time: mouths, hands, eyes. The child showing on the current frame has a green icon in the Layers panel, and with a switch layer selected the timeline's toolbar has a **Shows** dropdown to change it from the playhead on. Select a layer inside a switch and the canvas shows that layer instead (select the switch, or anything else, and it shows its active child again); exports always follow the switch's keys. With a switch layer selected, **Lip Sync** (in the Layer menu or the layer's right-click menu) listens to a WAV dialogue track and keys its mouths.
 
 ## 6a. Text
 

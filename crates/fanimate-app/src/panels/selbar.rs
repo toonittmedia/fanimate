@@ -244,7 +244,13 @@ fn buttons(ui: &mut egui::Ui, shell: &mut Shell, push: &mut Vec<Action>) {
         .frame(false);
         menus::menu_button(ui, align, |ui| menus::align_items(ui, shell))
             .on_hover_text("Line the layers up: one with the canvas, several with each other");
-        button(ui, shell, push, Icon::Lock, "", Action::ToggleLock);
+        // the padlock shows the state: closed when every chosen layer is locked
+        let all_locked = !layers.is_empty()
+            && layers
+                .iter()
+                .all(|id| shell.editor.doc.find(*id).is_some_and(|l| l.locked));
+        let lock_icon = if all_locked { Icon::Lock } else { Icon::Unlock };
+        button(ui, shell, push, lock_icon, "", Action::ToggleLock);
     }
     button(ui, shell, push, Icon::Duplicate, "", Action::Duplicate);
     button(ui, shell, push, Icon::Delete, "", Action::DeleteLayers);

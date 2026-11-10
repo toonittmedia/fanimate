@@ -2394,6 +2394,46 @@ fn key_interp_dropdown(ui: &mut egui::Ui, shell: &mut Shell) {
     }
 }
 
+/// "Shows": the layer of the selected switch layer that is active on the current frame, and a
+/// list to change it. Choosing one keys it from the playhead on (`Action::SetSwitch`), as the
+/// Show Layer menu and the Properties panel do. Layers are listed top of the stack first, as in
+/// the Layers panel.
+fn switch_dropdown(ui: &mut egui::Ui, shell: &mut Shell, id: fanimate_core::LayerId) {
+    let Some(fanimate_core::LayerKind::Switch { children, switch }) =
+        shell.editor.doc.find(id).map(|l| &l.kind)
+    else {
+        return;
+    };
+    let count = children.len();
+    let shown = fanimate_core::scene::switch_choice(children, switch, shell.editor.current_frame() as f32);
+    let names: Vec<String> = children.iter().map(|c| c.name.clone()).collect();
+    let current = shown
+        .and_then(|i| names.get(i).cloned())
+        .unwrap_or_else(|| "Nothing".to_owned());
+    ui.label(RichText::new("Shows").color(shell.palette.text_muted));
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt("timeline-switch")
+        .selected_text(current)
+        .width(150.0)
+        .show_ui(ui, |ui| {
+            if count == 0 {
+                ui.label(RichText::new("Put a layer inside the switch").color(shell.palette.text_muted));
+            }
+            for i in (0..count).rev() {
+                if ui.selectable_label(shown == Some(i), &names[i]).clicked() {
+                    chosen = Some(i);
+                }
+            }
+        })
+        .response
+        .on_hover_text(
+            "Which layer this switch shows from the current frame on. Keys it, so it can change over time.",
+        );
+    if let Some(i) = chosen {
+        shell.pending.push(Action::SetSwitch(i));
+    }
+}
+
 fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
     ui.horizontal(|ui| {
         let tip = |shell: &Shell, a: Action| {
@@ -2521,6 +2561,11 @@ fn transport(ui: &mut egui::Ui, shell: &mut Shell) {
             .clicked()
         {
             shell.ui.open_tab = Some(crate::panels::Tab::XSheet);
+        }
+        // a selected switch layer: which of its layers shows from the playhead on
+        if let Some(id) = shell.editor.switch_layer() {
+            ui.separator();
+            switch_dropdown(ui, shell, id);
         }
         // zoom, at the right: shortcuts and Ctrl+scroll work too
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

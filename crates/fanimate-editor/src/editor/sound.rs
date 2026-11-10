@@ -276,6 +276,24 @@ impl Editor {
         }
     }
 
+    /// The layers the canvas should show inside their switch layers: each selected layer and
+    /// everything it is inside, so a switch holding a selected layer (or one inside a selected
+    /// child) shows that child instead of its keyed one. A selected switch layer is in the list
+    /// too, but only its children matter, so it still shows what its keys say.
+    pub fn switch_peek(&self) -> Vec<LayerId> {
+        let mut path = Vec::new();
+        for id in &self.selection {
+            let mut current = Some(*id);
+            while let Some(c) = current {
+                if !path.contains(&c) {
+                    path.push(c);
+                }
+                current = self.doc.locate(c).and_then(|(p, _)| p);
+            }
+        }
+        path
+    }
+
     /// The selected switch layer.
     pub fn switch_layer(&self) -> Option<LayerId> {
         let id = self.primary()?;
@@ -613,6 +631,27 @@ mod tests {
             panic!()
         };
         assert!(switch.is_empty());
+    }
+
+    #[test]
+    fn selecting_a_layer_inside_a_switch_peeks_at_it_and_selecting_the_switch_or_nothing_does_not() {
+        let (mut ed, sw) = mouths();
+        let child = ed.doc.find(sw).unwrap().kind.children().unwrap()[0].id;
+        // the child is selected: it and the switch above it are in the peek
+        ed.selection = vec![child];
+        let peek = ed.switch_peek();
+        assert!(peek.contains(&child) && peek.contains(&sw), "{peek:?}");
+        // the switch itself: only itself, so no child of it is asked for
+        ed.selection = vec![sw];
+        assert_eq!(ed.switch_peek(), [sw]);
+        // nothing selected, nothing peeked
+        ed.selection.clear();
+        assert!(ed.switch_peek().is_empty());
+        // two selected layers are both in it, and a gone layer is harmless
+        let other = ed.doc.find(sw).unwrap().kind.children().unwrap()[1].id;
+        ed.selection = vec![child, other, fanimate_core::LayerId(9999)];
+        let peek = ed.switch_peek();
+        assert!(peek.contains(&child) && peek.contains(&other));
     }
 
     #[test]

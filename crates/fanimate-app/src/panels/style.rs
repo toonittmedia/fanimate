@@ -147,7 +147,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             let mut pct = d.smoothing * 100.0;
             if ui
                 .add(
-                    egui::Slider::new(&mut pct, 0.0..=100.0)
+                    crate::kit::value_slider(&mut pct, 0.0..=100.0)
                         .suffix("%")
                         .max_decimals(0),
                 )
@@ -166,7 +166,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.label(RichText::new("Hardness").color(muted));
             let mut hard = d.hardness * 100.0;
             if ui
-                .add(egui::Slider::new(&mut hard, 0.0..=100.0).suffix("%").max_decimals(0))
+                .add(crate::kit::value_slider(&mut hard, 0.0..=100.0).suffix("%").max_decimals(0))
                 .on_hover_text("How hard the edge of a stroke is on a raster layer: 0 is all soft, 100 a sharp edge")
                 .changed()
             {
@@ -177,7 +177,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.label(RichText::new("Flow").color(muted));
             let mut flow = d.brush_flow * 100.0;
             if ui
-                .add(egui::Slider::new(&mut flow, 1.0..=100.0).suffix("%").max_decimals(0))
+                .add(crate::kit::value_slider(&mut flow, 1.0..=100.0).suffix("%").max_decimals(0))
                 .on_hover_text("How strongly each dab of a raster brush lays paint. Lower builds the colour up gradually as you go over it again.")
                 .changed()
             {
@@ -188,7 +188,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.label(RichText::new("Pressure to flow").color(muted));
             let mut fp = d.brush_flow_pressure * 100.0;
             if ui
-                .add(egui::Slider::new(&mut fp, 0.0..=100.0).suffix("%").max_decimals(0))
+                .add(crate::kit::value_slider(&mut fp, 0.0..=100.0).suffix("%").max_decimals(0))
                 .on_hover_text("How much a pen's pressure also lowers the flow of a raster brush, so a light touch lays lighter paint. 0 leaves pressure changing only the size. A mouse has no pressure.")
                 .changed()
             {
@@ -199,7 +199,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.label(RichText::new("Smudge").color(muted));
             let mut smudge = d.brush_smudge * 100.0;
             if ui
-                .add(egui::Slider::new(&mut smudge, 0.0..=100.0).suffix("%").max_decimals(0))
+                .add(crate::kit::value_slider(&mut smudge, 0.0..=100.0).suffix("%").max_decimals(0))
                 .on_hover_text("Above 0 the raster Brush drags the paint under it along the stroke instead of laying the line colour. 0 paints normally.")
                 .changed()
             {
@@ -210,7 +210,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.label(RichText::new("Spacing").color(muted));
             let mut spacing = d.brush_spacing * 100.0;
             if ui
-                .add(egui::Slider::new(&mut spacing, 5.0..=100.0).suffix("%").max_decimals(0))
+                .add(crate::kit::value_slider(&mut spacing, 5.0..=100.0).suffix("%").max_decimals(0))
                 .on_hover_text("The distance between the dabs of a raster brush, as a share of its size. Small is a smooth line; large shows separate dots.")
                 .changed()
             {
@@ -232,7 +232,7 @@ fn new_artwork(ui: &mut egui::Ui, shell: &mut Shell) {
             ui.label(RichText::new("Bucket tolerance").color(muted));
             let mut tolerance = d.fill_tolerance * 100.0;
             if ui
-                .add(egui::Slider::new(&mut tolerance, 0.0..=50.0).suffix("%").max_decimals(0))
+                .add(crate::kit::value_slider(&mut tolerance, 0.0..=50.0).suffix("%").max_decimals(0))
                 .on_hover_text("How different a pixel's colour may be from the one you click and still be filled by the Paint Bucket on a raster layer. Higher fills across soft edges and noise.")
                 .changed()
             {

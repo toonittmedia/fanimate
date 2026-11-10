@@ -366,6 +366,8 @@ fn canvas_overlays(shell: &Shell) -> crate::canvas_gpu::Overlays {
     if shell.look_through_camera {
         return out;
     }
+    // selecting a layer inside a switch shows that layer, not the switch's keyed one
+    out.peek = ed.switch_peek();
     if shell.light_table && !ed.selection.is_empty() {
         out.light_table = Some(ed.selection.clone());
     }

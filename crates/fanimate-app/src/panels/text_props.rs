@@ -240,7 +240,7 @@ fn words_and_look(ui: &mut egui::Ui, shell: &mut Shell, id: LayerId) {
         ui.style_mut().override_font_id = Some(crate::theme::mono(12.5));
         let r = ui.add_enabled(
             look.font_has_weight_axis(),
-            egui::Slider::new(&mut edited.weight, 100.0..=900.0).step_by(1.0),
+            crate::kit::value_slider(&mut edited.weight, 100.0..=900.0).step_by(1.0),
         );
         let r = r.on_hover_text("Only fonts with a weight axis (Inter) change with this");
         if r.changed() {

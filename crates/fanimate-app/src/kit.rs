@@ -215,6 +215,20 @@ pub fn number(ui: &mut Ui, drag: egui::DragValue<'_>) -> egui::Response {
     number_sized(ui, NUMBER_WIDTH, drag)
 }
 
+/// A slider for a value an animation can move.
+///
+/// egui's own Slider clamps its value to the range on every frame by default, and that clamp
+/// also applies its rounding (`fixed_decimals`, `step_by`). So when the playhead leaves an
+/// animated value between two keys at, say, 11.72, the slider rounds it to 11.7 and reports
+/// `changed()` on its own, and a panel that keys what changed wrote a key on every frame that
+/// was scrubbed over. `Edits` rounds and clamps only what the person types or drags.
+pub fn value_slider<'a, N: egui::emath::Numeric>(
+    value: &'a mut N,
+    range: std::ops::RangeInclusive<N>,
+) -> egui::Slider<'a> {
+    egui::Slider::new(value, range).clamping(egui::SliderClamping::Edits)
+}
+
 /// A number box of a chosen fixed width, for values that need fewer digits.
 pub fn number_sized(ui: &mut Ui, width: f32, drag: egui::DragValue<'_>) -> egui::Response {
     ui.scope(|ui| {
@@ -288,6 +302,38 @@ mod tests {
                 && ui.min_rect().width() <= ui.max_rect().width() + 0.5
         });
         assert!(fits);
+    }
+
+    #[test]
+    fn a_slider_showing_an_animated_value_does_not_report_a_change_nobody_made() {
+        // opacity as the playhead leaves it between two keys: not a whole number of tenths
+        for between in [11.7234_f32, 33.3333, 99.96] {
+            let mut value = between;
+            let changed = in_panel(300.0, |ui| {
+                ui.add(
+                    value_slider(&mut value, 0.0..=100.0)
+                        .suffix("%")
+                        .fixed_decimals(1),
+                )
+                .changed()
+            });
+            assert!(!changed, "{between}: reported as changed");
+            assert_eq!(value, between, "the value must be left as it was");
+        }
+        // the plain egui slider is what made keys spray (this documents why value_slider exists)
+        let mut value = 11.7234_f32;
+        let plain = in_panel(300.0, |ui| {
+            ui.add(egui::Slider::new(&mut value, 0.0..=100.0).fixed_decimals(1))
+                .changed()
+        });
+        assert!(plain, "egui's default clamping rounds an unchanged value");
+        // a step is the same: a controller at 0.3333 must not be snapped to 0.33 by looking at it
+        let mut v = 0.3333_f32;
+        let stepped = in_panel(300.0, |ui| {
+            ui.add(value_slider(&mut v, 0.0..=1.0).step_by(0.01).max_decimals(2))
+                .changed()
+        });
+        assert!(!stepped && v == 0.3333);
     }
 
     #[test]
