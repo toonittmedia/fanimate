@@ -7,6 +7,7 @@
 //! separate means every command is unit-tested without opening a window.
 
 mod action;
+mod axis_lock;
 mod editor;
 mod history;
 mod keymap;
@@ -17,6 +18,7 @@ mod tabs;
 mod templates;
 
 pub use action::{Action, Preset, Sample, Tool, ToolGroup, Workspace, search, tool_groups_for};
+pub use axis_lock::{Axis, AxisLock};
 pub use editor::{
     AlignTo, AnimatorProp, BoneRef, CaptionImport, ConvertTo, DrawStyle, Editor, Focus, Handle, HandleMods,
     Loss, MouthCue, Outcome, PAUSE_TO_EDIT, Placement, PointRef, PropValue, RadiusTarget, SOUND_EXTENSIONS,

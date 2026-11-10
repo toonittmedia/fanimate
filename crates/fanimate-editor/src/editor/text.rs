@@ -342,6 +342,18 @@ impl Editor {
             .is_some_and(|t| index < t.animators.len())
     }
 
+    /// The Delete key with a text animator picked (its row in the Text panel or its stick on the
+    /// timeline; the app knows which, the editor does not): the index to remove, when the picked
+    /// animator belongs to the selected text layer and Delete has nothing else to delete (chosen
+    /// keys, points, shapes or a bone). None otherwise, and Delete does what it always did.
+    pub fn animator_for_delete(&self, picked: Option<(LayerId, usize)>) -> Option<usize> {
+        let (layer, index) = picked?;
+        (self.selected_text() == Some(layer)
+            && self.has_text_animator(index)
+            && !self.can_run(crate::Action::Delete))
+        .then_some(index)
+    }
+
     /// Whether the animator at `index` has room to move `by` places.
     pub(crate) fn text_animator_can_move(&self, index: usize, by: i8) -> bool {
         let len = self
@@ -1075,6 +1087,34 @@ mod tests {
         ed.run(Action::RemoveTextAnimator(0));
         assert_eq!(ed.text(id).unwrap().animators.len(), 1);
         assert!(!ed.can_run(Action::RemoveTextAnimator(1)));
+    }
+
+    #[test]
+    fn delete_removes_the_picked_animator_only_when_nothing_else_is_there_to_delete() {
+        let (mut ed, id) = with_text();
+        ed.run(Action::AddTextAnimator(TextPreset::Wave));
+        ed.run(Action::AddTextAnimator(TextPreset::FadeIn));
+        // nothing picked, or a gone animator or layer: Delete is not for an animator
+        assert_eq!(ed.animator_for_delete(None), None);
+        assert_eq!(ed.animator_for_delete(Some((id, 5))), None);
+        assert_eq!(
+            ed.animator_for_delete(Some((fanimate_core::LayerId(999), 0))),
+            None
+        );
+        // an animator picked on the selected text layer: it is the one to remove
+        assert_eq!(ed.animator_for_delete(Some((id, 1))), Some(1));
+        let before = ed.text(id).unwrap().animators.len();
+        let index = ed.animator_for_delete(Some((id, 0))).unwrap();
+        ed.run(Action::RemoveTextAnimator(index));
+        assert_eq!(ed.text(id).unwrap().animators.len(), before - 1);
+        ed.run(Action::Undo);
+        assert_eq!(ed.text(id).unwrap().animators.len(), before, "one undo step");
+        // an animator picked on a layer that is not the selected one is left alone
+        let other = ed.doc.new_layer("v", fanimate_core::LayerKind::vector(vec![]));
+        let other_id = other.id;
+        ed.doc.layers.push(other);
+        ed.select(other_id, crate::SelectMode::Replace);
+        assert_eq!(ed.animator_for_delete(Some((id, 0))), None);
     }
 
     #[test]

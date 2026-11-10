@@ -544,6 +544,7 @@ fn transform_tool(
         {
             shell.editor.checkpoint("Move layer");
             shell.ui.drag_origin = Some((id, t));
+            shell.ui.axis_lock.reset();
         }
     }
     if response.dragged_by(egui::PointerButton::Primary)
@@ -551,8 +552,15 @@ fn transform_tool(
     {
         let total = response.total_drag_delta().unwrap_or_default();
         let raw_delta = Vec2::new(total.x, total.y) / shell.view.zoom;
+        // Shift keeps the move on a horizontal or vertical line (the snap may nudge it off, so
+        // the line is applied again after it)
+        let dead = AXIS_DEAD_ZONE_PX / shell.view.zoom;
+        let raw_delta = shell.ui.axis_lock.apply(Vec2::ZERO, raw_delta, mods.shift, dead);
         let snapped_pos = do_snap(shell, origin.position + raw_delta);
-        let doc_delta = snapped_pos - origin.position;
+        let doc_delta = shell
+            .ui
+            .axis_lock
+            .apply(Vec2::ZERO, snapped_pos - origin.position, mods.shift, dead);
         // drag in document space -> movement in the layer's parent space
         let parent = shell.editor.parent_world(id);
         let local = parent.matrix2.inverse() * doc_delta;
@@ -892,6 +900,8 @@ fn point_tools(
                 shell.editor.select_point(point, SelectMode::Replace);
             }
         }
+        shell.ui.point_drag_from = doc(start);
+        shell.ui.axis_lock.reset();
         shell.ui.point_gesture = if moving {
             shell
                 .editor
@@ -910,8 +920,11 @@ fn point_tools(
     };
     match gesture {
         PointGesture::Move(last) => {
-            let raw = doc(pos);
+            // Shift keeps the move on a horizontal or vertical line through where it began
+            let (from, dead) = (shell.ui.point_drag_from, AXIS_DEAD_ZONE_PX / zoom);
+            let raw = shell.ui.axis_lock.apply(from, doc(pos), mods.shift, dead);
             let now = do_snap(shell, raw);
+            let now = shell.ui.axis_lock.apply(from, now, mods.shift, dead);
             shell.editor.drag_points(now - last);
             shell.ui.point_gesture = Some(PointGesture::Move(now));
         }
@@ -932,6 +945,9 @@ fn point_tools(
 
 /// How close, in screen pixels, a click must be to a point to pick it.
 const POINT_SLOP_PX: f32 = 6.0;
+
+/// How far, in screen pixels, a Shift-drag must go before it picks a horizontal or vertical line.
+const AXIS_DEAD_ZONE_PX: f32 = 5.0;
 
 /// Add Point: click a line to add a point on it; drag from an open end to
 /// extend the path, or from empty space to start a line, the new point
@@ -957,12 +973,17 @@ fn add_point_tool(response: &egui::Response, shell: &mut Shell, to_doc: &impl Fn
         && shell.editor.begin_add_point(doc(start), slop)
     {
         shell.ui.point_gesture = Some(PointGesture::Move(doc(start)));
+        shell.ui.point_drag_from = doc(start);
+        shell.ui.axis_lock.reset();
     }
     if let Some(PointGesture::Move(last)) = shell.ui.point_gesture
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let raw = doc(pos);
+        let shift = response.ctx.input(|i| i.modifiers.shift);
+        let (from, dead) = (shell.ui.point_drag_from, AXIS_DEAD_ZONE_PX / zoom);
+        let raw = shell.ui.axis_lock.apply(from, doc(pos), shift, dead);
         let now = do_snap(shell, raw);
+        let now = shell.ui.axis_lock.apply(from, now, shift, dead);
         shell.editor.drag_points(now - last);
         shell.ui.point_gesture = Some(PointGesture::Move(now));
     }

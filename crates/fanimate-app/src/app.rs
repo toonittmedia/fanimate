@@ -231,6 +231,10 @@ pub struct UiState {
     pub shape_drag: Option<fanimate_core::Vec2>,
     /// A point tool drag in progress.
     pub point_gesture: Option<crate::panels::canvas::PointGesture>,
+    /// Where the point drag in progress began, in document space: the line a Shift-drag stays on.
+    pub point_drag_from: fanimate_core::Vec2,
+    /// Shift while dragging keeps the movement to a horizontal or vertical line.
+    pub axis_lock: fanimate_editor::AxisLock,
     /// Whether the pointer went down with the Pen on the canvas.
     pub pen_down: bool,
     /// Whether the pointer went down with the Curvature tool on the canvas.
@@ -997,6 +1001,14 @@ fn chord_of(key: Key, m: Modifiers) -> Chord {
 pub fn dispatch(ctx: &egui::Context, shell: &mut Shell, action: Action) {
     // with Home in front there is no document to act on
     if shell.docs.home_front() && !crate::docs::works_on_home(action) {
+        return;
+    }
+    // Delete with a text animator picked (in the Text panel or on the timeline) deletes it,
+    // unless there are keys, points or shapes for Delete to take
+    if matches!(action, Action::Delete)
+        && let Some(index) = shell.editor.animator_for_delete(shell.ui.text_animator)
+    {
+        dispatch(ctx, shell, Action::RemoveTextAnimator(index));
         return;
     }
     // actions that would throw away unsaved work ask first
